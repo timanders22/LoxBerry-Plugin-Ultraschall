@@ -1,0 +1,7 @@
+# Skripte muessen LF behalten. Ein CRLF in der Shebang-Zeile laesst den
+# Daemon beim Systemstart wortlos scheitern.
+*.sh text eol=lf
+*.py text eol=lf
+daemon/daemon text eol=lf
+uninstall/uninstall text eol=lf
+dpkg/apt text eol=lf
