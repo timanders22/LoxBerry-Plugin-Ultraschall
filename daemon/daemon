@@ -1,0 +1,30 @@
+#!/bin/bash
+# Wird beim Systemstart als Benutzer "root" ausgefuehrt.
+# LoxBerry benennt diese Datei bei der Installation in NAME um.
+#
+# Die Originalfassung hatte keinen Daemon, sondern einen Cron-Eintrag: alle
+# fuenf Minuten ein Aufruf, jedes Mal ein neuer Python-Start. Dabei stimmte
+# nicht einmal der Pfad - mitgeliefert wurde cron/cron.01min, die
+# Installationsskripte verlinkten aber nach cron.05min.
+#
+# Ausserdem schrieb der Daemon der Originalfassung in /boot/config.txt und
+# rief "apt-get install" auf. Beides gehoert nicht in einen Startskript:
+# /boot/config.txt heisst seit Bookworm /boot/firmware/config.txt, und
+# Paketinstallation ist Sache von dpkg/apt.
+
+pluginname=REPLACELBPPLUGINDIR
+pluginbindir=REPLACELBPBINDIR
+logdir=REPLACELBPLOGDIR
+log=$logdir/ultraschall.log
+
+if [ -x /usr/bin/logger ]; then
+    /usr/bin/logger "loxberry-plugin-$pluginname - Starte Ultraschall Entfernung"
+fi
+
+mkdir -p "$logdir" 2>/dev/null
+
+# Der Dienst braucht keine Rootrechte: Lesen vom I2C-Bus erlaubt die Gruppe
+# i2c, die GPIO-Pins die Gruppe gpio. Beide setzt postinstall.sh.
+su loxberry -c "nohup $pluginbindir/ultraschall.py >> $log 2>&1 &" >/dev/null 2>&1
+
+exit 0
