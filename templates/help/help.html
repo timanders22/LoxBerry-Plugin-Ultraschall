@@ -1,0 +1,103 @@
+<h2>Ultraschall Entfernung</h2>
+
+<p>Das Plugin misst mit einem Ultraschallsensor den Abstand zu einer Fl&auml;che und
+meldet ihn an den Miniserver. Sind zwei Kalibrierpunkte eingetragen, rechnet es
+den Abstand zus&auml;tzlich in einen F&uuml;llstand in Prozent und &mdash; bei
+angegebenem Gesamtvolumen &mdash; in Liter um. Typischer Einsatz: Zisterne,
+Regenwassertank, Heiz&ouml;ltank, Futtersilo.</p>
+
+<h3>Unterst&uuml;tzte Sensoren</h3>
+<table border="1" cellpadding="5" cellspacing="0">
+<tr><th>Sensor</th><th>Anschluss</th><th>Messbereich</th><th>Anmerkung</th></tr>
+<tr><td>SRF02 (auch SRF08, SRF10)</td><td>I2C, ab Werk Adresse 0x70</td><td>etwa 16 cm bis 6 m</td>
+    <td>3,3&nbsp;V-tauglich, direkt anschlie&szlig;bar. Rechnet die Laufzeit selbst um.</td></tr>
+<tr><td>HC-SR04</td><td>zwei GPIO-Pins (Trigger, Echo)</td><td>etwa 2 cm bis 4 m</td>
+    <td><b>5&nbsp;V.</b> Der Echo-Pin muss &uuml;ber einen Spannungsteiler auf 3,3&nbsp;V,
+    sonst nimmt der Raspberry Pi mit der Zeit Schaden.</td></tr>
+</table>
+
+<h3>Einrichtung in vier Schritten</h3>
+<ol>
+<li><b>Sensor anschlie&szlig;en.</b> Beim SRF02 an den I2C-Bus, beim HC-SR04 an zwei freie
+GPIO-Pins. I2C wird bei der Installation eingeschaltet; danach ist ein Neustart n&ouml;tig,
+falls es vorher aus war.</li>
+<li><b>Reiter Einstellungen:</b> Bauart w&auml;hlen, Plugin einschalten, speichern.</li>
+<li><b>Reiter Test:</b> <i>Jetzt messen</i> dr&uuml;cken. Kommt ein plausibler Wert heraus,
+stimmt die Verkabelung. Kommt nichts, hilft <i>Sensor pr&uuml;fen</i> weiter.</li>
+<li><b>Reiter Einbindung in Loxone:</b> Vorlage herunterladen und in Loxone Config
+&uuml;ber <i>Vorlage einf&uuml;gen</i> einlesen, dann die Eing&auml;nge mit dem
+MQTT-Gateway verbinden.</li>
+</ol>
+
+<h3>F&uuml;llstand kalibrieren</h3>
+<p>Zwei Werte gen&uuml;gen: der gemessene Abstand bei leerem Beh&auml;lter und der bei
+vollem. Beide lassen sich direkt messen &mdash; die beiden Kn&ouml;pfe unten im Reiter
+Einstellungen &uuml;bernehmen den gerade gemessenen Wert in das jeweilige Feld.</p>
+<p>Sitzt der Sensor oben im Deckel, ist der Abstand bei leerem Beh&auml;lter der
+gr&ouml;&szlig;ere. Das Plugin kommt aber auch mit der umgekehrten Anordnung zurecht;
+es rechnet einfach zwischen den beiden Punkten linear um.</p>
+<p>Das Feld <i>Gesamtvolumen</i> ist optional. Es ist nur bei senkrechten W&auml;nden
+verl&auml;sslich: bei einem liegenden Zylinder oder einer Kugel ist der Zusammenhang
+zwischen F&uuml;llh&ouml;he und Inhalt nicht linear.</p>
+
+<h3>Warum mehrfach gemessen wird</h3>
+<p>Ultraschallsensoren liefern gelegentlich Unsinn &mdash; ein Echo von der Beh&auml;lterwand,
+ein verschlucktes Echo, ein Nachhall der vorigen Messung. Das Plugin misst deshalb mehrmals
+hintereinander und nimmt den <b>Median</b>, also den mittleren der sortierten Werte. Anders
+als beim Mittelwert zieht ein einzelner Ausrei&szlig;er das Ergebnis dabei nicht mit.</p>
+<p>Zus&auml;tzlich gibt es einen Plausibilit&auml;tsbereich: Werte au&szlig;erhalb von
+<i>kleinster</i> und <i>gr&ouml;&szlig;ter plausibler Wert</i> werden gar nicht erst
+ber&uuml;cksichtigt. Bleibt danach kein einziger Wert &uuml;brig, meldet das Plugin
+<code>valid = 0</code> statt einer erfundenen Zahl.</p>
+
+<h3>Was an den Miniserver geht</h3>
+<table border="1" cellpadding="5" cellspacing="0">
+<tr><th>Thema</th><th>Bedeutung</th></tr>
+<tr><td><code>&lt;Pr&auml;fix&gt;/distance</code></td><td>Entfernung in cm</td></tr>
+<tr><td><code>&lt;Pr&auml;fix&gt;/level</code></td><td>F&uuml;llstand in Prozent (nur mit Kalibrierung)</td></tr>
+<tr><td><code>&lt;Pr&auml;fix&gt;/liter</code></td><td>Inhalt in Litern (nur mit Gesamtvolumen)</td></tr>
+<tr><td><code>&lt;Pr&auml;fix&gt;/valid</code></td><td>1 = die letzte Messung war brauchbar</td></tr>
+<tr><td><code>&lt;Pr&auml;fix&gt;/online</code></td><td>1 = der Dienst l&auml;uft</td></tr>
+<tr><td><code>&lt;Pr&auml;fix&gt;/last_error</code></td><td>letzte Fehlermeldung, sonst leer</td></tr>
+</table>
+<p>Alle Themen sind <b>retained</b>: der Broker merkt sich den letzten Wert. Nach einem
+Neustart des Miniservers steht die Entfernung sofort wieder da.</p>
+
+<h3>UDP</h3>
+<p>Die Originalfassung schickte die Entfernung als blanke Zahl per UDP an den Miniserver.
+Dieser Weg l&auml;sst sich weiter benutzen &mdash; er ist aber nur f&uuml;r bestehende
+Konfigurationen gedacht. In Loxone Config braucht es daf&uuml;r einen virtuellen
+UDP-Eingang mit der Befehlserkennung <code>\v</code>. &Uuml;ber UDP geht immer nur die
+Entfernung, nie F&uuml;llstand oder Liter, und der Wert &uuml;berlebt keinen Neustart
+des Miniservers.</p>
+
+<h3>Grenzen des Verfahrens</h3>
+<ul>
+<li>Ultraschall braucht eine ebene, m&ouml;glichst harte, waagrechte Fl&auml;che. Schaum,
+Textilien und schr&auml;g liegendes Sch&uuml;ttgut streuen den Schall, statt ihn
+zur&uuml;ckzuwerfen.</li>
+<li>Sitzt der Sensor in einem engen Rohr, kommen Echos von der Rohrwand mit.</li>
+<li>Die Schallgeschwindigkeit h&auml;ngt von der Temperatur ab: rund 0,17&nbsp;% je Grad.
+Zwischen Winternacht und Sommertag sind das leicht 5&nbsp;% &mdash; bei 200&nbsp;cm also
+etwa 10&nbsp;cm. Weder der SRF02 noch der HC-SR04 gleichen das aus.</li>
+<li>Direkt vor dem Sensor gibt es eine tote Zone, in der er nichts misst. Beim SRF02 sind
+das rund 16&nbsp;cm.</li>
+</ul>
+
+<h3>Wenn nichts kommt</h3>
+<ul>
+<li><b>Reiter Test &rarr; Zustand des Dienstes:</b> l&auml;uft er &uuml;berhaupt, und ist
+das Plugin eingeschaltet?</li>
+<li><b>Reiter Test &rarr; Sensor pr&uuml;fen:</b> beim SRF02 zeigt <code>i2cdetect</code>,
+ob die Adresse belegt ist. Steht dort nichts, stimmt die Verkabelung nicht oder I2C ist
+nicht eingeschaltet.</li>
+<li><b>Reiter Logdateien:</b> dort steht die Ursache im Klartext.</li>
+</ul>
+
+<h3>Herkunft</h3>
+<p>Grundlage ist das Plugin <i>Ultraschall Entfernung</i> von Dietmar Wimmer (Version 0.30,
+2015). Die Autorenangabe in <code>plugin.cfg</code> bleibt unver&auml;ndert &mdash; LoxBerry
+identifiziert ein Plugin dar&uuml;ber.</p>
+<p>Die Originalfassung war auf Plugin-Schnittstelle 1.0 ausgelegt und lie&szlig; sich auf
+LoxBerry 3 und 4 gar nicht mehr installieren. Was sonst noch ge&auml;ndert wurde, steht in
+der Datei <code>README.md</code> im Plugin-Ordner.</p>
