@@ -1,0 +1,9 @@
+#!/bin/bash
+# Wird als Benutzer "root" ausgefuehrt.
+
+pkill -f ultraschall.py >/dev/null 2>&1
+rm -f /run/shm/ultraschall_status.json /tmp/ultraschall_status.json
+# Rueckstaende der Originalfassung
+rm -f /tmp/ultraschall.log /tmp/ultraschall.pid
+
+exit 0
