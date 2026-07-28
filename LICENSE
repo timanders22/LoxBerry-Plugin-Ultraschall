@@ -1,0 +1,49 @@
+Ultraschall Entfernung - LoxBerry-Plugin
+========================================
+
+Hinweis zur Herkunft
+--------------------
+
+Grundlage dieses Plugins ist die Fassung 0.30 von Dietmar Wimmer aus dem Jahr
+2015. Sie enthielt KEINE Lizenzangabe, nur den Vermerk "#C Dietmar Wimmer 2015"
+in den Quelltexten. Die Urheberschaft an diesem ursprünglichen Bestand liegt
+unverändert bei ihm, und die untenstehende MIT-Lizenz kann sich nicht auf ihn
+erstrecken - eine Lizenz kann nur erteilen, wer die Rechte hält.
+
+Die MIT-Lizenz gilt daher ausschließlich für die Teile, die in Fassung 1.0.0
+neu geschrieben wurden. Das sind im Wesentlichen:
+
+  bin/us_common.py, bin/ultraschall.py, bin/us_messen.py
+  webfrontend/htmlauth/index.php, us_lib.php, us_test.php
+  daemon/daemon, postinstall.sh, postupgrade.sh, preupgrade.sh
+  uninstall/uninstall, dpkg/apt, icons/*, templates/help/help.html
+  README.md
+
+Dietmar Wimmer wurde vor der Veröffentlichung nicht um Zustimmung gebeten.
+Wer hieran etwas zu beanstanden hat - insbesondere er selbst - möge ein Issue
+im Repository eröffnen; die Fassung wird dann zurückgezogen oder angepasst.
+
+
+MIT-Lizenz (für die neu geschriebenen Teile)
+--------------------------------------------
+
+Copyright (c) 2026 Ultraschall Entfernung Plugin Authors
+
+Hiermit wird unentgeltlich jeder Person, die eine Kopie der Software und der
+zugehörigen Dokumentationen (die "Software") erhält, die Erlaubnis erteilt, sie
+uneingeschränkt zu nutzen, inklusive und ohne Ausnahme dem Recht, sie zu
+verwenden, zu kopieren, zu verändern, zusammenzufügen, zu veröffentlichen, zu
+verbreiten, zu unterlizenzieren und/oder zu verkaufen, und Personen, denen diese
+Software überlassen wird, diese Rechte zu verschaffen, unter den folgenden
+Bedingungen:
+
+Der obige Urheberrechtsvermerk und dieser Erlaubnisvermerk sind in allen Kopien
+oder Teilkopien der Software beizulegen.
+
+DIE SOFTWARE WIRD OHNE JEDE AUSDRÜCKLICHE ODER IMPLIZIERTE GARANTIE
+BEREITGESTELLT, EINSCHLIESSLICH DER GARANTIE ZUR BENUTZUNG FÜR DEN VORGESEHENEN
+ODER EINEM BESTIMMTEN ZWECK SOWIE JEGLICHER RECHTSVERLETZUNG, JEDOCH NICHT
+DARAUF BESCHRÄNKT. IN KEINEM FALL SIND DIE AUTOREN ODER COPYRIGHTINHABER FÜR
+JEGLICHEN SCHADEN ODER SONSTIGE ANSPRÜCHE HAFTBAR ZU MACHEN, OB INFOLGE DER
+ERFÜLLUNG EINES VERTRAGES, EINES DELIKTES ODER ANDERS IM ZUSAMMENHANG MIT DER
+SOFTWARE ODER SONSTIGER VERWENDUNG DER SOFTWARE ENTSTANDEN.
