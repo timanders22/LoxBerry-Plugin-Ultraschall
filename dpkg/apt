@@ -1,0 +1,18 @@
+# These packages will be installed by apt-get -y install PACKAGENAME
+# One line per package, use exact packagename as you would do for apt-get.
+#
+# Die Originalfassung legte diese Datei als "apt" in die Wurzel des Pakets.
+# Dort sucht plugininstall.pl seit Schnittstelle 2.0 nicht mehr - die Pakete
+# wurden also nie installiert. Richtig ist dpkg/apt.
+#
+# i2c-tools und python3-smbus sind auf LoxBerry 3 und 4 bereits im
+# Grundsystem; sie stehen hier nur, damit die Installation auf einem
+# abgespeckten System nicht stillschweigend scheitert.
+i2c-tools
+python3-smbus
+python3-paho-mqtt
+# Nur fuer den HC-SR04 an GPIO. gpiozero bringt einen fertigen Treiber mit;
+# lgpio ist die Ansteuerung, die auf Bookworm und Trixie noch funktioniert
+# (RPi.GPIO ist dort abgekuendigt).
+python3-gpiozero
+python3-lgpio
