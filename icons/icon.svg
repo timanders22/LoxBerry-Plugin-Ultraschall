@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Ultraschall Entfernung - Plugin-Symbol.
+     Hausstandard: gruene Scheibe, weisse Zeichnung.
+     Dargestellt: der Sensor oben, drei Schallwellen nach unten, darunter
+     die Oberflaeche, die das Echo zurueckwirft. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <circle cx="256" cy="256" r="256" fill="#6dac20"/>
+
+  <!-- Sensorgehaeuse mit den beiden Wandlern -->
+  <rect x="146" y="96" width="220" height="76" rx="14" fill="#ffffff"/>
+  <circle cx="196" cy="134" r="24" fill="#6dac20"/>
+  <circle cx="316" cy="134" r="24" fill="#6dac20"/>
+  <circle cx="196" cy="134" r="10" fill="#ffffff"/>
+  <circle cx="316" cy="134" r="10" fill="#ffffff"/>
+
+  <!-- Schallwellen nach unten -->
+  <g fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round">
+    <path d="M 196 214 A 84 84 0 0 0 316 214"/>
+    <path d="M 166 264 A 128 128 0 0 0 346 264"/>
+    <path d="M 136 314 A 172 172 0 0 0 376 314"/>
+  </g>
+
+  <!-- Oberflaeche, an der das Echo entsteht -->
+  <rect x="96" y="404" width="320" height="18" rx="9" fill="#ffffff"/>
+  <rect x="96" y="440" width="320" height="10" rx="5" fill="#ffffff" opacity="0.55"/>
+</svg>
