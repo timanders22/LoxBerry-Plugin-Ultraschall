@@ -460,14 +460,31 @@ sonst werden die anderen Eingaben verworfen.
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="us-pane" id="tab-loxone">
 
-<h2>In drei Schritten eingerichtet</h2>
-<div class="us-step"><b>1. Sensor einrichten</b> im Reiter Einstellungen, dann im Reiter Test
-mit <i>Jetzt messen</i> pr&uuml;fen, ob ein plausibler Wert herauskommt.</div>
-<div class="us-step"><b>2. Vorlage herunterladen</b> (unten) und in Loxone Config einlesen:
-Rechtsklick auf den Miniserver &rarr; <i>Vorlage einf&uuml;gen</i>.</div>
-<div class="us-step"><b>3. Eing&auml;nge mit dem MQTT-Gateway verbinden.</b> Die Vorlage legt nur die
-Namen an; die Werte liefert das Gateway. Unter <i>Incoming overview</i> erscheinen die Themen,
-sobald der Dienst das erste Mal gemessen hat.</div>
+<h2>Einbindung in Loxone &mdash; Schritt f&uuml;r Schritt</h2>
+<div class="us-small">Der Sensor misst den Abstand zur Oberfl&auml;che. Daraus rechnet das Plugin
+F&uuml;llstand und Inhalt aus und meldet beides per MQTT (Schritt&nbsp;1 bis&nbsp;3). Im Miniserver
+wird daraus eine Kachel und, wenn man will, eine Warnung bei niedrigem Stand.</div>
+<div class="us-step"><b>Schritt 1: Sensor einrichten</b><br><br>
+Im Reiter <i>Einstellungen</i>, dann im Reiter <i>Test</i> mit <i>Jetzt messen</i> pr&uuml;fen, ob
+ein plausibler Wert herauskommt. Ohne brauchbare Messung hat der Rest keinen Sinn.</div>
+<div class="us-step"><b>Schritt 2: Abo im MQTT-Gateway eintragen</b><br><br>
+<b>Ohne diesen Eintrag kommt am Miniserver nichts an</b> &mdash; einzutragen unter
+<i>System-Einstellungen &rarr; MQTT Gateway &rarr; Abonnements</i>:
+<div class="us-mono" style="background:#f4f4f4;border:1px solid #ccc;padding:8px;margin-top:6px;"><?= us_e($us_praefix) ?>/#</div></div>
+<div class="us-step"><b>Schritt 3: Vorlage einlesen</b><br><br>
+Vorlage herunterladen (unten) und in Loxone Config einlesen: Rechtsklick auf den Miniserver &rarr;
+<i>Vorlage einf&uuml;gen</i>. Sie legt die virtuellen Eing&auml;nge mit den richtigen Namen an; die
+Werte liefert das Gateway. Unter <i>Incoming overview</i> erscheinen die Themen, sobald der Dienst
+das erste Mal gemessen hat. <b>Wer lieber von Hand anlegt</b>, findet die Namen weiter unten in
+Schritt&nbsp;5 &mdash; das Gateway ersetzt dabei jeden Schr&auml;gstrich durch einen Unterstrich,
+aus <span class="us-mono"><?= us_e($us_praefix) ?>/distance</span> wird also
+<span class="us-mono"><?= us_e($us_praefix) ?>_distance</span>.</div>
+<div class="us-step"><b>Schritt 4: Kachel in der App</b><br><br>
+Einen <i>Status</i>-Baustein anlegen, <span class="us-mono">v1</span> mit
+<span class="us-mono">level</span> und <span class="us-mono">v2</span> mit
+<span class="us-mono">liter</span> verbinden. Statustext zum Beispiel:
+<span class="us-mono">&lt;v1.0&gt;&nbsp;% &middot; &lt;v2.0&gt;&nbsp;Liter</span>. H&auml;kchen
+<i>Visualisierung</i> setzen &mdash; fertig.</div>
 
 <div class="us-small" style="margin-top:10px;">
 Broker: <span class="us-mono"><?= $us_broker !== '' ? us_e($us_broker) : 'MQTT-Gateway nicht gefunden' ?></span>
@@ -507,6 +524,38 @@ den Wert ohne Namen davor sendet.</div>
 Die Vorlage legt sie trotzdem an &mdash; dann tr&auml;gt man die Kalibrierung sp&auml;ter
 nach, ohne die Vorlage erneut einlesen zu m&uuml;ssen.</div>
 <?php } ?>
+
+<h2>Schritt 5: Komplette Baustein-Liste zum 1:1-Nachbauen</h2>
+<div class="us-small">So sieht die vollst&auml;ndige Logik auf der Programmierseite aus (jede Zeile =
+ein Baustein). Alle Bausteine findet man in Loxone Config &uuml;ber die Baustein-Suche (F5):</div>
+<table class="us-tbl">
+<tr><th>#</th><th>Baustein (Typ)</th><th>Name (Vorschlag)</th><th>Parameter</th><th>Eing&auml;nge verbinden mit</th></tr>
+<tr><td>1</td><td>Virtueller Eingang</td><td class="us-mono"><?= us_e($us_praefix) ?>_distance</td><td>Einheit cm</td><td>&mdash; (kommt &uuml;ber das Gateway)</td></tr>
+<tr><td>2</td><td>Virtueller Eingang</td><td class="us-mono"><?= us_e($us_praefix) ?>_level</td><td>Einheit %</td><td>&mdash;</td></tr>
+<tr><td>3</td><td>Virtueller Eingang</td><td class="us-mono"><?= us_e($us_praefix) ?>_liter</td><td>Einheit l</td><td>&mdash;</td></tr>
+<tr><td>4</td><td>Virtueller Eingang</td><td class="us-mono"><?= us_e($us_praefix) ?>_valid</td><td>digital, 1 = Messung brauchbar</td><td>&mdash;</td></tr>
+<tr><td>5</td><td>Virtueller Eingang</td><td class="us-mono"><?= us_e($us_praefix) ?>_online</td><td>digital, 1 = Dienst l&auml;uft</td><td>&mdash;</td></tr>
+<tr><td>6</td><td>Schwellwertschalter</td><td>F&uuml;llstand niedrig</td><td>Ein <b>18</b> / Aus <b>25</b> (Ein &lt; Aus = schaltet beim <b>Unter</b>schreiten ein)</td><td>Eingang = #2</td></tr>
+<tr><td>7</td><td>UND</td><td>Warnung erlaubt</td><td>&mdash;</td><td>I1 = #6, I2 = #4</td></tr>
+<tr><td>8</td><td>Einschaltverz&ouml;gerung</td><td>Niedrig, und zwar l&auml;nger</td><td>600&nbsp;s</td><td>Eingang = #7</td></tr>
+<tr><td>9</td><td>Benachrichtigung</td><td>F&uuml;llstand niedrig</td><td>Text z.&nbsp;B. &bdquo;Der Beh&auml;lter ist unter 18&nbsp;% gefallen.&ldquo;</td><td>&larr; #8</td></tr>
+<tr><td>10</td><td>NICHT</td><td>Dienst antwortet nicht</td><td>&mdash;</td><td>Eingang = #5</td></tr>
+<tr><td>11</td><td>Einschaltverz&ouml;gerung</td><td>Ausfall best&auml;tigt</td><td>1800&nbsp;s</td><td>Eingang = #10 &rarr; Benachrichtigung</td></tr>
+<tr><td>12</td><td>Status</td><td>Beh&auml;lter</td><td>Statustext siehe Schritt&nbsp;4, Visualisierung EIN</td><td>v1 = #2, v2 = #3</td></tr>
+<tr><td>13</td><td>Merker (optional)</td><td>Stand bei Tagesbeginn (l)</td><td>Speichern durch einen Impuls um 0:00&nbsp;Uhr</td><td>&larr; #3</td></tr>
+<tr><td>14</td><td>Formel (optional)</td><td>Verbrauch heute (l)</td><td>Formel: <span class="us-mono">I2-I1</span></td><td>I1 = #3, I2 = #13</td></tr>
+</table>
+<div class="us-alert us-info">
+<b>Zu #7:</b> ohne die Verkn&uuml;pfung mit <span class="us-mono">valid</span> l&ouml;st ein einzelner
+Fehlschuss des Sensors eine Warnung aus. Der Baustein liefert genau daf&uuml;r ein Kennzeichen.<br>
+<b>Zu #8 und #11:</b> die Verz&ouml;gerungen sind kein Schmuck. Ultraschall streut; ein einzelner
+Ausrei&szlig;er darf niemanden aus dem Bett holen.<br>
+<b>Zu #9:</b> ein Benachrichtigungs-Baustein sendet nur bei einem Wechsel von Aus auf Ein. Niemals
+mehrere Quellen direkt an seinen Eingang legen &mdash; erst &uuml;ber einen ODER-Baustein
+zusammenf&uuml;hren.<br>
+<b>Zu #6:</b> die Ein-Schwelle liegt <i>unter</i> der Aus-Schwelle. Ohne diesen Abstand meldet der
+Baustein an der Grenze im Wechsel ein und aus.
+</div>
 
 <h2>Worauf man sich nicht verlassen kann</h2>
 <div class="us-small">
