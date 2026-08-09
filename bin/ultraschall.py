@@ -69,10 +69,29 @@ class Mqtt:
         if not zugang:
             log.warning("Kein MQTT-Broker in general.json gefunden")
             return False
+        # paho-mqtt 2.x verlangt eine Angabe, welche Rueckruf-Schnittstelle
+        # gemeint ist; 1.x kennt den Parameter nicht.
+        #
+        # Genommen wird VERSION2, nicht VERSION1: VERSION1 gilt seit 2.0 als
+        # veraltet und meldet das bei jedem Start. Das ist hier gefahrlos,
+        # weil dieses Plugin GAR KEINE Rueckrufe anmeldet - es veroeffentlicht
+        # nur. Die Unterschiede zwischen den beiden Schnittstellen betreffen
+        # ausschliesslich die Aufrufform von on_connect, on_message und
+        # Geschwistern.
+        #
+        # WER HIER SPAETER on_connect ERGAENZT, muss die Form von Fassung 2
+        # verwenden:
+        #     on_connect(client, userdata, flags, reason_code, properties)
         try:
-            self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
-        except (AttributeError, TypeError):
+            self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        except AttributeError:
             self.client = mqtt.Client()      # paho-mqtt 1.x
+        except (TypeError, ValueError):
+            # Sehr fruehe 2.0-Vorabfassungen kannten VERSION2 noch nicht.
+            try:
+                self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+            except Exception:  # noqa: BLE001
+                self.client = mqtt.Client()
         if zugang["user"]:
             self.client.username_pw_set(zugang["user"], zugang["pass"] or "")
         self.client.will_set(self.praefix + "/online", "0", retain=True)
@@ -284,9 +303,23 @@ class Dienst:
                 intervall = max(5, gem.zahl(self.cfg, "intervall", 60, int))
                 vollmeldung_alle = max(intervall, gem.zahl(self.cfg, "aktualisierung", 300, int))
 
-            # In kleinen Schritten warten, damit ein Signal sofort greift
+            # In kleinen Schritten warten, damit ein Signal sofort greift -
+            # UND damit eine Aenderung der Konfiguration nicht bis zum Ende
+            # des Taktes liegen bleibt.
+            #
+            # Bis 1.1.1 wurde die Konfiguration nur einmal je Durchgang
+            # geprueft. Wer das Plugin einschaltete, wartete bis zu einem
+            # vollen Takt - bei der Vorgabe 300 s also fuenf Minuten, in denen
+            # nichts geschah und nichts erklaerte, warum.
+            #
+            # Der Vorschlag, bei ausgeschaltetem Plugin einfach kuerzer zu
+            # schlafen, deckt nur die Haelfte ab: dasselbe Warten trifft, wer
+            # den Takt von 300 auf 10 stellt. Ein stat() je Sekunde kostet
+            # nichts und loest beide Faelle.
             ende = time.time() + intervall
             while self.laeuft and time.time() < ende:
+                if self._mtime() != self.config_mtime:
+                    break
                 time.sleep(min(1.0, max(0.05, ende - time.time())))
 
     def stop(self):
@@ -294,6 +327,28 @@ class Dienst:
         if self.sensor:
             self.sensor.schliessen()
         self.mqtt.stop()
+
+
+def pid_schreiben():
+    """Eigene PID hinterlegen, damit Oberflaeche und uninstall den Dienst
+    finden, ohne die Befehlszeile durchsuchen zu muessen."""
+    try:
+        with open(gem.PID_FILE, "w", encoding="utf-8") as fh:
+            fh.write(str(os.getpid()))
+    except OSError as err:
+        log.warning("PID-Datei %s nicht schreibbar: %s", gem.PID_FILE, err)
+
+
+def pid_entfernen():
+    """Nur die eigene PID-Datei loeschen - nicht die eines zweiten Exemplars,
+    das inzwischen gestartet sein koennte."""
+    try:
+        with open(gem.PID_FILE, encoding="utf-8") as fh:
+            if fh.read().strip() != str(os.getpid()):
+                return
+        os.unlink(gem.PID_FILE)
+    except OSError:
+        pass
 
 
 def main():
@@ -306,12 +361,14 @@ def main():
     signal.signal(signal.SIGTERM, beenden)
     signal.signal(signal.SIGINT, beenden)
 
+    pid_schreiben()
     try:
         dienst.start()
     except KeyboardInterrupt:
         pass
     finally:
         dienst.stop()
+        pid_entfernen()
         log.info("Beendet")
 
 

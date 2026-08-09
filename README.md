@@ -30,6 +30,223 @@ schlägt fehl.
 > MIT-Lizenz (siehe `LICENSE`). Auf den ursprünglichen Bestand kann sich diese
 > Freigabe naturgemäß nicht erstrecken.
 
+## Version 1.1.2 — nachgemessen und korrigiert
+
+### Der Ramdisk-Ordner trägt jetzt den Plugin-Namen
+
+1.1.2 hatte `status.json` und `dienst.pid` aus dem Wurzelverzeichnis der
+Ramdisk in einen eigenen Unterordner geholt — mit der Begründung, dort
+kollidierten gleichnamige Dateien mit jedem anderen Plugin. Das Argument
+stimmt, war aber eine Ebene zu kurz gedacht: Der Ordner hieß fest
+`/run/shm/ultraschall`, unabhängig davon, wie die Installation heißt.
+
+Hängt LoxBerry bei einer Zweitinstallation einen Zähler an (`ultraschall_01`),
+teilten sich **beide** Installationen dieselben zwei Dateien:
+
+* `status.json` — die Oberfläche der zweiten zeigte den Messwert der ersten.
+  Zwei Sensoren, ein angezeigter Wert, und nichts deutet darauf hin, dass er
+  vom falschen Behälter stammt.
+* `dienst.pid` — die zweite überschriebe die PID der ersten. Ein Stopp träfe
+  dann den falschen Dienst, und der Wächter hielte einen abgestürzten Dienst
+  für laufend.
+
+Betroffen waren vier Stellen, die zusammenpassen müssen: `bin/us_common.py`
+(schreibt), `webfrontend/htmlauth/us_lib.php` (liest), `preupgrade.sh` (hält
+den Dienst an) und `uninstall/uninstall` (räumt auf). Alle vier bilden den
+Pfad jetzt aus dem Plugin-Ordner. **Bei einer einzelnen Installation ändert
+sich nichts** — der Ordner heißt dann weiterhin `ultraschall`.
+
+Dabei fiel auf, dass die Ordner-Ermittlung in `us_lib.php` ohnehin nie
+funktionierte: Installiert liegt die Datei unter
+`webfrontend/htmlauth/plugins/<ordner>/`, die beiden Rückfälle ergaben also
+`htmlauth` und `plugins` — nie einen Plugin-Ordner. Übrig blieb immer der
+feste Name. Jetzt hat `LBPPLUGINDIR` Vorrang, danach der eigene Ablageort.
+
+
+Siebzehn Punkte aus einer Durchsicht. Elf trafen zu, drei teilweise, drei
+nicht. Alles wurde nachgestellt, bevor etwas geändert wurde.
+
+### Der vorgeschlagene HC-SR04-Fix hätte den Sensor blind gemacht
+
+Beanstandet war die Zeile `if wert >= self.max_m * 100.0 - 0.5:` — sie
+verwerfe alle Messwerte ab 399,5 cm. Das stimmt, und der Abzug ist auch weg.
+Die vorgeschlagene Ersetzung durch `if wert > self.max_m * 100.0:` wäre
+allerdings ein schwerer Fehler gewesen. gpiozero begrenzt in
+`DistanceSensor._read`:
+
+```python
+return min(1.0, distance / self._max_distance)
+```
+
+Bei einer Zeitüberschreitung ist der Wert also **exakt** der Maximalwert —
+nachgerechnet für `max_m` 0,5 / 2,0 / 4,0 / 4,5 stimmt die Gleichheit auf die
+letzte Stelle:
+
+| Bedingung | bei Zeitüberschreitung |
+|---|---|
+| `>= grenze - 0.5` (bisher) | greift — verwirft zusätzlich 5 mm Messbereich |
+| `> grenze` (Vorschlag) | **greift nie** — „nichts gehört" wird zu „Gegenstand in 4 m" |
+| `>= grenze` (jetzt) | greift |
+
+### Weitere zutreffende Punkte
+
+**`VERSION = "1.0.0"`** in `us_common.py`, während überall sonst 1.1.1 stand.
+Jede MQTT-Meldung und die Zustandsdatei nannten damit eine Fassung, die es
+nicht mehr gab. Jetzt 1.1.2, wie in den drei cfg-Dateien.
+
+**Testmessung und Dienst griffen gleichzeitig auf die Hardware.** Läuft der
+Dienst, wird jetzt nicht mehr selbst gemessen, sondern sein letzter Stand
+gelesen — mit Angabe, wie alt er ist, und dem Hinweis, dass man den Dienst
+anhalten kann. Der Grund steht im Code: bei I2C serialisiert der Kern zwar
+einzelne Übertragungen, aber nicht die Folge aus Schreiben, Warten und Lesen —
+heraus kommt ein Wert, der zu keiner der beiden Anfragen gehört, still und
+falsch. Bei GPIO belegt lgpio die Leitung ausschließlich, da scheitert der
+zweite Zugriff wenigstens laut.
+
+**`timeout 40`** aus dem Webfrontend: jetzt 12 Sekunden, mit eigener Meldung
+bei Rückgabewert 124. Ein Sensor, der 40 Sekunden nicht antwortet, antwortet
+auch nach zwölf nicht — der Webserver bricht vorher ab.
+
+**Konfiguration nicht atomar geschrieben**, auf beiden Seiten. Der Dienst
+prüft die Datei im Sekundentakt auf Änderungen; trifft er das Fenster
+zwischen Kürzen und Füllen, liest er eine halbe Konfiguration. Jetzt
+`temp + rename` in PHP und `os.replace` in Python.
+
+**Träges Ansprechen bei ausgeschaltetem Plugin.** Die Konfiguration wurde nur
+einmal je Durchgang geprüft — bei einem Takt von 300 s also alle fünf
+Minuten. Gemessen: Änderung nach 0,5 s ausgelöst, bisher noch nach 3 s in der
+Ruhephase (echt bis zu 300 s), jetzt nach 0,50 s erkannt. Der Vorschlag, bei
+ausgeschaltetem Plugin kürzer zu schlafen, deckt nur die Hälfte ab: dasselbe
+Warten trifft, wer den Takt von 300 auf 10 stellt. Ein `stat()` je Sekunde
+löst beide Fälle.
+
+**Dateien frei auf der Ramdisk**, **`Content-Disposition` ohne
+Anführungszeichen**, **`su` ohne ausdrückliche Shell**, **`/tmp` als
+Sicherungsort beim Upgrade**, **Reste im Uninstall** — alles umgesetzt.
+
+Zum Upgrade noch eine Berichtigung: der übliche Zusatz, man solle `$1`
+verwenden, das sei der Pfad des Installers, trifft nicht zu. `$1` ist eine
+zehnstellige Zufallskennung (`&generate(10)` in `plugininstall.pl`); der
+absolute Arbeitsordner kommt als **sechstes** Argument. Dorthin wird jetzt
+gesichert, mit Rückfall auf den alten Weg. Beide Wege nachgestellt: Sensortyp,
+Pins, Behältermaße und Takt überstehen das Upgrade, es bleiben keine Reste.
+
+### `paho-mqtt`: umgestellt, weil es hier gefahrlos ist
+
+`CallbackAPIVersion.VERSION1` gilt seit paho 2.0 als veraltet. Die Umstellung
+auf VERSION2 ist hier **deshalb** unbedenklich, weil dieses Plugin gar keine
+Rückrufe anmeldet — es veröffentlicht nur. Die Unterschiede zwischen den
+Schnittstellen betreffen ausschließlich die Aufrufform von `on_connect`,
+`on_message` und Geschwistern. Wer hier später einen Rückruf ergänzt, findet
+den Hinweis auf die neue Form im Code.
+
+### Was nicht zutraf
+
+**Der Daemon starte nach einem Neustart nicht**, weil `REPLACELBPBINDIR`
+nicht ersetzt werde. Es wird ersetzt. In `plugininstall.pl`:
+
+```
+s#REPLACELBPBINDIR#$lbhomedir/bin/plugins/$pfolder#g;
+```
+
+Die Ersetzung läuft über **alle** Textdateien des Pakets, bevor irgendetwas
+kopiert wird. Die vorgeschlagene Abhilfe wäre die Verschlechterung gewesen:
+`REPLACEBYBASEFOLDER` und `REPLACEBYSUBFOLDER` stehen **nicht** in der Liste
+des Installers — sie wären wörtlich stehen geblieben, und dann hätte der
+Daemon tatsächlich nicht mehr gestartet.
+
+**`/etc/modules` werde mit Duplikaten geflutet.** Nachgestellt mit je zehn
+Läufen und fünf Ausgangslagen — leer, Eintrag vorhanden, Eintrag mit
+Leerraum, auskommentiert, Teilwort `i2c-dev-alt` — blieb es in **jedem** Fall
+bei genau einem Eintrag. Der Ausdruck trägt.
+
+Umgestellt wurde trotzdem auf `/etc/modules-load.d/ultraschall.conf`, weil
+eine eigene Datei unteilbar richtig ist: sie wird geschrieben, nicht
+angehängt, und beim Deinstallieren lässt sie sich entfernen, ohne in einer
+fremden Systemdatei zu schneiden. Dabei ist `i2c-bcm2708` entfallen — der
+Treiber heißt seit Jahren `i2c-bcm2835` und wird ohnehin über den Gerätebaum
+geladen; ein Modul einzutragen, das es nicht gibt, erzeugt bei jedem Start
+eine Fehlermeldung im Systemprotokoll.
+
+**`python3-gpiozero` und `python3-lgpio` fehlten in `dpkg/apt`.** Sie stehen
+dort, mit Begründung, seit 1.1.0.
+
+**`tail` statt `file_get_contents` beim Protokoll.** Der Speicherhinweis war
+berechtigt, `tail` ist aber der langsamste der drei Wege — 1,9 ms gegen
+0,05 ms beim Rückwärtslesen mit `fseek`, bei knapp doppeltem Speicherbedarf
+gegenüber `tail` und einem Zwanzigstel gegenüber dem bisherigen Weg.
+
+### Nebenbefund: doppelte Installationslogik
+
+`postupgrade.sh` enthielt eine wortgetreue Kopie des halben `postinstall.sh` —
+I2C einschalten, Module eintragen, Gruppen zuordnen, Rechte setzen. Der
+Installer führt `postinstall` ohne Bedingung aus und `postupgrade` erst
+danach; alles war bereits erledigt. Schlimmer als die verlorene Zeit ist die
+Verdopplung selbst: zwei Kopien derselben Logik laufen auseinander, und dann
+verhält sich das Plugin nach einem Upgrade anders als nach einer
+Neuinstallation. `postupgrade.sh` enthält jetzt nur noch das Zurückspielen
+der Konfiguration.
+
+## Version 1.1.1 — Abspaltung, Prozesssuche, Hausstandard
+
+### Eigene Kennung als Abspaltung
+
+`plugin.cfg` trug noch **Name und Adresse des ursprünglichen Autors**. LoxBerry
+bildet aus Autorname, E-Mail und Plugin-Name den Schlüssel, unter dem es ein
+Plugin führt — mit dem fremden Namen wäre diese Abspaltung für LoxBerry
+dasselbe Plugin wie das Original gewesen. Der ursprüngliche Autor steht
+weiterhin oben unter *Herkunft* und im Kopf der Quelldateien.
+
+**Die Fassungsnummer stand an drei Stellen verschieden:** Ordnername 1.0.0,
+`plugin.cfg` und `release.cfg` 1.1.0, `prerelease.cfg` 1.0.0. Wer Vorabfassungen
+eingeschaltet hat, wäre damit auf einen Tag `v1.0.0` verwiesen worden. Jetzt
+überall 1.1.1.
+
+### Ein neues Symbol
+
+Bis 1.1.0 zeigte das Symbol den Sensor allein — Platine, zwei Kapseln, Wellen
+darunter. Das ist das übliche Bild für einen HC-SR04 und sagt nichts darüber,
+wofür man ihn hier benutzt. Das neue Symbol zeigt einen Behälter im Schnitt mit
+Füllstand und den Sensor darüber: genau das, was das Plugin aus `leer_cm`,
+`voll_cm` und dem Behälterinhalt rechnet. Zwei ähnliche Symbole nebeneinander
+in der Pluginverwaltung sind eine Falle, keine Verwandtschaftsangabe.
+
+### Den Dienst richtig finden
+
+Der Dienst wurde über `pgrep -o -f ultraschall.py` gesucht und mit
+`pkill -f ultraschall.py` beendet — an vier Stellen (Oberfläche, `preupgrade.sh`,
+`uninstall`). Beides durchsucht die **ganze Befehlszeile** jedes Prozesses und
+trifft damit auch einen Editor, in dem die Datei offen ist, oder ein zweites
+Exemplar des Plugins. `ps -C` und `killall` wären keine Alternative: die
+vergleichen den *comm*-Namen, der bei einem Skript mit Shebang `python3` lautet
+— die finden gar nichts.
+
+Der Dienst schreibt jetzt eine **PID-Datei** (`/run/shm/ultraschall.pid`, auf
+der Ramdisk, und er räumt sie beim Beenden selbst weg — aber nur, wenn die
+Nummer darin noch seine eigene ist). Gefunden wird er über diese Datei; fehlt
+sie, wird `/proc` durchgesehen und das **erste beziehungsweise zweite Argument**
+gegen den vollen Skriptpfad verglichen. Gegenprobe mit vier laufenden
+Prozessen: das eigene Exemplar wird gefunden, ein zweites unter
+`…/ultraschall01/` und ein offenes `tail` nicht — `pgrep -f` lieferte im selben
+Test acht Treffer.
+
+### Hausstandard
+
+- **Die Reiter waren `<div>`, keine Verweise**, und der Reiterwunsch kam nur per
+  POST. Alle Flächen stehen bis zum Lauf des JavaScripts auf `display:none` —
+  ohne JavaScript war die Seite leer, und auf einen Reiter verlinken ging nicht.
+  Jetzt echte Links mit `?tab=…`; der Server setzt `sm-active` an Reiter und
+  Fläche.
+- **Rund 30 sichtbare Texte** liefen noch nicht über `us_t()`: die Meldungen
+  nach dem Speichern und Kalibrieren, die Spaltenköpfe der Baustein-Tabelle,
+  der Seitentitel. Beide Sprachdateien haben jetzt **221 Schlüssel und sind
+  deckungsgleich**; jeder wird benutzt, keiner fehlt.
+- **Sieben tote Schlüssel entfernt.** Drei davon (`TEXT.MQTT`,
+  `TEXT.STAND_VOR_2`, `TEXT.NEUESTE_ZEILE_ZUERST_NOCH_KEINE_PR`) waren
+  Bruchstücke aus einem automatischen Übersetzungslauf, der über eine
+  PHP-Grenze hinweg zusammengeklebt hatte — zwei unzusammenhängende Sätze in
+  einem Wert. Sie waren nicht einsetzbar und wurden nirgends benutzt.
+
 ## Version 1.0.0 — LoxBerry 4 und Hausstandard
 
 **Zur Versionsnummer:** Das Original stand auf `0.30`. `1.0.0` ist für

@@ -1,102 +1,72 @@
 #!/bin/sh
+# Ultraschall Entfernung - postupgrade
+#
+# command <TEMPFOLDER-KENNUNG> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <WORKDIR>
+#
+# ---------------------------------------------------------------------------
+# WARUM HIER NUR NOCH DIE KONFIGURATION ZURUECKKOMMT
+#
+# Bis 1.1.1 stand in dieser Datei eine wortgetreue Kopie des halben
+# postinstall.sh: I2C in der config.txt einschalten, Kernelmodule eintragen,
+# Gruppen zuordnen, Rechte setzen. Das war ueberfluessig - der Installer
+# fuehrt postinstall OHNE Bedingung aus (plugininstall.pl, kein
+# if ($isupgrade) davor) und postupgrade erst danach. Alles war zu diesem
+# Zeitpunkt bereits erledigt.
+#
+# Schlimmer als die verlorene Zeit war die Verdopplung selbst: zwei Kopien
+# derselben Logik laufen zwangslaeufig auseinander. Wer eine aendert und die
+# andere vergisst, bekommt ein Plugin, das sich nach einer Neuinstallation
+# anders verhaelt als nach einem Upgrade - und sucht den Grund lange.
+#
+# Was ein Upgrade wirklich braucht, steht hier.
+# ---------------------------------------------------------------------------
 
-# To use important variables from command line use the following code:
-COMMAND=$0    # Zero argument is shell command
-PTEMPDIR=$1   # First argument is temp folder during install
-PSHNAME=$2    # Second argument is Plugin-Name for scipts etc.
-PDIR=$3       # Third argument is Plugin installation folder
-PVERSION=$4   # Forth argument is Plugin version
-#LBHOMEDIR=$5 # Comes from /etc/environment now. Fifth argument is
-              # Base folder of LoxBerry
+COMMAND=$0
+PTEMPDIR=$1   # Zufallskennung, KEIN Pfad
+PSHNAME=$2
+PDIR=$3
+PVERSION=$4
+#LBHOMEDIR=$5 # Comes from /etc/environment now.
+PWORKDIR=$6   # Arbeitsordner des Installers (absolut)
 
-# Combine them with /etc/environment
-PCGI=$LBPCGI/$PDIR
-PHTML=$LBPHTML/$PDIR
-PTEMPL=$LBPTEMPL/$PDIR
-PDATA=$LBPDATA/$PDIR
-PLOG=$LBPLOG/$PDIR # Note! This is stored on a Ramdisk now!
 PCONFIG=$LBPCONFIG/$PDIR
-PSBIN=$LBPSBIN/$PDIR
 PBIN=$LBPBIN/$PDIR
+MERKER="$PCONFIG/.upgrade_pfad"
 
-echo "<INFO> Copy back existing config files /tmp/${PDIR}.SAVE/* $PCONFIG/"
-cp -v -r /tmp/${PDIR}.SAVE/* $PCONFIG/
-
-echo "<INFO> Remove temporary folder /tmp/${PDIR}.SAVE"
-rm -rf /tmp/${PDIR}.SAVE
-
-# --- Ultraschall Entfernung ----------------------------------------------
-# Ausfuehrbar machen. Ohne das startet der Daemon beim Systemstart nicht.
-chmod 755 "$LBPBIN/$PDIR"/*.py 2>/dev/null
-
-# I2C einschalten. Der SRF02 haengt am I2C-Bus; ohne dtparam gibt es kein
-# /dev/i2c-1. Seit Bookworm liegt die Datei unter /boot/firmware/config.txt -
-# die Originalfassung schrieb noch nach /boot/config.txt, was dort ins Leere
-# ging beziehungsweise eine Datei anlegte, die niemand liest.
-BOOTCFG=""
-for kandidat in /boot/firmware/config.txt /boot/config.txt; do
-    if [ -f "$kandidat" ]; then
-        BOOTCFG="$kandidat"
-        break
-    fi
-done
-if [ -n "$BOOTCFG" ]; then
-    if grep -qE '^[[:space:]]*dtparam=i2c_arm=on' "$BOOTCFG"; then
-        echo "<OK> I2C ist in $BOOTCFG bereits eingeschaltet."
-    else
-        echo "dtparam=i2c_arm=on" >> "$BOOTCFG"
-        echo "<INFO> I2C in $BOOTCFG eingeschaltet. Wirksam nach einem Neustart."
-    fi
+# preupgrade.sh hat den tatsaechlich benutzten Ordner hinterlegt.
+if [ -r "$MERKER" ]; then
+    SICHERUNG=$(cat "$MERKER")
+elif [ -n "$PWORKDIR" ] && [ -d "$PWORKDIR" ]; then
+    SICHERUNG="$PWORKDIR/ultraschall_upgrade"
 else
-    echo "<INFO> Keine config.txt gefunden - kein Raspberry Pi? I2C bitte selbst einrichten."
+    SICHERUNG="/tmp/${PDIR}.SAVE"
 fi
 
-# Module beim Start laden
-if [ -f /etc/modules ]; then
-    for modul in i2c-bcm2708 i2c-dev; do
-        if ! grep -qE "^[[:space:]]*$modul([[:space:]]|$)" /etc/modules; then
-            echo "$modul" >> /etc/modules
-            echo "<INFO> Modul $modul in /etc/modules eingetragen."
-        fi
-    done
-fi
-modprobe i2c-dev >/dev/null 2>&1 || true
-
-# Der Dienst laeuft als loxberry. Fuer den I2C-Bus braucht er die Gruppe i2c,
-# fuer die GPIO-Pins des HC-SR04 die Gruppe gpio.
-for gruppe in i2c gpio; do
-    if getent group "$gruppe" >/dev/null 2>&1; then
-        usermod -a -G "$gruppe" loxberry 2>/dev/null && \
-            echo "<OK> Benutzer loxberry zur Gruppe $gruppe hinzugefuegt." || \
-            echo "<INFO> Gruppenzuordnung $gruppe nicht moeglich (nicht als root?)."
-    else
-        echo "<INFO> Gruppe $gruppe nicht vorhanden - wird erst mit den Paketen angelegt."
-    fi
-done
-
-# Pruefen, ob die Bausteine wirklich da sind.
-for modul in smbus paho.mqtt.client; do
-    if python3 -c "import $modul" >/dev/null 2>&1; then
-        echo "<OK> Python-Modul $modul vorhanden."
-    else
-        echo "<WARNING> Python-Modul $modul fehlt."
-    fi
-done
-if python3 -c "import gpiozero" >/dev/null 2>&1; then
-    echo "<OK> Python-Modul gpiozero vorhanden (fuer HC-SR04)."
+mkdir -p "$PCONFIG" 2>/dev/null
+if [ -d "$SICHERUNG" ]; then
+    echo "<INFO> Spiele gesicherte Konfiguration zurueck aus $SICHERUNG"
+    # Den eigenen Merker nicht mitkopieren.
+    rm -f "$SICHERUNG/.upgrade_pfad" 2>/dev/null
+    cp -a "$SICHERUNG/." "$PCONFIG/" 2>/dev/null && \
+        echo "<OK> Konfiguration wiederhergestellt."
 else
-    echo "<INFO> gpiozero fehlt - wird nur fuer den HC-SR04 gebraucht."
-    echo "<INFO> Nachinstallieren: sudo apt-get install -y python3-gpiozero python3-lgpio"
-fi
-if command -v i2cdetect >/dev/null 2>&1; then
-    echo "<OK> i2c-tools sind vorhanden."
-else
-    echo "<WARNING> i2c-tools fehlen. Nachinstallieren: sudo apt-get install -y i2c-tools"
+    echo "<WARNING> Keine gesicherte Konfiguration unter $SICHERUNG gefunden."
+    echo "<INFO> Die Einstellungen bitte einmal nachsehen."
 fi
 
-echo "<INFO> Naechster Schritt: Reiter Einstellungen -> Sensor waehlen,"
-echo "<INFO> einschalten und speichern. Der Reiter Test zeigt, ob der"
-echo "<INFO> Sensor antwortet."
-echo "<INFO> Wurde I2C gerade erst eingeschaltet, ist ein Neustart noetig."
+rm -f "$MERKER" 2>/dev/null
 
+# Der Arbeitsordner des Installers wird von LoxBerry selbst aufgeraeumt.
+# Nur der Rueckfallweg unter /tmp gehoert uns.
+case "$SICHERUNG" in
+    /tmp/*) rm -rf "$SICHERUNG" ;;
+esac
+
+# Reste aus 1.1.1: Zustands- und PID-Datei lagen frei im Wurzelverzeichnis
+# der Ramdisk. Seit 1.1.2 gibt es dafuer einen eigenen Unterordner; die alten
+# Dateien wuerden sonst als zweiter Stand liegen bleiben.
+rm -f /run/shm/ultraschall_status.json /run/shm/ultraschall.pid \
+      /tmp/ultraschall_status.json /tmp/ultraschall.pid 2>/dev/null
+
+echo "<OK> postupgrade abgeschlossen."
 exit 0

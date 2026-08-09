@@ -1,26 +1,55 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Ultraschall Entfernung - Plugin-Symbol.
-     Hausstandard: gruene Scheibe, weisse Zeichnung.
-     Dargestellt: der Sensor oben, drei Schallwellen nach unten, darunter
-     die Oberflaeche, die das Echo zurueckwirft. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <circle cx="256" cy="256" r="256" fill="#6dac20"/>
+<svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
+      <stop offset="0%" stop-color="#7dc424" />
+      <stop offset="65%" stop-color="#6dac20" />
+      <stop offset="100%" stop-color="#568819" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
 
-  <!-- Sensorgehaeuse mit den beiden Wandlern -->
-  <rect x="146" y="96" width="220" height="76" rx="14" fill="#ffffff"/>
-  <circle cx="196" cy="134" r="24" fill="#6dac20"/>
-  <circle cx="316" cy="134" r="24" fill="#6dac20"/>
-  <circle cx="196" cy="134" r="10" fill="#ffffff"/>
-  <circle cx="316" cy="134" r="10" fill="#ffffff"/>
+  <!-- Outer Badge Ring -->
+  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
 
-  <!-- Schallwellen nach unten -->
-  <g fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round">
-    <path d="M 196 214 A 84 84 0 0 0 316 214"/>
-    <path d="M 166 264 A 128 128 0 0 0 346 264"/>
-    <path d="M 136 314 A 172 172 0 0 0 376 314"/>
+  <g filter="url(#shadow)">
+    <!-- Tank + Ultrasonic Sensor Motiv (Exakt zentriert & nach unten verschoben) -->
+    <g transform="translate(76.8, 15) scale(0.7)">
+      <!-- Sensor ueber dem Behaelter -->
+      <rect x="214" y="96" width="84" height="40" rx="11" ry="11" fill="#ffffff"/>
+
+      <!-- Zwei Schallwellen nach unten -->
+      <g fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round">
+        <path d="M 226 154 q 30 26 60 0"/>
+        <path d="M 208 186 q 48 40 96 0" stroke-opacity="0.7"/>
+      </g>
+
+      <!-- Behaelter im Schnitt -->
+      <path d="M 132 154 L 132 372 q 0 24 24 24 L 356 396 q 24 0 24 -24 L 380 154"
+            fill="none" stroke="#ffffff" stroke-width="20"
+            stroke-linecap="round" stroke-linejoin="round"/>
+
+      <!-- Fuellstand mit gewellter Oberflaeche -->
+      <path fill="#ffffff" d="
+        M 152 292
+        q 26 -11 52 0
+        q 26 11 52 0
+        q 26 -11 52 0
+        L 360 366
+        q 0 10 -10 10
+        L 162 376
+        q -10 0 -10 -10
+        Z"/>
+    </g>
+
+    <!-- Dashed Line -->
+    <path d="M 150 345 L 362 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
   </g>
 
-  <!-- Oberflaeche, an der das Echo entsteht -->
-  <rect x="96" y="404" width="320" height="18" rx="9" fill="#ffffff"/>
-  <rect x="96" y="440" width="320" height="10" rx="5" fill="#ffffff" opacity="0.55"/>
+  <!-- Typography -->
+  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="0.5">Ultraschall</text>
+  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
 </svg>

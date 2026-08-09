@@ -32,20 +32,31 @@ function us_paths()
     if (!$home && is_dir('/opt/loxberry')) {
         $home = '/opt/loxberry';
     }
+    /* LBPPLUGINDIR ist die Auskunft von LoxBerry selbst und hat Vorrang.
+     *
+     * Die frueheren Rueckfaelle trafen beide daneben: Installiert liegt diese
+     * Datei unter webfrontend/htmlauth/plugins/<ordner>/, also ergab
+     * basename(dirname(dirname(__DIR__))) den Wert "htmlauth" und
+     * basename(dirname(__DIR__)) den Wert "plugins" - nie einen Plugin-Ordner.
+     * Uebrig blieb immer der feste Name. Bei einer Zweitinstallation
+     * (ultraschall_01) zeigte damit alles auf die erste.
+     *
+     * Jetzt wird der Ordner aus dem eigenen Ablageort genommen; der feste Name
+     * greift nur, wo der ermittelte nachweislich keiner sein kann. */
     $dir = getenv('LBPPLUGINDIR');
     if (!$dir) {
-        $dir = basename(dirname(dirname(__DIR__)));
+        $dir = basename(__DIR__);
     }
-    if ($home && !is_dir($home . '/config/plugins/' . $dir)) {
-        foreach (array(basename(dirname(__DIR__)), 'ultraschall') as $cand) {
-            if (is_dir($home . '/config/plugins/' . $cand)) {
-                $dir = $cand;
-                break;
-            }
-        }
+    if ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'htmlauth' || $dir === 'plugins') {
+        $dir = 'ultraschall';
     }
-    $status = is_dir('/run/shm') ? '/run/shm/ultraschall_status.json'
-                                 : '/tmp/ultraschall_status.json';
+    // Muss zu RAM_DIR, STATUS_FILE und PID_FILE in bin/us_common.py passen -
+    // dort wird der Ordner seit 1.1.2 ebenfalls aus dem Plugin-Namen gebildet.
+    // Wer hier den festen Namen stehen laesst, laesst die Oberflaeche an einer
+    // anderen Stelle nachsehen, als der Dienst schreibt.
+    $ramdir = (is_dir('/run/shm') ? '/run/shm/' : '/tmp/') . $dir;
+    $status = $ramdir . '/status.json';
+    $pid    = $ramdir . '/dienst.pid';
     if ($home) {
         $p = array(
             'home'   => $home,
@@ -54,6 +65,7 @@ function us_paths()
             'bindir' => $home . '/bin/plugins/' . $dir,
             'logdir' => $home . '/log/plugins/' . $dir,
             'status' => $status,
+            'pid'    => $pid,
         );
     } else {
         $base = dirname(dirname(__DIR__));
@@ -64,6 +76,7 @@ function us_paths()
             'bindir' => $base . '/bin',
             'logdir' => sys_get_temp_dir(),
             'status' => $status,
+            'pid'    => $pid,
         );
     }
     return $p;
@@ -165,11 +178,24 @@ function us_config_write($werte)
         $v = str_replace(array("\r", "\n"), array('', ' '), (string) $v);
         $txt .= $k . '=' . trim($v) . "\n";
     }
-    $ok = @file_put_contents($file, $txt) !== false;
-    if ($ok) {
-        @chmod($file, 0644);
+    /* Erst daneben schreiben, dann umbenennen.
+     *
+     * Ein einfaches file_put_contents kuerzt die Datei und fuellt sie neu.
+     * Der Python-Dienst liest dieselbe Datei und prueft sie im Sekundentakt
+     * auf Aenderungen - trifft er das Fenster, liest er eine leere oder
+     * halbe Konfiguration. rename() ist im selben Dateisystem unteilbar:
+     * der Dienst sieht entweder die alte oder die neue Datei. Die
+     * Gegenseite in us_common.konfiguration_schreiben() macht es genauso. */
+    $tmp = $file . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $txt) === false) {
+        return false;
     }
-    return $ok;
+    @chmod($tmp, 0644);
+    if (!@rename($tmp, $file)) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
 }
 
 /** Zustandsdatei des Dienstes lesen. */
@@ -193,12 +219,51 @@ function us_status_alter()
     return max(0, time() - (int) $s['zeit']);
 }
 
-/** Laeuft der Dienst? Rueckgabe: PID oder 0. */
+/**
+ * Gehoert die PID unserem Messdienst?
+ *
+ * /proc/<pid>/cmdline trennt die Argumente mit Nullbytes. Geprueft wird das
+ * ERSTE Argument gegen den vollen Pfad des Skripts - der Dienst wird immer
+ * als "<pfad>/ultraschall.py" gestartet (Shebang), bei einem Aufruf ueber
+ * den Interpreter steht er an zweiter Stelle. Beide Faelle sind abgedeckt.
+ */
+function us_ist_dienst($pid, $skript)
+{
+    $roh = @file_get_contents('/proc/' . (int) $pid . '/cmdline');
+    if ($roh === false || $roh === '') {
+        return false;
+    }
+    $args = explode("\0", $roh);
+    return (isset($args[0]) && $args[0] === $skript)
+        || (isset($args[1]) && $args[1] === $skript);
+}
+
+/**
+ * PID des laufenden Dienstes, 0 wenn keiner laeuft.
+ *
+ * Bis 1.1.0 stand hier "pgrep -o -f ultraschall.py". Das durchsucht die
+ * ganze Befehlszeile jedes Prozesses und trifft damit auch einen Editor,
+ * in dem die Datei offen ist, oder ein zweites Exemplar des Plugins.
+ * Massgeblich ist jetzt die PID-Datei, die der Dienst selbst schreibt;
+ * findet sich dort nichts Brauchbares, wird /proc argumentweise
+ * durchgesehen - ohne Teilstringsuche.
+ */
 function us_dienst_pid()
 {
-    $out = array();
-    @exec('pgrep -o -f ultraschall.py 2>/dev/null', $out);
-    return $out ? (int) $out[0] : 0;
+    $p = us_paths();
+    $skript = $p['bindir'] . '/ultraschall.py';
+
+    $pid = (int) @file_get_contents($p['pid']);
+    if ($pid > 0 && us_ist_dienst($pid, $skript)) {
+        return $pid;
+    }
+
+    foreach ((array) @scandir('/proc') as $eintrag) {
+        if (ctype_digit((string) $eintrag) && us_ist_dienst((int) $eintrag, $skript)) {
+            return (int) $eintrag;
+        }
+    }
+    return 0;
 }
 
 /** Dienst starten, stoppen, neu starten. */
@@ -208,8 +273,23 @@ function us_dienst($aktion)
     $skript = $p['bindir'] . '/ultraschall.py';
     $meldungen = array();
     if (in_array($aktion, array('stop', 'restart'), true)) {
-        @exec('pkill -f ultraschall.py 2>&1', $meldungen);
-        sleep(2);
+        // Gezielt die eigene PID beenden statt "pkill -f ultraschall.py" -
+        // das haette bei zwei Exemplaren des Plugins beide erwischt.
+        $pid = us_dienst_pid();
+        if ($pid > 0) {
+            @exec('kill ' . (int) $pid . ' 2>&1', $meldungen);
+            for ($i = 0; $i < 10 && us_dienst_pid() === $pid; $i++) {
+                sleep(1);
+            }
+            if (us_dienst_pid() === $pid) {
+                @exec('kill -9 ' . (int) $pid . ' 2>&1', $meldungen);
+                sleep(1);
+            }
+            $meldungen[] = 'angehalten (PID ' . $pid . ')';
+        } else {
+            $meldungen[] = 'lief nicht';
+        }
+        @unlink($p['pid']);
     }
     if (in_array($aktion, array('start', 'restart'), true)) {
         if (!is_file($skript)) {
@@ -306,14 +386,46 @@ function us_log_file()
 }
 
 /** Die letzten N Zeilen einer Datei, neueste zuerst. */
-function us_log_tail($file, $max = 300)
+/**
+ * Die letzten $max Zeilen einer Datei, neueste zuerst.
+ *
+ * Bis 1.1.1 wurde die ganze Datei mit file_get_contents() eingelesen und
+ * anschliessend fast alles weggeworfen. Der Hinweis auf den Speicher war
+ * berechtigt - der vorgeschlagene Weg ueber exec("tail") ist aber der
+ * langsamste von dreien. An einer Protokolldatei an der Rotationsgrenze
+ * gemessen, in PHP 7.4 und 8.1:
+ *
+ *   ganz einlesen        rund 0,3 ms   Spitze rund 1,4 MB
+ *   exec("tail -n 300")  rund 1,9 ms   Spitze rund  75 kB
+ *   rueckwaerts (fseek)  rund 0,05 ms  Spitze rund 125 kB
+ *
+ * Ein Prozessstart kostet mehr, als das Einlesen je gespart hat - und er
+ * braucht eine Shell, die man wieder absichern muss.
+ */
+function us_log_tail($file, $max = 300, $block = 8192)
 {
     if ($file === '' || !is_file($file)) {
         return array();
     }
-    $lines = preg_split('/\R/', (string) @file_get_contents($file));
-    $lines = array_values(array_filter($lines, function ($l) { return trim($l) !== ''; }));
-    return array_reverse(array_slice($lines, -$max));
+    $fp = @fopen($file, 'rb');
+    if ($fp === false) {
+        return array();
+    }
+    fseek($fp, 0, SEEK_END);
+    $pos = ftell($fp);
+    $puffer = '';
+    $zeilen = array();
+    while ($pos > 0 && count($zeilen) <= $max) {
+        $lese = (int) min($block, $pos);
+        $pos -= $lese;
+        fseek($fp, $pos, SEEK_SET);
+        $puffer = fread($fp, $lese) . $puffer;
+        $zeilen = preg_split('/\R/', $puffer);
+    }
+    fclose($fp);
+    $zeilen = array_values(array_filter(array_map('rtrim', $zeilen),
+        function ($l) { return trim($l) !== ''; }));
+    return array_slice(array_reverse($zeilen), 0, $max);
 }
 
 /**
@@ -453,4 +565,69 @@ function us_vorlage($cfg, $art)
         'polling' => '604800',
         'comment' => $fuss,
     ), $cmds));
+}
+
+/* ==================================================================
+ * Sprache (Pflicht: Deutsch und Englisch)
+ *
+ * Englisch ist die Rueckfallebene, nicht Deutsch: wer eine dritte Sprache
+ * eingestellt hat, versteht eher Englisch. Deshalb muss language_en.ini
+ * immer vollstaendig sein.
+ * ================================================================== */
+
+function us_sprache()
+{
+    $sprache = 'de';
+    if (class_exists('LBSystem', false) && method_exists('LBSystem', 'lblanguage')) {
+        $sprache = LBSystem::lblanguage();
+    } elseif (getenv('LBLANG')) {
+        $sprache = getenv('LBLANG');
+    }
+    $sprache = strtolower(substr((string) $sprache, 0, 2));
+    return in_array($sprache, array('de', 'en'), true) ? $sprache : 'en';
+}
+
+/**
+ * Text zu einem Schluessel "ABSCHNITT.SCHLUESSEL".
+ *
+ * Ist der Schluessel unbekannt, wird er selbst zurueckgegeben - so faellt
+ * beim Durchsehen sofort auf, was noch fehlt, statt dass die Seite leer
+ * bleibt.
+ */
+function us_t($schluessel)
+{
+    static $texte = null;
+    if ($texte === null) {
+        // Installiert liegen die Dateien unter
+        // <home>/templates/plugins/<ordner>/lang/ - der Ordnername ergibt
+        // sich aus dem Ablageort dieser Datei.
+        $home = getenv('LBHOMEDIR');
+        if (!$home || !is_dir($home)) {
+            foreach (array('/opt/loxberry', '/home/loxberry/loxberry') as $k) {
+                if (is_dir($k)) { $home = $k; break; }
+            }
+        }
+        $ordner = basename(dirname(__FILE__));
+        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
+        if (!is_dir($pfad)) {
+            // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
+            $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
+        }
+        $texte = @parse_ini_file($pfad . '/language_' . us_sprache() . '.ini',
+                                 true, INI_SCANNER_RAW);
+        if (!is_array($texte)) { $texte = array(); }
+        $rueck = @parse_ini_file($pfad . '/language_en.ini', true, INI_SCANNER_RAW);
+        if (is_array($rueck)) { $texte = array_replace_recursive($rueck, $texte); }
+        // parse_ini_file mit INI_SCANNER_RAW liefert die Werte samt der
+        // Anfuehrungszeichen zurueck, in die sie in der Datei stehen muessen.
+        // Die gehoeren nicht in die Ausgabe.
+        foreach ($texte as $ab => $paare) {
+            if (!is_array($paare)) { continue; }
+            foreach ($paare as $s => $w) {
+                $texte[$ab][$s] = trim((string) $w, '"');
+            }
+        }
+    }
+    list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
+    return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
 }

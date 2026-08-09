@@ -1,3 +1,13 @@
+<style>
+/* Die Hilfe wird in einem eigenen Fenster angezeigt und laedt das Stylesheet
+   der Plugin-Oberflaeche nicht mit. Bis 1.1.0 stand deshalb an den Tabellen
+   border="1" cellpadding="5" - Attribute, die HTML5 nicht mehr kennt. Statt
+   dessen hier dieselben Regeln wie im Plugin, damit die Hilfe aussieht wie
+   die Oberflaeche. */
+.sm-tbl { border-collapse: collapse; width: 100%; margin: 8px 0; }
+.sm-tbl td, .sm-tbl th { border: 1px solid #ddd; padding: 6px 9px; text-align: left; font-size: 0.9em; }
+.sm-tbl th { background: #f0f0f0; }
+</style>
 <h2>Ultraschall Entfernung</h2>
 
 <p>Das Plugin misst mit einem Ultraschallsensor den Abstand zu einer Fl&auml;che und
@@ -7,7 +17,7 @@ angegebenem Gesamtvolumen &mdash; in Liter um. Typischer Einsatz: Zisterne,
 Regenwassertank, Heiz&ouml;ltank, Futtersilo.</p>
 
 <h3>Unterst&uuml;tzte Sensoren</h3>
-<table border="1" cellpadding="5" cellspacing="0">
+<table class="sm-tbl">
 <tr><th>Sensor</th><th>Anschluss</th><th>Messbereich</th><th>Anmerkung</th></tr>
 <tr><td>SRF02 (auch SRF08, SRF10)</td><td>I2C, ab Werk Adresse 0x70</td><td>etwa 16 cm bis 6 m</td>
     <td>3,3&nbsp;V-tauglich, direkt anschlie&szlig;bar. Rechnet die Laufzeit selbst um.</td></tr>
@@ -51,7 +61,7 @@ ber&uuml;cksichtigt. Bleibt danach kein einziger Wert &uuml;brig, meldet das Plu
 <code>valid = 0</code> statt einer erfundenen Zahl.</p>
 
 <h3>Was an den Miniserver geht</h3>
-<table border="1" cellpadding="5" cellspacing="0">
+<table class="sm-tbl">
 <tr><th>Thema</th><th>Bedeutung</th></tr>
 <tr><td><code>&lt;Pr&auml;fix&gt;/distance</code></td><td>Entfernung in cm</td></tr>
 <tr><td><code>&lt;Pr&auml;fix&gt;/level</code></td><td>F&uuml;llstand in Prozent (nur mit Kalibrierung)</td></tr>

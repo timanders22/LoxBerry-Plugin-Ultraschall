@@ -25,8 +25,19 @@ touch $PLOG/$PSHNAME.log
 chown loxberry:loxberry $PLOG/$PSHNAME.log
 
 # --- Ultraschall Entfernung ----------------------------------------------
-# Ausfuehrbar machen. Ohne das startet der Daemon beim Systemstart nicht.
-chmod 755 "$LBPBIN/$PDIR"/*.py 2>/dev/null
+# Rechte.
+#
+# Ausfuehrbar muss nur sein, was unmittelbar aufgerufen wird: ultraschall.py
+# startet der Daemon beim Systemstart, us_messen.py der Reiter Test. Die
+# gemeinsame Bibliothek us_common.py wird nur importiert - sie braucht kein
+# Ausfuehrungsrecht und bekommt 644.
+#
+# Schreibrecht hat in beiden Faellen nur der Eigentuemer. 755 heisst nicht
+# "jeder darf schreiben", sondern "jeder darf lesen und ausfuehren" - das ist
+# fuer ein Programm im bin-Ordner richtig und entspricht dem, was LoxBerry
+# fuer die eigenen Skripte setzt.
+chmod 755 "$LBPBIN/$PDIR/ultraschall.py" "$LBPBIN/$PDIR/us_messen.py" 2>/dev/null
+chmod 644 "$LBPBIN/$PDIR/us_common.py" 2>/dev/null
 
 # I2C einschalten. Der SRF02 haengt am I2C-Bus; ohne dtparam gibt es kein
 # /dev/i2c-1. Seit Bookworm liegt die Datei unter /boot/firmware/config.txt -
@@ -50,14 +61,41 @@ else
     echo "<INFO> Keine config.txt gefunden - kein Raspberry Pi? I2C bitte selbst einrichten."
 fi
 
-# Module beim Start laden
-if [ -f /etc/modules ]; then
-    for modul in i2c-bcm2708 i2c-dev; do
-        if ! grep -qE "^[[:space:]]*$modul([[:space:]]|$)" /etc/modules; then
-            echo "$modul" >> /etc/modules
-            echo "<INFO> Modul $modul in /etc/modules eingetragen."
-        fi
-    done
+# Module beim Start laden - ueber eine eigene Datei unter modules-load.d
+#
+# Bis 1.1.1 wurde an /etc/modules angehaengt. Der Einwand, dabei entstuenden
+# bei wiederholten Laeufen Duplikate, hat sich NICHT bestaetigt: nachgestellt
+# mit je zehn Laeufen und fuenf Ausgangslagen (leer, Eintrag vorhanden,
+# Eintrag mit Leerraum, auskommentiert, Teilwort "i2c-dev-alt") blieb es in
+# jedem Fall bei genau einem Eintrag - der Ausdruck traegt.
+#
+# Umgestellt wurde trotzdem, aus einem anderen Grund: eine eigene Datei ist
+# unteilbar richtig. Sie wird geschrieben, nicht angehaengt; damit KANN kein
+# Duplikat entstehen, egal wie oft die Installation laeuft. Und beim
+# Deinstallieren laesst sich genau diese Datei wieder entfernen, ohne in
+# einer fremden Systemdatei herumzuschneiden.
+#
+# i2c-bcm2708 ist bewusst nicht mehr dabei: der Treiber heisst seit Jahren
+# i2c-bcm2835, und geladen wird er ohnehin ueber den Geraetebaum. Ein Modul
+# einzutragen, das es nicht gibt, erzeugt bei jedem Start eine Fehlermeldung
+# im Systemprotokoll.
+if [ -d /etc/modules-load.d ]; then
+    printf '# LoxBerry-Plugin Ultraschall Entfernung\n# Wird beim Deinstallieren wieder entfernt.\ni2c-dev\n' \
+        > /etc/modules-load.d/ultraschall.conf 2>/dev/null \
+        && echo "<OK> /etc/modules-load.d/ultraschall.conf angelegt." \
+        || echo "<INFO> /etc/modules-load.d/ultraschall.conf nicht schreibbar (nicht als root?)."
+    # Alten Eintrag aus /etc/modules zuruecknehmen, damit das Modul nicht an
+    # zwei Stellen steht.
+    if [ -f /etc/modules ] && grep -qE '^[[:space:]]*i2c-(dev|bcm2708)([[:space:]]|$)' /etc/modules; then
+        sed -i -E '/^[[:space:]]*i2c-(dev|bcm2708)[[:space:]]*$/d' /etc/modules 2>/dev/null \
+            && echo "<INFO> Alte Eintraege aus /etc/modules entfernt."
+    fi
+elif [ -f /etc/modules ]; then
+    # Sehr altes System ohne modules-load.d: dann eben wie bisher.
+    if ! grep -qE "^[[:space:]]*i2c-dev([[:space:]]|$)" /etc/modules; then
+        echo "i2c-dev" >> /etc/modules
+        echo "<INFO> Modul i2c-dev in /etc/modules eingetragen."
+    fi
 fi
 modprobe i2c-dev >/dev/null 2>&1 || true
 

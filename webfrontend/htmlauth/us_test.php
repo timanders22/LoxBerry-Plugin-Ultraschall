@@ -15,22 +15,77 @@ function us_sh($cmd)
     return implode("\n", $out);
 }
 
-/** Einen Messdurchgang ueber bin/us_messen.py anstossen. */
+/** So lange darf eine Messung aus dem Webfrontend hoechstens dauern. */
+define('US_MESSEN_GRENZE', 12);
+
+/**
+ * Einen Messwert fuer den Reiter Test besorgen.
+ *
+ * ZWEI WEGE, UND DER ERSTE IST WICHTIG:
+ *
+ * Laeuft der Dienst, wird NICHT selbst gemessen, sondern der zuletzt vom
+ * Dienst geschriebene Stand gelesen. Sonst greifen zwei Prozesse gleichzeitig
+ * auf dieselbe Hardware zu, und das geht je nach Sensor unterschiedlich
+ * schief:
+ *   - I2C (SRF02, VL53L0X): der Kern serialisiert einzelne Uebertragungen,
+ *     aber nicht die Folge aus Schreiben, Warten und Lesen. Dazwischen kann
+ *     der andere Prozess seine eigene Messung anstossen - herauskommt ein
+ *     Wert, der zu keiner der beiden Anfragen gehoert. Still und falsch.
+ *   - GPIO (HC-SR04): lgpio belegt die Leitung ausschliesslich. Der zweite
+ *     Zugriff scheitert mit einer Fehlermeldung.
+ * Der stille Fall ist der schlimmere.
+ *
+ * Die Zeitgrenze fuer den zweiten Weg lag bei 40 Sekunden. Ein Webserver
+ * bricht die Anfrage lange vorher ab (Lighttpd und FastCGI ueblicherweise
+ * nach 30 s) - der Benutzer saehe einen 504 statt einer Auskunft. Jetzt
+ * zwoelf Sekunden; ein Sensor, der so lange nicht antwortet, antwortet auch
+ * nach vierzig nicht.
+ *
+ * Rueckgabe zusaetzlich: 'quelle' = 'dienst' oder 'direkt', und bei 'dienst'
+ * das Alter in Sekunden - sonst haelt jemand einen zehn Minuten alten Wert
+ * fuer eine frische Messung.
+ */
 function us_einmal_messen()
 {
     $p = us_paths();
+
+    $pid = us_dienst_pid();
+    if ($pid > 0) {
+        $s = us_status();
+        if (is_array($s)) {
+            $s['quelle'] = 'dienst';
+            $s['alter'] = isset($s['zeit']) ? max(0, time() - (int) $s['zeit']) : null;
+            return $s;
+        }
+        return array(
+            'entfernung' => null, 'roh' => array(), 'verworfen' => array(),
+            'quelle' => 'dienst', 'alter' => null,
+            'fehler' => 'Der Dienst laeuft (PID ' . $pid . '), hat aber noch keinen '
+                      . 'Stand geschrieben. Beim naechsten Messtakt steht hier ein Wert.',
+        );
+    }
+
     $skript = $p['bindir'] . '/us_messen.py';
     if (!is_file($skript)) {
         return array('fehler' => 'us_messen.py nicht gefunden: ' . $skript);
     }
     $out = array();
-    @exec('timeout 40 python3 ' . escapeshellarg($skript) . ' 2>&1', $out);
+    @exec('timeout ' . US_MESSEN_GRENZE . ' python3 ' . escapeshellarg($skript) . ' 2>&1', $out, $rc);
     $roh = trim(implode("\n", $out));
     $j = @json_decode($roh, true);
     if (!is_array($j)) {
+        // 124 ist der Rueckgabewert, mit dem timeout einen Abbruch meldet.
+        if ((int) $rc === 124) {
+            return array('fehler' => sprintf(
+                "Die Messung wurde nach %d Sekunden abgebrochen.\n\n"
+                . "Der Sensor antwortet nicht. Verkabelung, Adresse und "
+                . "Spannungsversorgung pruefen - der Knopf \"Sensor pruefen\" "
+                . "sagt mehr.", US_MESSEN_GRENZE));
+        }
         return array('fehler' => "Der Messlauf lieferte keine verwertbare Antwort:\n\n"
             . mb_substr($roh, 0, 800));
     }
+    $j['quelle'] = 'direkt';
     return $j;
 }
 
@@ -124,7 +179,17 @@ function us_test_ausfuehren($was)
                 return array('Jetzt messen', $j['fehler']
                     . (isset($j['hinweis']) ? "\n\n" . $j['hinweis'] : ''));
             }
-            $t = "Sensor: " . (isset($sensoren[$sensor]) ? $sensoren[$sensor] : $sensor) . "\n\n";
+            $t = "Sensor: " . (isset($sensoren[$sensor]) ? $sensoren[$sensor] : $sensor) . "\n";
+            if (isset($j['quelle']) && $j['quelle'] === 'dienst') {
+                $t .= "Herkunft: letzter Stand des laufenden Dienstes"
+                    . (isset($j['alter']) && $j['alter'] !== null
+                        ? ", " . (int) $j['alter'] . " s alt" : "")
+                    . "\n          (Waehrend der Dienst laeuft, wird nicht zusaetzlich"
+                    . " gemessen - zwei\n           Zugriffe auf denselben Sensor"
+                    . " vertragen sich nicht. Fuer eine\n           Messung von Hand"
+                    . " den Dienst im Reiter Einstellungen anhalten.)\n";
+            }
+            $t .= "\n";
             $t .= "Einzelwerte:  " . (empty($j['roh']) ? '-' : implode('  ', $j['roh'])) . "\n";
             if (!empty($j['verworfen'])) {
                 $liste = array();
@@ -218,7 +283,10 @@ function us_test_ausfuehren($was)
                 $t .= sprintf("  %-18s %s\n", $m, $da);
             }
             $t .= "\nHilfsprogramme:\n";
-            foreach (array('i2cdetect', 'pgrep', 'pkill') as $c) {
+            // pgrep und pkill standen hier, solange der Dienst darueber gesucht
+            // wurde. Seit 1.1.1 laeuft das ueber die PID-Datei - die beiden
+            // Programme werden nicht mehr gebraucht.
+            foreach (array('i2cdetect') as $c) {
                 $t .= sprintf("  %-18s %s\n", $c, trim(us_sh('command -v ' . $c)) ?: 'fehlt');
             }
             $t .= "\nGeladene I2C-Module:\n" . (us_sh('lsmod | grep -i i2c') ?: 'keine');

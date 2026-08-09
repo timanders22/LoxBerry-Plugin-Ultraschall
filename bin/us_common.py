@@ -40,11 +40,58 @@ if LOG_DIR.startswith("REPLACE"):
 
 HOME_DIR = os.environ.get("LBHOMEDIR", "/opt/loxberry")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "ultraschall.cfg")
-STATUS_FILE = "/run/shm/ultraschall_status.json"
-if not os.path.isdir("/run/shm"):
-    STATUS_FILE = "/tmp/ultraschall_status.json"
+# Eigener Unterordner auf der Ramdisk statt Dateien im Wurzelverzeichnis.
+# /run/shm gehoert allen: liegen dort "ultraschall.pid" und
+# "ultraschall_status.json" frei herum, kollidieren sie mit jedem anderen
+# Plugin, das denselben Namen waehlt, und die Rechte lassen sich nicht
+# einzeln setzen. Ein eigener Ordner mit 0755 loest beides.
+#
+# Seit 1.1.2 traegt der Ordner den PLUGIN_NAMEN und nicht mehr fest
+# "ultraschall". Dasselbe Argument eine Ebene weiter gedacht: Haengt LoxBerry
+# bei einer Zweitinstallation einen Zaehler an (ultraschall_01), teilten sich
+# sonst BEIDE Installationen status.json und dienst.pid.
+#   - status.json: die Oberflaeche der zweiten zeigte den Messwert der ersten.
+#     Zwei Sensoren, ein angezeigter Wert - und niemand sieht, dass er falsch
+#     ist.
+#   - dienst.pid: die zweite ueberschriebe die PID der ersten. Ein Stopp
+#     traefe den falschen Dienst, und der Waechter hielte einen abgestuerzten
+#     Dienst fuer laufend.
+# Bei einer einzelnen Installation aendert sich nichts: PLUGIN_NAME ist dann
+# genau "ultraschall", der Pfad bleibt derselbe wie bisher.
+RAM_DIR = ("/run/shm/" if os.path.isdir("/run/shm") else "/tmp/") + PLUGIN_NAME
+try:
+    os.makedirs(RAM_DIR, exist_ok=True)
+except OSError:
+    pass
+STATUS_FILE = os.path.join(RAM_DIR, "status.json")
+PID_FILE = os.path.join(RAM_DIR, "dienst.pid")
 
-VERSION = "1.0.0"
+# Bis 1.1.1 lagen beide Dateien eine Ebene hoeher. Alte Reste wegraeumen,
+# damit nicht zwei Staende nebeneinander liegen und die Oberflaeche den
+# falschen liest.
+for _alt in ("/run/shm/ultraschall_status.json", "/run/shm/ultraschall.pid",
+             "/tmp/ultraschall_status.json", "/tmp/ultraschall.pid"):
+    try:
+        if os.path.isfile(_alt):
+            os.unlink(_alt)
+    except OSError:
+        pass
+
+# Die PID-Datei gibt es seit 1.1.1. Vorher wurde der Dienst ueber
+# "pgrep -f ultraschall.py" gesucht und mit "pkill -f ultraschall.py"
+# beendet. Beides ist unzuverlaessig:
+#   - pgrep -f durchsucht die GANZE Befehlszeile, also auch die des
+#     Suchbefehls selbst und die jedes Editors, in dem die Datei offen ist,
+#   - pkill -f haette bei zwei Exemplaren des Plugins beide erwischt,
+#   - ps -C und killall vergleichen den comm-Namen, der bei einem Skript
+#     mit Shebang "python3" lautet - die finden gar nichts.
+# Beide Ablageorte liegen auf einer Ramdisk: eine verwaiste PID-Datei ist
+# spaetestens nach dem naechsten Neustart fort.
+
+# Muss zu plugin.cfg, release.cfg und prerelease.cfg passen. Bis 1.1.1 stand
+# hier 1.0.0 - die Zustandsdatei und jede MQTT-Meldung nannten damit eine
+# Fassung, die es so nicht mehr gab.
+VERSION = "1.1.2"
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -133,12 +180,24 @@ def konfiguration_schreiben(werte, pfad=None):
               "", "[ultraschall]"]
     for schluessel, vorgabe in VORGABEN.items():
         zeilen.append("{0}={1}".format(schluessel, werte.get(schluessel, vorgabe)))
+    # Erst daneben schreiben, dann umbenennen. Ein einfaches open(..., "w")
+    # kuerzt die Datei und fuellt sie neu; liest der Dienst genau in diesem
+    # Fenster, bekommt er eine leere oder halbe Konfiguration. os.replace ist
+    # innerhalb desselben Dateisystems unteilbar.
+    tmp = "{0}.tmp.{1}".format(pfad, os.getpid())
     try:
-        with open(pfad, "w", encoding="utf-8") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             fh.write("\n".join(zeilen) + "\n")
-        os.chmod(pfad, 0o644)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, pfad)
         return True
     except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
         return False
 
 
@@ -325,7 +384,20 @@ class HcSr04:
         wert = meter * 100.0
         # gpiozero liefert bei Zeitueberschreitung den Maximalwert - der ist
         # keine Messung, sondern heisst "nichts gehoert".
-        if wert >= self.max_m * 100.0 - 0.5:
+        #
+        # Der Abzug von 0.5 cm ist entfallen: er verwarf zusaetzlich die
+        # letzten fuenf Millimeter des Messbereichs, ohne dass es dafuer einen
+        # Grund gab.
+        #
+        # Was NICHT geht, obwohl es naheliegt: ">" statt ">=". gpiozero
+        # begrenzt in DistanceSensor._read mit
+        #     return min(1.0, distance / self._max_distance)
+        # Bei Zeitueberschreitung ist der Wert also EXAKT der Maximalwert;
+        # nachgerechnet fuer max_m 0.5/2.0/4.0/4.5 stimmt die Gleichheit auf
+        # die letzte Stelle. Mit ">" traefe die Bedingung nie zu, und ein
+        # fehlendes Echo wuerde als gueltige Messung am Bereichsende gemeldet -
+        # aus "nichts gehoert" wuerde "Gegenstand in 4 m".
+        if wert >= self.max_m * 100.0:
             return None
         return wert
 

@@ -25,6 +25,11 @@ mkdir -p "$logdir" 2>/dev/null
 
 # Der Dienst braucht keine Rootrechte: Lesen vom I2C-Bus erlaubt die Gruppe
 # i2c, die GPIO-Pins die Gruppe gpio. Beide setzt postinstall.sh.
-su loxberry -c "nohup $pluginbindir/ultraschall.py >> $log 2>&1 &" >/dev/null 2>&1
+# -s /bin/bash ausdruecklich: ist fuer loxberry keine oder eine
+# nicht-interaktive Anmeldeshell eingetragen (etwa /usr/sbin/nologin, was auf
+# abgesicherten Aufsetzungen vorkommt), fuehrt "su -c" den Befehl gar nicht
+# aus - lautlos, denn die Ausgabe geht nach /dev/null. Mit der Angabe ist es
+# gleichgueltig, was in /etc/passwd steht.
+su loxberry -s /bin/bash -c "nohup $pluginbindir/ultraschall.py >> $log 2>&1 &" >/dev/null 2>&1
 
 exit 0

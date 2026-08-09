@@ -1,7 +1,15 @@
 # Skripte muessen LF behalten. Ein CRLF in der Shebang-Zeile laesst den
-# Daemon beim Systemstart wortlos scheitern.
-*.sh text eol=lf
-*.py text eol=lf
-daemon/daemon text eol=lf
+# Daemon beim Systemstart wortlos scheitern: aus "#!/bin/bash" wird
+# "#!/bin/bash\r", und der Kernel sucht dann nach einem Programm dieses
+# Namens - "bad interpreter: No such file or directory".
+*.sh                text eol=lf
+*.py                text eol=lf
+*.php               text eol=lf
+*.cfg               text eol=lf
+*.ini               text eol=lf
+daemon/daemon       text eol=lf
 uninstall/uninstall text eol=lf
-dpkg/apt text eol=lf
+dpkg/apt            text eol=lf
+
+*.png binary
+*.svg text eol=lf

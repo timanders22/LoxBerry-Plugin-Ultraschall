@@ -1,9 +1,96 @@
 #!/bin/bash
-# Wird als Benutzer "root" ausgefuehrt.
+# Ultraschall Entfernung - uninstall
+# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+#
+# Wird von LoxBerry als root ausgefuehrt. Rueckgabewert 0 = in Ordnung,
+# 1 = Warnung (die Deinstallation laeuft trotzdem weiter).
+#
+# ===================================================================
+# ZUR PROZESSSUCHE - bitte nicht auf pkill zurueckbauen
+# ===================================================================
+#
+# Bis 1.1.0 stand hier "pkill -f ultraschall.py". Das durchsucht die ganze
+# Befehlszeile jedes Prozesses und trifft damit
+#   - einen Editor, in dem die Datei gerade offen ist,
+#   - ein zweites Exemplar des Plugins (LoxBerry haengt bei einem
+#     Namenskonflikt 01, 02 ... an den Ordnernamen an),
+#   - und bei pgrep zusaetzlich die eigene Suche.
+# "ps -C" und "killall" waeren auch nichts: die vergleichen den comm-Namen,
+# der bei einem Skript mit Shebang "python3" lautet - die finden gar nichts.
+#
+# Massgeblich ist deshalb die PID-Datei, die der Dienst selbst schreibt.
+# Zusaetzlich wird /proc argumentweise durchgesehen und der volle Pfad
+# verglichen, falls die Datei fehlt.
 
-pkill -f ultraschall.py >/dev/null 2>&1
-rm -f /run/shm/ultraschall_status.json /tmp/ultraschall_status.json
-# Rueckstaende der Originalfassung
-rm -f /tmp/ultraschall.log /tmp/ultraschall.pid
+PDIR=$3
+[ -n "$PDIR" ] || PDIR="ultraschall"
+BASE="${5:-$LBHOMEDIR}"
+[ -n "$BASE" ] && [ -d "$BASE" ] || BASE="/opt/loxberry"
 
+SKRIPT="$BASE/bin/plugins/$PDIR/ultraschall.py"
+# Der Ramdisk-Ordner traegt seit 1.1.2 den PLUGIN-Ordnernamen. Wird eine
+# Zweitinstallation (ultraschall_01) entfernt, darf sie weder die PID-Datei
+# noch den Status der ERSTEN anfassen.
+if [ -d /run/shm ]; then RAMDIR="/run/shm/$PDIR"; else RAMDIR="/tmp/$PDIR"; fi
+PIDDATEI="$RAMDIR/dienst.pid"
+STATUS="$RAMDIR/status.json"
+
+ist_unser_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | head -2 | grep -qxF "$SKRIPT"
+}
+
+beenden() {
+    kill "$1" 2>/dev/null
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        kill -0 "$1" 2>/dev/null || return 0
+        sleep 1
+    done
+    kill -9 "$1" 2>/dev/null
+    sleep 1
+}
+
+GEFUNDEN=0
+if [ -f "$PIDDATEI" ]; then
+    P=$(cat "$PIDDATEI" 2>/dev/null)
+    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null && ist_unser_dienst "$P"; then
+        beenden "$P"; GEFUNDEN=1
+        echo "<OK> Messdienst beendet (PID $P)."
+    fi
+fi
+for D in /proc/[0-9]*; do
+    P=$(basename "$D")
+    if ist_unser_dienst "$P" && kill -0 "$P" 2>/dev/null; then
+        beenden "$P"; GEFUNDEN=1
+        echo "<OK> Weiterer Messdienst beendet (PID $P)."
+    fi
+done
+[ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Messdienst."
+
+rm -f "$PIDDATEI" "$STATUS"
+# Rueckstaende der Originalfassung: sie schrieb Protokoll und PID nach /tmp.
+rm -f /tmp/ultraschall.log /tmp/ultraschall.pid /tmp/ultraschall_status.json
+
+# Ramdisk-Ordner DIESER Installation (seit 1.1.2 mit dem Ordnernamen) und die
+# Dateien, die bis 1.1.1 eine Ebene hoeher lagen. Bewusst nicht "ultraschall"
+# fest: sonst raeumte das Entfernen einer Zweitinstallation der ersten den
+# Ordner unter den Fuessen weg.
+rm -rf "$RAMDIR" 2>/dev/null
+rm -f /run/shm/ultraschall_status.json /run/shm/ultraschall.pid 2>/dev/null
+
+# Sicherungsordner eines abgebrochenen Upgrades. Der Rueckfallweg von
+# preupgrade.sh legt ihn unter /tmp an; bricht die Installation zwischen
+# preupgrade und postupgrade ab, bleibt er liegen.
+rm -rf /tmp/ultraschall.SAVE "/tmp/${PDIR}.SAVE" 2>/dev/null
+
+# Die eigene modules-load.d-Datei. In /etc/modules wird NICHT geschnitten:
+# dort koennte der Eintrag von jemand anderem stammen.
+if [ -f /etc/modules-load.d/ultraschall.conf ]; then
+    rm -f /etc/modules-load.d/ultraschall.conf \
+        && echo "<OK> /etc/modules-load.d/ultraschall.conf entfernt."
+fi
+
+echo "<INFO> Der Dienst sendet MQTT mit gesetztem Retain-Merker."
+echo "<INFO> Die Themen unter <praefix>/ bleiben deshalb im Broker stehen und"
+echo "<INFO> sind dort von Hand zu loeschen (System -> MQTT Gateway)."
 exit 0
