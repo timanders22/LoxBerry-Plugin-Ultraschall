@@ -275,7 +275,7 @@ Nachgeprüft in dieser Reihenfolge:
   weit.
 - **`general.cfg` gibt es nicht mehr.** Danach liest das Skript die
   Miniserver-Adresse mit `configparser` aus
-  `/opt/loxberry/config/system/general.cfg` und greift auf
+  `<LoxBerry-Wurzel>/config/system/general.cfg` und greift auf
   `loxberryconfig.get(miniservername, 'IPADDRESS')` zu. Seit LoxBerry 2 heißt
   die Datei `general.json` und ist JSON; die alte gibt es nicht mehr.
   `configparser` liest eine fehlende Datei kommentarlos als leer — der Zugriff
