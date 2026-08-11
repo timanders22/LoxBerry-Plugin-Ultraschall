@@ -90,4 +90,22 @@ for PIDDATEI in "$RAMDIR/dienst.pid" /run/shm/ultraschall.pid /tmp/ultraschall.p
     rm -f "$PIDDATEI"
 done
 
+
+# ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
+# Zweitschrift NEBEN den Konfigurationsordner, zusaetzlich zur bisherigen
+# Sicherung. Grund: der Installer kopiert config/* aus dem Archiv ueber
+# config/plugins/<ordner> (plugininstall.pl Zeile 899, cp -r ohne -n) und
+# ueberschreibt dabei die Datei des Nutzers. Bisher haing die Rettung allein
+# an postupgrade.sh. Laeuft das aus irgendeinem Grund nicht durch, greift
+# jetzt postinstall.sh auf diese Zweitschrift zu - sie liegt ausserhalb des
+# ueberschriebenen Ordners und wird vom Installer nicht angefasst.
+NETZ_BASE="${5:-$LBHOMEDIR}"
+NETZ_PDIR="${3:-ultraschall}"
+NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
+if [ -s "$NETZ_CFG/ultraschall.cfg" ]; then
+    cp -p "$NETZ_CFG/ultraschall.cfg" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.ultraschall.cfg" 2>/dev/null \
+        && chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.ultraschall.cfg" 2>/dev/null
+fi
+echo "<INFO> Zweitschrift der Einstellungen angelegt."
+
 exit 0
