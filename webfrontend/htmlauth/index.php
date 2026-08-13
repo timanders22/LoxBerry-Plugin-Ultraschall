@@ -484,6 +484,7 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_1_SENSOR_EINRICHTEN'); ?></b><br><br>
 <?php echo us_t('TEXT.IM_REITER'); ?> <i><?php echo us_t('REITER.EINSTELLUNGEN'); ?></i><?php echo us_t('TEXT.DANN_IM_REITER'); ?> <i><?php echo us_t('REITER.TEST'); ?></i> mit <i><?php echo us_t('TEXT.JETZT_MESSEN'); ?></i> <?php echo us_t('TEXT.PRFEN_OB_EIN_PLAUSIBLER_WERT_HERAU'); ?></div>
 <div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_2_ABO_IM_MQTT_GATEWAY_EINT'); ?></b><br><br>
+<?php if (!function_exists('us_hs_autostart')) { function us_hs_autostart() { $h = getenv('LBHOMEDIR') ?: '/opt/loxberry'; $g = $h . '/config/system/general.json'; if (!is_file($g)) { return null; } $j = json_decode((string) @file_get_contents($g), true); if (!is_array($j) || !isset($j['Mqtt'])) { return null; } return !empty($j['Mqtt']['Gatewayautostart']); } } if (us_hs_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo us_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
 <b><?php echo us_t('TEXT.OHNE_DIESEN_EINTRAG_KOMMT_AM_MINIS'); ?></b> <?php echo us_t('TEXT.EINZUTRAGEN_UNTER'); ?>
 <i><?php echo us_t('TEXT.SYSTEM_EINSTELLUNGEN_MQTT_GATEWAY_'); ?></i>:
 <div class="sm-mono" style="background:#f4f4f4;border:1px solid #ccc;padding:8px;margin-top:6px;"><?= us_e($us_praefix) ?>/#</div></div>
