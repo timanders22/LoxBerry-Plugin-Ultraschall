@@ -207,6 +207,54 @@ $us_frame = class_exists('LBWeb', false);
 if ($us_frame) {
     LBWeb::lbheader(us_t('TEXT.TITEL'), 'https://wiki.loxberry.de/plugins/ultraschall_entfernung/start', 'help.html');
 }
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['us_sichern'])) {
+    $us_js = json_encode(us_cfg(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($us_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="ultraschall_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $us_js;
+        exit;
+    }
+    $us_error = us_t('TEXT.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['us_zurueck'])) {
+    if (!isset($_FILES['us_sicherung']) || !is_array($_FILES['us_sicherung'])
+        || !isset($_FILES['us_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['us_sicherung']['tmp_name'])) {
+        $us_error = us_t('TEXT.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['us_sicherung']['size'] > 262144) {
+        $us_error = us_t('TEXT.SICH_ZU_GROSS');
+    } else {
+        list($us_neu, $us_mangel, $us_n) = us_sicherung_lesen(
+            (string) @file_get_contents($_FILES['us_sicherung']['tmp_name']));
+        if ($us_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $us_error = us_t('TEXT.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $us_mangel);
+        } elseif (us_config_write($us_neu)) {
+            $us_saved = true; $us_hinweis = sprintf(us_t('TEXT.SICH_UEBERNOMMEN'), $us_n);
+        } else {
+            $us_error = us_t('TEXT.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 .sm-wrap { max-width: 980px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
@@ -490,7 +538,7 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <?php echo us_t('TEXT.IM_REITER'); ?> <i><?php echo us_t('REITER.EINSTELLUNGEN'); ?></i><?php echo us_t('TEXT.DANN_IM_REITER'); ?> <i><?php echo us_t('REITER.TEST'); ?></i> mit <i><?php echo us_t('TEXT.JETZT_MESSEN'); ?></i> <?php echo us_t('TEXT.PRFEN_OB_EIN_PLAUSIBLER_WERT_HERAU'); ?></div>
 <div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_2_ABO_IM_MQTT_GATEWAY_EINT'); ?></b><br><br>
 <?php if (!function_exists('us_hs_autostart')) { function us_hs_autostart() { $h = getenv('LBHOMEDIR') ?: '/opt/loxberry'; $g = $h . '/config/system/general.json'; if (!is_file($g)) { return null; } $j = json_decode((string) @file_get_contents($g), true); if (!is_array($j) || !isset($j['Mqtt'])) { return null; } return !empty($j['Mqtt']['Gatewayautostart']); } } if (us_hs_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo us_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
-<b><?php echo us_t('TEXT.OHNE_DIESEN_EINTRAG_KOMMT_AM_MINIS'); ?></b> <?php echo us_t('TEXT.EINZUTRAGEN_UNTER'); ?>
+<b><?php echo us_abo_text(); ?></b> <?php echo us_t('TEXT.EINZUTRAGEN_UNTER'); ?>
 <i><?php echo us_t('TEXT.SYSTEM_EINSTELLUNGEN_MQTT_GATEWAY_'); ?></i>:
 <div class="sm-mono" style="background:#f4f4f4;border:1px solid #ccc;padding:8px;margin-top:6px;"><?= us_e($us_praefix) ?>/#</div></div>
 <div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_3_VORLAGE_EINLESEN'); ?></b><br><br>
@@ -627,6 +675,25 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <?php } ?>
 </div>
 
+
+<h2><?= us_t('TEXT.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= us_t('TEXT.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= us_t('TEXT.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="us_sichern" value="1"><?= us_t('TEXT.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="file" name="us_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="us_zurueck" value="1"><?= us_t('TEXT.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 <script>
 (function () {
