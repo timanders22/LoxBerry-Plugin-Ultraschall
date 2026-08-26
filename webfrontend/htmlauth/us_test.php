@@ -6,7 +6,35 @@
  * Oberflaeche maskiert ausgegeben, hier also bewusst als Klartext erzeugt.
  */
 
-require_once __DIR__ . '/us_lib.php';
+/* Die Bibliothek liegt seit 1.2.0 in webfrontend/html/ - neben dem
+ * Endpunkt, der sie braucht. Installiert liegen die beiden Baeume GETRENNT:
+ *
+ *     <home>/webfrontend/htmlauth/plugins/<ordner>/index.php
+ *     <home>/webfrontend/html/plugins/<ordner>/us_lib.php
+ *
+ * Ein '../html/us_lib.php' von hier aus trifft deshalb nur im entpackten
+ * Archiv; installiert zeigt es auf htmlauth/plugins/html/, das es nicht gibt,
+ * und die Seite endet mit einem fatalen Fehler. Diese Klasse hat in diesem
+ * Haus schon fuenf Linien erwischt. Die Kandidatenliste deckt beide Lagen ab
+ * und kommt ohne LBPHTMLDIR aus - das gibt es erst, NACHDEM
+ * loxberry_system.php geladen ist, und das ist hier noch nicht der Fall. */
+$us_lib_gefunden = false;
+foreach (array(
+    dirname(dirname(__DIR__)) . '/html/plugins/' . basename(__DIR__) . '/us_lib.php',
+    dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/us_lib.php',
+    dirname(__DIR__) . '/html/us_lib.php',
+) as $us_kandidat) {
+    if (is_file($us_kandidat)) {
+        require_once $us_kandidat;
+        $us_lib_gefunden = true;
+        break;
+    }
+}
+if (!$us_lib_gefunden) {
+    echo '<p><b>Fehler:</b> us_lib.php nicht gefunden. Das Plugin ist '
+       . 'unvollstaendig installiert.</p>';
+    exit;
+}
 
 function us_sh($cmd)
 {
@@ -295,10 +323,35 @@ function us_test_ausfuehren($was)
         case 'mqttinfo':
             $broker = us_mqtt_broker();
             $t = "Broker: " . ($broker !== '' ? $broker : 'kein MQTT-Gateway in general.json gefunden') . "\n";
-            $t .= "Themenpraefix: " . us_cfg($cfg, 'themenpraefix', 'ultraschall') . "\n\n";
+            $t .= "Themenpraefix: " . us_cfg($cfg, 'themenpraefix', 'ultraschall') . "\n";
+            /* Die FASSUNG des Gateways entscheidet, was der Anwender tun muss.
+             * Drei Ausgaenge: ist sie nicht lesbar, werden BEIDE Faelle genannt
+             * statt einer behauptet - einen von beiden zu behaupten waere fuer
+             * die Haelfte der Anlagen falsch. */
+            $fassung = us_gateway_fassung();
+            $t .= "Gateway-Fassung: " . ($fassung > 0 ? 'V' . $fassung : 'nicht feststellbar') . "\n\n";
+            if ($fassung === 1) {
+                $t .= "Fassung 1: das Abo muss von Hand eingetragen werden, unter\n"
+                    . "System -> MQTT Gateway -> Abonnements, Thema <praefix>/#.\n"
+                    . "Ohne diesen Eintrag kommt am Miniserver nichts an.\n\n";
+            } elseif ($fassung >= 2) {
+                $t .= "Fassung 2 und neuer: einzutragen ist nichts. Die Themengruppe\n"
+                    . "erscheint von selbst in den Abonnements; dort werden die\n"
+                    . "gewuenschten Datenpunkte einzeln angehakt.\n\n";
+            } else {
+                $t .= "Welche Fassung das Gateway hat, liess sich nicht feststellen.\n"
+                    . "Deshalb beide Faelle: Fassung 1 verlangt den Abo-Eintrag von\n"
+                    . "Hand, ab Fassung 2 ist nichts einzutragen.\n\n";
+            }
             if ($broker === '') {
-                $t .= "Ohne MQTT-Gateway kann das Plugin nichts veroeffentlichen.\n"
-                    . "Das Gateway ist ein eigenes Plugin und muss eingerichtet sein.\n\n";
+                /* Das Gateway ist KEIN Plugin. Es ist seit LoxBerry 3
+                 * Bestandteil des Systems - hier stand bis 1.1.11 das
+                 * Gegenteil, und der Satz schickte den Anwender in die
+                 * Plugin-Verwaltung, wo er nichts findet. */
+                $t .= "Ohne eingerichtetes MQTT-Gateway kann das Plugin nichts\n"
+                    . "veroeffentlichen. Das Gateway ist KEIN Plugin, sondern seit\n"
+                    . "LoxBerry 3 Bestandteil des Systems - einzurichten unter\n"
+                    . "System -> MQTT Gateway.\n\n";
             }
             $t .= "Themen, die der Dienst setzt (alle retained):\n\n";
             $praefix = us_cfg($cfg, 'themenpraefix', 'ultraschall');

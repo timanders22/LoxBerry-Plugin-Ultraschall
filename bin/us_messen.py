@@ -18,6 +18,16 @@ import us_common as gem   # noqa: E402
 
 
 def main():
+    # Ohne die gemeinsame Datenquelle gibt es keine Vorgaben und keine
+    # Grenzen - dann wird gemeldet statt gemessen.
+    if not gem.VORGABEN:
+        print(json.dumps({
+            "entfernung": None, "roh": [], "verworfen": [],
+            "fehler": "Vorgaben nicht lesbar: " + gem.DATEN_FEHLER,
+            "hinweis": "bin/us_vorgaben.json fehlt - das Plugin ist "
+                       "unvollstaendig installiert.",
+        }, ensure_ascii=False))
+        return
     cfg, _alt = gem.konfiguration_lesen()
     try:
         ergebnis = gem.messen(cfg)

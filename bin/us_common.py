@@ -108,38 +108,62 @@ for _alt in ("/run/shm/ultraschall_status.json", "/run/shm/ultraschall.pid",
 # Beide Ablageorte liegen auf einer Ramdisk: eine verwaiste PID-Datei ist
 # spaetestens nach dem naechsten Neustart fort.
 
-# Muss zu plugin.cfg, release.cfg und prerelease.cfg passen. Bis 1.1.1 stand
-# hier 1.0.0 - die Zustandsdatei und jede MQTT-Meldung nannten damit eine
-# Fassung, die es so nicht mehr gab.
-VERSION = "1.1.2"
+# Muss zu plugin.cfg, release.cfg und prerelease.cfg passen.
+#
+# ZWEIMAL IST DAS SCHON AUSEINANDERGELAUFEN: bis 1.1.1 stand hier 1.0.0,
+# und von 1.1.2 bis 1.1.11 blieb es auf 1.1.2 stehen - neun Freigaben lang.
+# Die Zustandsdatei und die erste Protokollzeile jedes Starts nannten damit
+# eine Fassung, die es nicht mehr gibt. Werkzeuge/fassung_setzen.py setzt
+# alle Stellen auf einmal; wer die Nummer von Hand aendert, vergisst diese.
+VERSION = "1.2.0"
 
 # ---------------------------------------------------------------------------
 # Konfiguration
 # ---------------------------------------------------------------------------
 
-VORGABEN = {
-    "enabled":        "0",
-    "sensor":         "srf02",      # srf02 | hcsr04
-    "i2c_bus":        "1",
-    "i2c_adresse":    "0x70",
-    "gpio_trigger":   "23",
-    "gpio_echo":      "24",
-    "messungen":      "5",
-    "messabstand":    "0.2",
-    "min_cm":         "3",
-    "max_cm":         "400",
-    "offset_cm":      "0",
-    "leer_cm":        "",           # Abstand bei leerem Behaelter
-    "voll_cm":        "",           # Abstand bei vollem Behaelter
-    "volumen_liter":  "",
-    "intervall":      "60",
-    "aktualisierung": "300",
-    "themenpraefix":  "ultraschall",
-    "mqtt":           "1",
-    "udp":            "0",
-    "udp_miniserver": "1",
-    "udp_port":       "",
-}
+# ---------------------------------------------------------------------------
+# Vorgaben und Feldtabelle - GEMEINSAME Datei mit der PHP-Seite
+# ---------------------------------------------------------------------------
+#
+# Bis 1.1.12 stand hier eine eigene Liste mit denselben Schluesseln wie in
+# webfrontend/html/us_lib.php. Ueber die Sprachgrenze hinweg gibt es keine
+# gemeinsame Funktion - also eine gemeinsame DATEI. Bei Gardena bedeutete
+# derselbe fehlende Schluessel in der Oberflaeche "an" und im Dienst "aus",
+# und gemerkt hat es niemand.
+#
+# WICHTIG: hier wird NICHT geworfen. Was auf Modulebene steht, ist keine
+# Funktion, sondern eine Zuendschnur - ein Fehler dort reisst den Import mit,
+# und damit den Dienst, den Einmalabruf und den Knopf im Reiter Test
+# zugleich. Bei APC-UPS hat genau das eine Fassung lang jeden Start
+# verhindert, ohne dass eine Zeile Arbeit gelaufen waere. Der Aufrufer prueft
+# DATEN_FEHLER und entscheidet.
+
+VORGABEN_DATEI = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "us_vorgaben.json")
+
+
+def _daten_lesen():
+    try:
+        with open(VORGABEN_DATEI, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+    except OSError as fehler:
+        return None, "{0} ist nicht lesbar: {1}".format(VORGABEN_DATEI, fehler)
+    except ValueError as fehler:
+        return None, "{0} ist kein gueltiges JSON: {1}".format(VORGABEN_DATEI, fehler)
+    if not isinstance(d, dict) or not isinstance(d.get("vorgaben"), dict) \
+            or not isinstance(d.get("felder"), dict):
+        return None, "{0} hat nicht die erwartete Gestalt".format(VORGABEN_DATEI)
+    return d, ""
+
+
+DATEN, DATEN_FEHLER = _daten_lesen()
+VORGABEN = dict(DATEN["vorgaben"]) if DATEN else {}
+FELDER = dict(DATEN["felder"]) if DATEN else {}
+
+
+def felder_zeile():
+    """Nur die Felder, die in die Statuszeile des Endpunkts gehoeren."""
+    return dict((k, v) for k, v in FELDER.items() if v.get("zeile"))
 
 
 def konfiguration_lesen(pfad=None):
@@ -190,6 +214,11 @@ def konfiguration_lesen(pfad=None):
 
 
 def konfiguration_schreiben(werte, pfad=None):
+    # Ohne Vorgaben wird NICHT geschrieben - eine aus dem Nichts gebaute
+    # Konfiguration waere die zweite Wahrheit, gegen die es die
+    # gemeinsame Datei gibt.
+    if not VORGABEN:
+        return False
     pfad = pfad or CONFIG_FILE
     try:
         os.makedirs(os.path.dirname(pfad), exist_ok=True)

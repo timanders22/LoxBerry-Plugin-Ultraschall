@@ -33,13 +33,55 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import us_common as gem   # noqa: E402
 
+LOGDATEI = os.path.join(gem.LOG_DIR, "ultraschall.log")
+LOG_GRENZE = 512000      # ab 500 kB wird gekappt
+LOG_REST = 200           # so viele Zeilen bleiben stehen
+
+
+def log_kappen(pfad=None):
+    """Ab 500 kB bleiben die letzten 200 Zeilen stehen.
+
+    log/plugins liegt auf einer Ramdisk. Eine unbegrenzt wachsende Datei
+    frisst dort ARBEITSSPEICHER, nicht Plattenplatz - bei einem Messtakt
+    von 60 s sind das 1440 Zeilen am Tag.
+
+    Gekappt wird IN der Datei, nicht durch Umbenennen: daemon/daemon und
+    us_dienst('start') haengen mit ">>" an dieselbe Datei an. Ein solcher
+    Schreiber setzt immer ans aktuelle Ende auf und vertraegt das Kuerzen;
+    ein Umbenennen liesse ihn dagegen in der weggeraeumten Datei
+    weiterschreiben - der Platz bliebe belegt, ohne dass ihn jemand sieht.
+    """
+    pfad = pfad or LOGDATEI
+    try:
+        if not os.path.isfile(pfad) or os.path.getsize(pfad) <= LOG_GRENZE:
+            return False
+        with open(pfad, "r", encoding="utf-8", errors="replace") as fh:
+            rest = fh.readlines()[-LOG_REST:]
+        with open(pfad, "w", encoding="utf-8") as fh:
+            fh.writelines(rest)
+        return True
+    except OSError:
+        return False
+
+
 _handlers = []
 try:
     os.makedirs(gem.LOG_DIR, exist_ok=True)
-    _handlers.append(logging.FileHandler(os.path.join(gem.LOG_DIR, "ultraschall.log")))
+    log_kappen()
+    _handlers.append(logging.FileHandler(LOGDATEI))
 except OSError:
     pass
-_handlers.append(logging.StreamHandler(sys.stdout))
+# KEIN zweiter Kanal auf stdout.
+#
+# daemon/daemon und us_dienst('start') leiten stdout mit ">>" in GENAU
+# DIESE Datei um. Bis 1.1.11 stand deshalb jede Zeile zweimal darin.
+# Der Umleitung bleibt, wofuer sie da ist: einen Absturz aufzufangen,
+# bevor das Protokoll ueberhaupt steht.
+#
+# Nur wenn sich die Datei nicht anlegen laesst, ist stdout die letzte
+# Zuflucht - sonst saehe niemand irgendetwas.
+if not _handlers:
+    _handlers.append(logging.StreamHandler(sys.stdout))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -159,6 +201,17 @@ class Dienst:
         self.letzter_stand = {}
         self.config_mtime = self._mtime()
         self._gemeldet = {}
+        # Umlaufender Zaehler, 0..999. -1 heisst "noch nie gelaufen";
+        # 0 waere ein gueltiger Stand und damit nicht zu unterscheiden.
+        #
+        # Warum ein Zaehler UND ein Zeitstempel: ein Raspberry Pi hat
+        # keine Echtzeituhr. Nach dem Hochfahren steht er in der
+        # Vergangenheit, und sobald NTP greift, springt die Zeit. Springt
+        # sie nach vorn, wird ein gerechnetes Alter negativ und meldet
+        # nach max(0, ...) "gerade eben gemessen". Ein umlaufender Zaehler
+        # ist davon unabhaengig - in Loxone genuegt ein Baustein, der auf
+        # "unveraendert seit N Minuten" schaut.
+        self.zaehler = -1
 
     def _einmal(self, schluessel, text, stufe="error", wieder_nach=3600):
         """Dieselbe Meldung nicht bei jedem Durchgang wiederholen.
@@ -200,6 +253,7 @@ class Dienst:
             log.warning("Zustandsdatei nicht schreibbar: %s", fehler)
 
     def durchgang(self, erzwingen=False):
+        self.zaehler = 0 if self.zaehler < 0 else (self.zaehler + 1) % 1000
         ergebnis = gem.messen(self.cfg, self.sensor)
         entfernung = ergebnis["entfernung"]
         prozent, liter = gem.fuellstand(self.cfg, entfernung)
@@ -228,8 +282,24 @@ class Dienst:
                 else:
                     log.warning("UDP fehlgeschlagen: %s", wohin)
 
+        # DER HERZSCHLAG. Er geht in JEDEM Durchgang hinaus, auch wenn sich
+        # sonst nichts geaendert hat - der Doppelt-senden-Filter wird fuer
+        # diese drei Themen uebergangen. Sonst waere ausgerechnet der
+        # Zeitstempel der aelteste Wert im Broker.
+        #
+        # Ohne ihn ist ein toter Dienst von einem ruhigen Behaelter nicht zu
+        # unterscheiden: die letzten Werte stehen retained im Broker, der
+        # virtuelle Eingang behaelt seinen Stand, und in der App sieht alles
+        # normal aus. Das Last-Will traegt nur, wenn der Prozess STIRBT -
+        # haengt er, bleibt die Verbindung stehen und online auf 1.
+        jetzt = int(time.time())
+        self._senden("ts", jetzt, True)
+        self._senden("zaehler", self.zaehler, True)
+        self._senden("online", "1", True)
+
         self.zustand_schreiben({
-            "zeit": int(time.time()),
+            "zeit": jetzt,
+            "zaehler": self.zaehler,
             "version": gem.VERSION,
             "sensor": self.cfg.get("sensor", "srf02"),
             "entfernung": entfernung,
@@ -286,6 +356,9 @@ class Dienst:
                     if erzwingen:
                         letzte_vollmeldung = time.time()
 
+            # Einmal je Takt nachsehen, ob das Protokoll zu gross wird.
+            log_kappen()
+
             if self._mtime() != self.config_mtime:
                 log.info("Konfiguration geändert - wird neu eingelesen")
                 self.config_mtime = self._mtime()
@@ -295,6 +368,26 @@ class Dienst:
                                  or neu.get("i2c_adresse") != self.cfg.get("i2c_adresse")
                                  or neu.get("gpio_trigger") != self.cfg.get("gpio_trigger")
                                  or neu.get("gpio_echo") != self.cfg.get("gpio_echo"))
+                # Praefix und MQTT-Zustand MITZIEHEN.
+                #
+                # Bis 1.1.12 wurden hier nur cfg, Takt und Vollmeldung neu
+                # gesetzt; self.praefix und self.mqtt blieben, wie sie beim
+                # Start waren. Gemessen mit Attrappe: Praefix in der Datei
+                # geaendert, Dienst liest neu ein, misst weiter - und
+                # veroeffentlicht ueber den ganzen Lauf ausschliesslich unter
+                # dem ALTEN Praefix. Sechs Sendungen, keine einzige unter dem
+                # neuen. Wer eine Sicherung mit anderem Praefix zurueckspielt,
+                # bekam damit ein Plugin, das ins Leere sendet.
+                mqtt_neu = (neu.get("themenpraefix") or "ultraschall")
+                mqtt_an = neu.get("mqtt", "1") == "1"
+                if mqtt_neu != self.praefix or mqtt_an != (self.mqtt.client is not None):
+                    log.info("MQTT wird neu aufgebaut (Praefix %s -> %s, MQTT %s)",
+                             self.praefix, mqtt_neu, "ein" if mqtt_an else "aus")
+                    self.mqtt.stop()
+                    self.praefix = mqtt_neu
+                    self.mqtt = Mqtt(self.praefix)
+                    if mqtt_an:
+                        self.mqtt.start()
                 self.cfg = neu
                 self.letzter_stand.clear()
                 if sensorwechsel and self.sensor is not None:
@@ -352,6 +445,23 @@ def pid_entfernen():
 
 
 def main():
+    # Ein unbekannter Schalter darf nicht den Dienst starten.
+    #
+    # "ultraschall.py --selbstest" (mit Tippfehler) fiel bis 1.1.12 still
+    # durch und landete in der Dienstschleife. Wer ein Werkzeug von Hand
+    # aufruft, soll bei einem Vertipper eine Antwort sehen, keinen Prozess.
+    for a in sys.argv[1:]:
+        if not str(a).startswith("--") or a not in ("--einmal",):
+            sys.stderr.write("Unbekannter Schalter: {0}\n".format(a))
+            sys.stderr.write("Bekannt ist nur --einmal.\n")
+            sys.exit(2)
+
+    # Ohne die gemeinsame Datenquelle wird nicht geraten, sondern abgebrochen.
+    if not gem.VORGABEN:
+        log.error("Vorgaben nicht lesbar: %s", gem.DATEN_FEHLER)
+        log.error("Das Plugin ist unvollstaendig installiert. bin/us_vorgaben.json fehlt.")
+        sys.exit(1)
+
     dienst = Dienst()
 
     def beenden(signum, rahmen):   # noqa: ARG001

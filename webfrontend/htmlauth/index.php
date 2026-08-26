@@ -13,7 +13,35 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 ini_set('display_errors', '1');
 
-require_once __DIR__ . '/us_lib.php';
+/* Die Bibliothek liegt seit 1.2.0 in webfrontend/html/ - neben dem
+ * Endpunkt, der sie braucht. Installiert liegen die beiden Baeume GETRENNT:
+ *
+ *     <home>/webfrontend/htmlauth/plugins/<ordner>/index.php
+ *     <home>/webfrontend/html/plugins/<ordner>/us_lib.php
+ *
+ * Ein '../html/us_lib.php' von hier aus trifft deshalb nur im entpackten
+ * Archiv; installiert zeigt es auf htmlauth/plugins/html/, das es nicht gibt,
+ * und die Seite endet mit einem fatalen Fehler. Diese Klasse hat in diesem
+ * Haus schon fuenf Linien erwischt. Die Kandidatenliste deckt beide Lagen ab
+ * und kommt ohne LBPHTMLDIR aus - das gibt es erst, NACHDEM
+ * loxberry_system.php geladen ist, und das ist hier noch nicht der Fall. */
+$us_lib_gefunden = false;
+foreach (array(
+    dirname(dirname(__DIR__)) . '/html/plugins/' . basename(__DIR__) . '/us_lib.php',
+    dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/us_lib.php',
+    dirname(__DIR__) . '/html/us_lib.php',
+) as $us_kandidat) {
+    if (is_file($us_kandidat)) {
+        require_once $us_kandidat;
+        $us_lib_gefunden = true;
+        break;
+    }
+}
+if (!$us_lib_gefunden) {
+    echo '<p><b>Fehler:</b> us_lib.php nicht gefunden. Das Plugin ist '
+       . 'unvollstaendig installiert.</p>';
+    exit;
+}
 
 $us_p = us_paths();
 if ($us_p['home']) {
@@ -27,24 +55,73 @@ if ($us_p['home']) {
 $us_saved = false;
 $us_error = '';
 $us_hinweis = '';
-// Der Reiter kommt aus einem abgesendeten Formular (activetab) oder aus der
-// Adresse (?tab=...). Letzteres brauchen die Reiter, seit sie echte Verweise
-// sind - siehe die Reiterleiste weiter unten.
+
+/* Die Konfiguration wird beim Aufruf der OBERFLAECHE vervollstaendigt - und
+ * nur hier. Der Endpunkt im unangemeldeten Bereich ruft us_config_read(false)
+ * und legt nichts an; wer sich nicht ausweisen kann, hinterlaesst auch nichts
+ * Harmloses. Beim ersten Mal entsteht dabei das Aktionstoken. */
+list($us_cfg, $us_altformat, $us_lage) = us_config_read(true);
+
+/* ============ WACHPOSTEN gegen fremde Absender ============
+ *
+ * htmlauth schuetzt gegen den unangemeldeten Aufruf - NICHT dagegen, dass der
+ * Browser eines angemeldeten Bedieners ein Formular abschickt, das auf einer
+ * fremden Seite steht. Der Browser schickt die hinterlegten Zugangsdaten bei
+ * einer Anfrage von aussen mit. Ausloesbar waeren sonst: Dienst anhalten,
+ * Dienst neu starten, einen Kalibrierpunkt schreiben, eine untergeschobene
+ * Sicherung einspielen und das Aktionstoken neu wuerfeln - Letzteres macht
+ * JEDE Adresse im Miniserver ungueltig.
+ *
+ * Geprueft wird an EINER Stelle vor allen Handlern, und bei Fehlschlag wird
+ * $_POST bis auf den Reiter GELEERT. Das ist mit Absicht gruendlicher als
+ * eine Abfrage vor jedem Handler: der naechste Handler, den jemand ergaenzt,
+ * ist damit von selbst mitgeschuetzt. Ein Schutz, den man beim Erweitern
+ * vergessen kann, ist keiner.
+ *
+ * Fail closed: ohne hinterlegtes Aktionstoken gibt es nichts zu vergleichen,
+ * und hash_equals('', '') waere wahr. */
+$us_ist_post = ($_SERVER['REQUEST_METHOD'] === 'POST');
+if ($us_ist_post) {
+    $us_fmt_soll = us_formtoken($us_cfg);
+    $us_fmt_ist = (isset($_POST['formtoken']) && is_string($_POST['formtoken']))
+        ? $_POST['formtoken'] : '';
+    if ($us_fmt_soll === '' || !hash_equals($us_fmt_soll, $us_fmt_ist)) {
+        $us_behalten = (isset($_POST['activetab']) && is_string($_POST['activetab']))
+            ? $_POST['activetab'] : null;
+        $_POST = array();
+        if ($us_behalten !== null) {
+            $_POST['activetab'] = $us_behalten;
+        }
+        $us_ist_post = false;
+        // Ein Formular, das wortlos nichts tut, schickt den Anwender auf die
+        // Suche nach einem Fehler, den es nicht gibt.
+        $us_error = us_t('FEHLER.FORMULAR_FREMD');
+    }
+}
+
+/* Die Reiterwahl steht NACH dem Wachposten. Sonst uebernimmt sie das
+ * activetab eines abgewiesenen POST, und ein fremdes Formular koennte
+ * wenigstens noch den Reiter umschalten. */
 $us_wunsch = isset($_POST['activetab']) ? (string) $_POST['activetab']
     : (isset($_GET['tab']) ? 'tab-' . (string) $_GET['tab'] : '');
-/* EINE Quelle fuer Reihenfolge, Positivliste und Beschriftung. Die Namen
- * standen bis 1.1.1 an drei Stellen: in diesem Muster, im Feld $us_reiter
- * und in den Flaechen-ids. Wer einen Reiter ergaenzt und eine davon
- * vergisst, bekommt keinen Fehler, sondern eine Seite, die nach jedem
- * Absenden auf Einstellungen zurueckspringt. */
-$us_reiter_ids = array('settings', 'loxone', 'test', 'log');
-$us_tab = preg_match('/^tab-(' . implode('|', $us_reiter_ids) . ')$/', $us_wunsch)
-    ? $us_wunsch : 'tab-' . $us_reiter_ids[0];
-
-list($us_cfg, $us_altformat) = us_config_read();
+/* Die Positivliste steht AUSGESCHRIEBEN da, nicht gerechnet.
+ *
+ * hausstandard_pruefen.py sucht sie als Literal; eine mit implode()
+ * zusammengesetzte Fassung steht im Quelltext in keiner der beiden Formen,
+ * die es kennt, und die Spalte meldet dann "nicht gemessen". Ein Strich ist
+ * ausdruecklich kein Haken.
+ *
+ * Dass die drei Stellen - diese Liste, die Leiste weiter unten und die id der
+ * Flaechen - trotzdem nicht auseinanderlaufen koennen, misst der Reiter Test
+ * nach. Ausgeschrieben UND nachgemessen, nicht ausgeschrieben und gehofft.
+ *
+ * Fehlt ein Name hier, ist der Reiter sichtbar und anklickbar - aber nach
+ * jedem Absenden eines Formulars springt die Seite auf Einstellungen zurueck. */
+$us_reiter_liste = array('tab-settings', 'tab-mqtt', 'tab-loxone', 'tab-test', 'tab-log');
+$us_tab = in_array($us_wunsch, $us_reiter_liste, true) ? $us_wunsch : $us_reiter_liste[0];
 
 /* ============ Loxone-Vorlage herunterladen ============ */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['download'])) {
+if ($us_ist_post && isset($_POST['download'])) {
     $art = (string) $_POST['download'];
     if ($art === 'udp_in' && trim(us_roh($us_cfg, 'udp_port')) === '') {
         $us_error = us_t('FEHLER.UDP_VORLAGE_PORT');
@@ -65,14 +142,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['download'])) {
 /* ============ Test-Aktionen ============ */
 $us_test_titel = '';
 $us_test_text = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['test'])) {
+if ($us_ist_post && isset($_POST['test'])) {
     require_once __DIR__ . '/us_test.php';
     list($us_test_titel, $us_test_text) = us_test_ausfuehren((string) $_POST['test']);
     $us_tab = 'tab-test';
 }
 
 /* ============ Kalibrierpunkt uebernehmen ============ */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['kalibrieren'])) {
+if ($us_ist_post && isset($_POST['kalibrieren'])) {
     require_once __DIR__ . '/us_test.php';
     $mess = us_einmal_messen();
     if (!isset($mess['entfernung']) || $mess['entfernung'] === null) {
@@ -93,102 +170,89 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['kalibrieren'])) {
     $us_tab = 'tab-settings';
 }
 
-/* ============ Speichern ============ */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
-    $neu = $us_cfg;
 
-    // Eingaben nie hart filtern - nur Steuerzeichen und Anfuehrungszeichen raus.
-    $saeubern = function ($s) {
-        $s = preg_replace('/[\x00-\x1F\x7F"\']+/u', '', (string) $s);
-        return trim($s);
-    };
-    $ganz = function ($wert, $vorgabe, $min, $max) {
-        if (!is_numeric($wert)) {
-            return (string) $vorgabe;
+
+/* ============ Speichern ============
+ *
+ * JEDES Formular nennt sich selbst, und jeder Zweig fasst NUR seine eigenen
+ * Schluessel an. Ohne das setzt ein Speichern der Einstellungen die
+ * MQTT-Werte mit - ein nicht angehakter Haken steht ueberhaupt nicht im POST,
+ * und aus "MQTT ein" wuerde beim Speichern der Einstellungen still "aus".
+ * Genau diese Bauart hat in diesem Haus schon Konfigurationen geleert.
+ *
+ * Fehlt die Angabe oder ist sie unbekannt, wird ABGEWIESEN statt geraten. */
+function us_formularfelder($name)
+{
+    $f = array(
+        'einstellungen' => array(
+            'haken' => array('enabled', 'udp'),
+            'werte' => array('sensor', 'i2c_bus', 'i2c_adresse', 'gpio_trigger',
+                             'gpio_echo', 'messungen', 'messabstand', 'min_cm',
+                             'max_cm', 'offset_cm', 'leer_cm', 'voll_cm',
+                             'volumen_liter', 'intervall', 'aktualisierung',
+                             'udp_miniserver', 'udp_port'),
+        ),
+        'mqtt' => array(
+            'haken' => array('mqtt'),
+            'werte' => array('themenpraefix'),
+        ),
+    );
+    return isset($f[$name]) ? $f[$name] : null;
+}
+
+if ($us_ist_post && isset($_POST['save'])) {
+    $us_form = (isset($_POST['formular']) && is_string($_POST['formular']))
+        ? $_POST['formular'] : '';
+    $us_feldsatz = us_formularfelder($us_form);
+    if ($us_feldsatz === null) {
+        $us_error = us_t('FEHLER.FORMULAR_UNBEKANNT');
+    } else {
+        // Grundlage ist der GESPEICHERTE Stand; darueber kommen ausschliesslich
+        // die Felder DIESES Formulars.
+        $us_roh = $us_cfg;
+        foreach ($us_feldsatz['haken'] as $us_h) {
+            $us_roh[$us_h] = isset($_POST[$us_h]) ? '1' : '0';
         }
-        $n = (int) $wert;
-        return ($n >= $min && $n <= $max) ? (string) $n : (string) $vorgabe;
-    };
-    // Komma statt Punkt kommt bei deutscher Tastatur staendig vor.
-    $komma = function ($wert, $vorgabe, $min, $max) {
-        $wert = str_replace(',', '.', trim((string) $wert));
-        if (!is_numeric($wert)) {
-            return (string) $vorgabe;
+        foreach ($us_feldsatz['werte'] as $us_w) {
+            if (isset($_POST[$us_w]) && !is_array($_POST[$us_w])) {
+                $us_roh[$us_w] = (string) $_POST[$us_w];
+            }
         }
-        $n = (float) $wert;
-        return ($n >= $min && $n <= $max) ? rtrim(rtrim(sprintf('%.2f', $n), '0'), '.') : (string) $vorgabe;
-    };
-    // Darf leer bleiben - dann wird der Fuellstand nicht berechnet.
-    $leerbar = function ($wert, $min, $max) {
-        $wert = str_replace(',', '.', trim((string) $wert));
-        if ($wert === '' || !is_numeric($wert)) {
-            return '';
+        list($us_neuwerte, $us_maengel) = us_pruefen($us_roh);
+
+        /* Beanstandungen melden, nicht das ganze Speichern verhindern. */
+        if ($us_maengel) {
+            $us_error = implode(' ', $us_maengel);
         }
-        $n = (float) $wert;
-        return ($n >= $min && $n <= $max) ? rtrim(rtrim(sprintf('%.2f', $n), '0'), '.') : '';
-    };
-
-    $sensor = (string) ($_POST['sensor'] ?? 'srf02');
-    $neu['sensor'] = array_key_exists($sensor, us_sensoren()) ? $sensor : 'srf02';
-    $neu['enabled'] = isset($_POST['enabled']) ? '1' : '0';
-    $neu['mqtt']    = isset($_POST['mqtt']) ? '1' : '0';
-    $neu['udp']     = isset($_POST['udp']) ? '1' : '0';
-
-    $praefix = preg_replace('/[^A-Za-z0-9_-]+/', '', $saeubern($_POST['themenpraefix'] ?? ''));
-    $neu['themenpraefix'] = $praefix !== '' ? $praefix : 'ultraschall';
-
-    $neu['i2c_bus'] = $ganz($_POST['i2c_bus'] ?? '', 1, 0, 20);
-    $adr = strtolower($saeubern($_POST['i2c_adresse'] ?? ''));
-    $neu['i2c_adresse'] = preg_match('/^0x[0-9a-f]{1,2}$/', $adr) ? $adr : '0x70';
-    $neu['gpio_trigger'] = $ganz($_POST['gpio_trigger'] ?? '', 23, 0, 27);
-    $neu['gpio_echo']    = $ganz($_POST['gpio_echo'] ?? '', 24, 0, 27);
-    if ($neu['gpio_trigger'] === $neu['gpio_echo']) {
-        // Ein Pin kann nicht beides sein - sonst laeuft der Treiber ins Leere.
-        $us_error = us_t('FEHLER.GPIO_GLEICH');
-        $neu['gpio_trigger'] = '23';
-        $neu['gpio_echo'] = '24';
-    }
-
-    $neu['messungen']   = $ganz($_POST['messungen'] ?? '', 5, 1, 25);
-    $neu['messabstand'] = $komma($_POST['messabstand'] ?? '', '0.2', 0.05, 5);
-    $neu['min_cm']      = $komma($_POST['min_cm'] ?? '', '3', 0, 1000);
-    $neu['max_cm']      = $komma($_POST['max_cm'] ?? '', '400', 1, 2000);
-    if ((float) $neu['min_cm'] >= (float) $neu['max_cm']) {
-        // Vertauscht oder gleich - so waere jede Messung unplausibel.
-        $tausch = $neu['min_cm'];
-        $neu['min_cm'] = $neu['max_cm'];
-        $neu['max_cm'] = $tausch;
-        if ((float) $neu['min_cm'] >= (float) $neu['max_cm']) {
-            $neu['min_cm'] = '3';
-            $neu['max_cm'] = '400';
+        if (us_config_write($us_neuwerte)) {
+            $us_saved = true;
+            us_dienst('restart');
+            $us_hinweis = us_dienst_pid()
+                ? us_t('MELD.DIENST_NEUSTART')
+                : us_t('MELD.DIENST_LAEUFT_NICHT');
+            list($us_cfg, $us_altformat) = us_config_read();
+        } else {
+            $us_error = sprintf(us_t('FEHLER.CONFIG_SCHREIBEN'), us_e($us_p['config']));
         }
     }
-    $neu['offset_cm']     = $komma($_POST['offset_cm'] ?? '', '0', -500, 500);
-    $neu['leer_cm']       = $leerbar($_POST['leer_cm'] ?? '', 0, 2000);
-    $neu['voll_cm']       = $leerbar($_POST['voll_cm'] ?? '', 0, 2000);
-    $neu['volumen_liter'] = $leerbar($_POST['volumen_liter'] ?? '', 0, 1000000);
+    $us_tab = ($us_form === 'mqtt') ? 'tab-mqtt' : 'tab-settings';
+}
 
-    $neu['intervall']      = $ganz($_POST['intervall'] ?? '', 60, 5, 86400);
-    $neu['aktualisierung'] = $ganz($_POST['aktualisierung'] ?? '', 300, 5, 86400);
-    $neu['udp_miniserver'] = $ganz($_POST['udp_miniserver'] ?? '', 1, 1, 20);
-    $port = $saeubern($_POST['udp_port'] ?? '');
-    $neu['udp_port'] = ($port !== '' && ctype_digit($port) && (int) $port >= 1 && (int) $port <= 65535)
-        ? $port : '';
-    if ($neu['udp'] === '1' && $neu['udp_port'] === '') {
-        $us_error = us_t('FEHLER.UDP_OHNE_PORT');
-    }
-
-    if (us_config_write($neu)) {
+/* ============ Neues Aktionstoken ============
+ *
+ * Oranger Knopf mit Rueckfrage: er liest nicht, er macht JEDE Adresse
+ * ungueltig, die im Miniserver steht. Der Warnhinweis steht DANEBEN, nicht
+ * erst in der Antwort nach dem Klick. */
+if ($us_ist_post && isset($_POST['token_neu'])) {
+    $us_cfg['aktionstoken'] = us_token_neu();
+    if (us_config_write($us_cfg)) {
         $us_saved = true;
-        require_once __DIR__ . '/us_test.php';
-        us_dienst('restart');
-        $us_hinweis = us_dienst_pid()
-            ? us_t('MELD.DIENST_NEUSTART')
-            : us_t('MELD.DIENST_LAEUFT_NICHT');
+        $us_hinweis = us_t('TEXT.TOKEN_NEU_OK');
         list($us_cfg, $us_altformat) = us_config_read();
     } else {
         $us_error = sprintf(us_t('FEHLER.CONFIG_SCHREIBEN'), us_e($us_p['config']));
     }
+    $us_tab = 'tab-loxone';
 }
 
 $us_praefix = us_cfg($us_cfg, 'themenpraefix', 'ultraschall');
@@ -202,20 +266,37 @@ $us_log     = us_log_file();
 $us_zeilen  = us_log_tail($us_log);
 $us_hat_kalibrierung = trim(us_roh($us_cfg, 'leer_cm')) !== '' && trim(us_roh($us_cfg, 'voll_cm')) !== '';
 
-// WICHTIG: LBWeb::lbheader() setzt SDK-Globale - deshalb ueberall us_-Praefix.
-$us_frame = class_exists('LBWeb', false);
-if ($us_frame) {
-    LBWeb::lbheader(us_t('TEXT.TITEL'), 'https://wiki.loxberry.de/plugins/ultraschall_entfernung/start', 'help.html');
-}
-
 /* ---------------- Einstellungen sichern ----------------
  *
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
- * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
- * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['us_sichern'])) {
-    $us_js = json_encode(us_cfg(),
+ * Ausgegeben wird die VOLLE Konfiguration - alle 21 Schluessel aus
+ * us_defaults(), nicht nur die abweichenden. Ein Schluessel, der in der
+ * Sicherung fehlt, kaeme beim Zurueckspielen aus der Vorgabe, und das ist
+ * genau dann falsch, wenn jemand ihn bewusst auf den Vorgabewert gesetzt
+ * hat und die Vorgabe sich spaeter aendert.
+ *
+ * ZWEIERLEI STAND BIS 1.1.11 FALSCH. Beides ist am 26.08.2026 am
+ * ausgelieferten Tag-Archiv und an einem echten Webserver gemessen worden:
+ *
+ *   1. Die Lesefunktion fuer EINEN Konfigurationswert wurde hier ohne ihre
+ *      beiden Pflichtargumente gerufen. Unter 7.4.33 wie unter 8.4.24 endete
+ *      das mit einem ArgumentCountError, Rueckgabewert 255. Der Anwender bekam
+ *      keine Datei, sondern eine halb aufgebaute Seite mit einer PHP-Meldung.
+ *   2. Der ganze Block stand HINTER LBWeb::lbheader(). Dort ist
+ *      headers_sent() bereits JA - die drei header()-Aufrufe unten greifen
+ *      dann nicht ("Cannot modify header information"), der Inhaltstyp bleibt
+ *      text/html, und dem JSON steht der Seitenkopf voran. Auch mit
+ *      berichtigtem Aufruf war das Ergebnis kein gueltiges JSON; erst beide
+ *      Korrekturen zusammen ergaben eine Datei.
+ *
+ * Deshalb steht der Block jetzt VOR jeder Ausgabe. Wer ihn wieder nach unten
+ * schiebt, nimmt Punkt 2 zurueck.
+ *
+ * KEIN AKTIONSTOKEN: dieses Plugin hat keines, weil es keinen Endpunkt im
+ * unangemeldeten Bereich gibt - den Ordner webfrontend/html/ gibt es nicht.
+ * Der Warntext am Knopf sagt deshalb NICHT, die Datei enthalte Zugangsdaten;
+ * sie enthaelt keine. Kommt der Endpunkt, kommt der Satz mit ihm. */
+if ($us_ist_post && isset($_POST['us_sichern'])) {
+    $us_js = json_encode($us_cfg,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($us_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
@@ -232,7 +313,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['us_sichern'])) {
  * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
  * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
  * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['us_zurueck'])) {
+if ($us_ist_post && isset($_POST['us_zurueck'])) {
+    // VOR dem Schreiben feststellen, ob der Dienst lief - danach ist es
+    // nicht mehr zu unterscheiden.
+    $us_lief_vorher = us_dienst_pid() > 0;
     if (!isset($_FILES['us_sicherung']) || !is_array($_FILES['us_sicherung'])
         || !isset($_FILES['us_sicherung']['tmp_name'])
         || !@is_uploaded_file($_FILES['us_sicherung']['tmp_name'])) {
@@ -248,12 +332,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['us_zurueck'])) {
             $us_error = us_t('TEXT.SICH_ABGELEHNT') . ' '
                             . implode(' ', $us_mangel);
         } elseif (us_config_write($us_neu)) {
-            $us_saved = true; $us_hinweis = sprintf(us_t('TEXT.SICH_UEBERNOMMEN'), $us_n);
+            $us_saved = true;
+            list($us_cfg, $us_altformat) = us_config_read();
+            /* Punkt 7 der Hausregel: den Dienst nachziehen UND sagen, was mit
+             * ihm geschehen ist.
+             *
+             * Der Dauerlaeufer liest die Konfiguration zwar im Betrieb neu
+             * ein, uebernimmt dabei aber weder das Themenpraefix noch den
+             * MQTT-Zustand - beide setzt er nur beim Start. Gemessen mit
+             * Attrappe: Praefix in der Datei auf einen anderen Wert geaendert,
+             * Dienst liest neu ein, misst weiter - und veroeffentlicht ueber
+             * den ganzen Lauf ausschliesslich unter dem ALTEN. Ohne diesen
+             * Neustart traegt eine zurueckgespielte Sicherung ihr Praefix
+             * nicht, und in Loxone kommt nichts mehr an.
+             *
+             * Ein bewusst angehaltener Dienst bleibt angehalten: ein Plugin,
+             * das gegen den Willen des Anwenders startet, ist schlimmer als
+             * eines, das stehen bleibt. */
+            $us_hinweis = sprintf(us_t('TEXT.SICH_UEBERNOMMEN'), $us_n) . ' ';
+            if ($us_lief_vorher) {
+                us_dienst('restart');
+                $us_hinweis .= us_t(us_dienst_pid()
+                    ? 'TEXT.SICH_DIENST_NEU' : 'TEXT.SICH_DIENST_FEHL');
+            } else {
+                $us_hinweis .= us_t('TEXT.SICH_DIENST_AUS');
+            }
         } else {
             $us_error = us_t('TEXT.SICH_SCHREIBFEHLER');
         }
     }
 }
+
+// WICHTIG: LBWeb::lbheader() setzt SDK-Globale - deshalb ueberall us_-Praefix.
+$us_frame = class_exists('LBWeb', false);
+if ($us_frame) {
+    LBWeb::lbheader(us_t('TEXT.TITEL'), 'https://wiki.loxberry.de/plugins/ultraschall_entfernung/start', 'help.html');
+}
+
 
 ?>
 <style>
@@ -311,6 +426,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['us_zurueck'])) {
    benutzt, aber nie definiert - wortgleich aus der Hausstandard-Vorlage
    bzw. der Referenzimplementierung uebernommen. */
 .sm-warn { background: #fdf3e3; border: 1px solid #e0620d; }
+/* Benutzt vom Sicherungsblock, bis 1.1.11 nirgends definiert -
+   hausstandard_pruefen.py meldete beide als "benutzt, aber nirgends
+   definiert". Der Warnhinweis zur Sicherungsdatei stand dadurch als
+   grauer Fliesstext da. Wortgleich aus VORLAGE_hausstandard.css.html. */
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
+.sm-hinweis { border: 1px solid #cfe3b0; background: #f2f8ea; border-radius: 6px;
+              padding: 8px 12px; margin: 8px 0; font-size: 0.9em; }
+.sm-warnung { border: 1px solid #f0c9a0; background: #fdf4ec; border-radius: 6px;
+              padding: 8px 12px; margin: 8px 0; font-size: 0.9em; }
 </style>
 <div class="sm-wrap">
 
@@ -318,6 +443,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['us_zurueck'])) {
 <div class="sm-alert sm-ok"><b><?php echo us_t('TEXT.GESPEICHERT'); ?></b> <?= $us_hinweis ?></div>
 <?php } ?>
 <?php if ($us_error !== '') { ?><div class="sm-alert sm-err"><b><?php echo us_t('TEXT.HINWEIS'); ?></b> <?= $us_error ?></div><?php } ?>
+<?php if ($us_lage['quelle'] !== 'ok') { ?>
+<div class="sm-alert sm-err"><b><?php echo us_t('TEXT.HINWEIS'); ?></b> <?php echo us_t('TEXT.KEINE_DATENQUELLE'); ?></div>
+<?php } ?>
+<?php if (!empty($us_lage['ergaenzt'])) { ?>
+<div class="sm-alert sm-info"><?php printf(us_t('TEXT.LAGE_ERGAENZT'), us_e(implode(', ', $us_lage['ergaenzt']))); ?></div>
+<?php } ?>
+<?php if (!empty($us_lage['fremd'])) { ?>
+<div class="sm-alert sm-info"><?php printf(us_t('TEXT.LAGE_FREMD'), us_e(implode(', ', $us_lage['fremd']))); ?></div>
+<?php } ?>
 <?php if ($us_altformat) { ?>
 <div class="sm-alert sm-info"><?php echo us_t('TEXT.DIE_KONFIGURATION_STAMMT_NOCH_AUS_'); ?></div>
 <?php } ?>
@@ -344,22 +478,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['us_zurueck'])) {
  * vollstaendig leer. Jetzt setzt der Server die Klasse sm-active an Reiter
  * UND Flaeche; das JavaScript spart nur noch den Seitenaufbau.
  */
-$us_beschriftung = array(
-    'settings' => 'REITER.EINSTELLUNGEN', 'loxone' => 'REITER.LOXONE',
-    'test'     => 'REITER.TEST',          'log'    => 'REITER.LOG',
-);
-$us_reiter = array();
-foreach ($us_reiter_ids as $us_i) {
-    $us_reiter['tab-' . $us_i] = isset($us_beschriftung[$us_i])
-        ? us_t($us_beschriftung[$us_i]) : $us_i;
-}
 ?>
+<!-- Die Reiterleiste steht AUSGESCHRIEBEN. Eine foreach-Schleife waere
+     sauberer Code und macht hausstandard_pruefen.py blind - es findet die
+     Reiter dann nicht und meldet die Spalte als nicht messbar.
+     Gegengeprueft wird die Uebereinstimmung mit der Positivliste oben und
+     mit den ids der Flaechen im Reiter Test. -->
 <div class="sm-tabs">
-<?php foreach ($us_reiter as $us_id => $us_bez) { ?>
-    <a class="sm-tab<?php echo $us_tab === $us_id ? ' sm-active' : ''; ?>"
-       data-pane="<?php echo us_e($us_id); ?>"
-       href="index.php?tab=<?php echo us_e(substr($us_id, 4)); ?>"><?php echo $us_bez; ?></a>
-<?php } ?>
+<a class="sm-tab<?php echo $us_tab === 'tab-settings' ? ' sm-active' : ''; ?>" data-pane="tab-settings" href="index.php?tab=settings"><?php echo us_t('REITER.EINSTELLUNGEN'); ?></a>
+<a class="sm-tab<?php echo $us_tab === 'tab-mqtt' ? ' sm-active' : ''; ?>" data-pane="tab-mqtt" href="index.php?tab=mqtt"><?php echo us_t('REITER.MQTT'); ?></a>
+<a class="sm-tab<?php echo $us_tab === 'tab-loxone' ? ' sm-active' : ''; ?>" data-pane="tab-loxone" href="index.php?tab=loxone"><?php echo us_t('REITER.LOXONE'); ?></a>
+<a class="sm-tab<?php echo $us_tab === 'tab-test' ? ' sm-active' : ''; ?>" data-pane="tab-test" href="index.php?tab=test"><?php echo us_t('REITER.TEST'); ?></a>
+<a class="sm-tab<?php echo $us_tab === 'tab-log' ? ' sm-active' : ''; ?>" data-pane="tab-log" href="index.php?tab=log"><?php echo us_t('REITER.LOG'); ?></a>
 </div>
 
 <!-- ================= Reiter: <?php echo us_t('TEXT.EINSTELLUNGEN'); ?> ================= -->
@@ -381,7 +511,12 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <?php } ?>
 
 <form method="post" action="index.php">
-<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings"><?php echo us_fmt($us_cfg); ?>
+<!-- Jedes Formular nennt sich selbst. Der Speicher-Zweig fasst dann NUR
+     die Schluessel DIESES Formulars an - sonst setzt ein Speichern der
+     Einstellungen die MQTT-Werte mit, weil ein nicht angehakter Haken
+     ueberhaupt nicht im POST steht. -->
+<input data-role="none" type="hidden" name="formular" value="einstellungen">
 
 <h2><?php echo us_t('TEXT.BETRIEB'); ?></h2>
 <label class="sm-check"><input data-role="none" type="checkbox" name="enabled" value="1"<?= us_cfg($us_cfg, 'enabled', '0') === '1' ? ' checked' : '' ?>> <b><?php echo us_t('TEXT.PLUGIN_EINGESCHALTET'); ?></b></label>
@@ -468,7 +603,12 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 </div>
 <div>
 <label><?php echo us_t('TEXT.GESAMTVOLUMEN_LITER'); ?></label>
-<input data-role="none" type="text" name="volumen<?php echo us_t('TEXT.LITER_2'); ?>" value="<?= us_e(us_roh($us_cfg, 'volumen_liter')) ?>" placeholder="optional">
+<!-- Der Feldname wird AUSGESCHRIEBEN. Bis 1.1.11 wurde er zur Haelfte
+     aus einem Sprachschluessel gebaut. Heute steht in beiden Dateien
+     derselbe Wert, es ging also gut; wer uebersetzt und dort etwas anderes
+     eintraegt, bekommt ein Feld unter anderem Namen - und das Gesamtvolumen
+     waere bei jedem Speichern weg, ohne dass irgendwo etwas stuende. -->
+<input data-role="none" type="text" name="volumen_liter" value="<?= us_e(us_roh($us_cfg, 'volumen_liter')) ?>" placeholder="optional">
 <div class="sm-small"><?php echo us_t('TEXT.NUR_BEI_SENKRECHTEN_WNDEN_VERLSSLI'); ?></div>
 </div>
 </div>
@@ -487,17 +627,11 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 </div>
 
 <h2><?php echo us_t('TEXT.WEG_ZUM_MINISERVER'); ?></h2>
-<label class="sm-check"><input data-role="none" type="checkbox" name="mqtt" value="1"<?= us_cfg($us_cfg, 'mqtt', '1') === '1' ? ' checked' : '' ?>> <b>MQTT</b> <?php echo us_t('TEXT.EMPFOHLEN'); ?></label>
-<div class="sm-small"><?php echo us_t('TEXT.WERTE_GEHEN_RETAINED_AN_DEN_BROKER'); ?></div>
-
-<label class="sm-check" style="margin-top:10px;"><input data-role="none" type="checkbox" name="udp" value="1"<?= us_cfg($us_cfg, 'udp', '0') === '1' ? ' checked' : '' ?><?php echo us_t('TEXT.ZUSTZLICH_PER_UDP_SENDEN'); ?></label>
+<div class="sm-hinweis"><?php echo us_t('TEXT.MQTT_WOHNT_IM_REITER'); ?></div>
+<label class="sm-check" style="margin-top:10px;"><input data-role="none" type="checkbox" name="udp" value="1"<?= us_cfg($us_cfg, 'udp', '0') === '1' ? ' checked' : '' ?>> <?php echo us_t('TEXT.ZUSTZLICH_PER_UDP_SENDEN'); ?></label>
 <div class="sm-small"><?php echo us_t('TEXT.DER_WEG_DER_ORIGINALFASSUNG_DIE_EN'); ?></div>
 
 <div class="sm-row" style="margin-top:12px;">
-<div>
-<label><?php echo us_t('TEXT.MQTT_THEMENPRFIX'); ?></label>
-<input data-role="none" type="text" name="themenpraefix" value="<?= us_e($us_praefix) ?>">
-</div>
 <div>
 <label><?php echo us_t('TEXT.MINISERVER_FR_UDP'); ?></label>
 <select data-role="none" name="udp_miniserver">
@@ -524,9 +658,98 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 </div>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION_MESSEN'); ?></span></div>
 <div class="sm-knopfreihe">
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-settings"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="kalibrieren" value="leer"><?php echo us_t('TEXT.JETZT_MESSEN_LEER'); ?></button></form>
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-settings"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="kalibrieren" value="voll"><?php echo us_t('TEXT.JETZT_MESSEN_VOLL'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-settings"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="kalibrieren" value="leer"><?php echo us_t('TEXT.JETZT_MESSEN_LEER'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-settings"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="kalibrieren" value="voll"><?php echo us_t('TEXT.JETZT_MESSEN_VOLL'); ?></button></form>
 </div>
+
+<!-- Der Sicherungsblock stand bis 1.1.11 AUSSERHALB aller Reiter und
+     erschien deshalb unter jedem, auch unter Logdateien und Test. Er
+     gehoert in die Einstellungen - das versteckte activetab sagt das
+     ohnehin. -->
+<h2><?= us_t('TEXT.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= us_t('TEXT.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= us_t('TEXT.SICH_WARNUNG') ?></div>
+<!-- Keine Knopfreihe ohne erklaerende Legende ueber sich - und eine neue
+     Knopffarbe braucht ihren Eintrag darin. Der Sicherungsblock bringt einen
+     gruenen Knopf in einen Reiter, der bisher nur Orange kannte;
+     hausstandard_pruefen.py hat die Spalte leg dafuer sofort klein gemeldet. -->
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?php echo us_t('LEGENDE.LESEN_SICHERN'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION_ZURUECK'); ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings"><?php echo us_fmt($us_cfg); ?>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="us_sichern" value="1"><?= us_t('TEXT.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings"><?php echo us_fmt($us_cfg); ?>
+    <input data-role="none" type="file" name="us_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="us_zurueck" value="1"><?= us_t('TEXT.K_ZURUECK') ?></button>
+  </form>
+</div>
+</div>
+
+
+<!-- ================= Reiter: MQTT =================
+     MQTT wohnt VOLLSTAENDIG hier - Haken, Themenpraefix, Zustand des
+     Gateways, das einzutragende Abo und die Tabelle der Themen. Mit EIGENEM
+     Formular und EIGENEM Speicher-Handler: ein Sammel-Handler setzt Haken
+     per isset() und wuerde beim Absenden des anderen Formulars die Werte
+     dieses stillschweigend nullen. -->
+<div class="sm-pane<?php echo $us_tab === 'tab-mqtt' ? ' sm-active' : ''; ?>" id="tab-mqtt">
+
+<h2><?php echo us_t('MQTT.H_WEG'); ?></h2>
+<form method="post" action="index.php">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt"><?php echo us_fmt($us_cfg); ?>
+<input data-role="none" type="hidden" name="formular" value="mqtt">
+<label class="sm-check"><input data-role="none" type="checkbox" name="mqtt" value="1"<?= us_cfg($us_cfg, 'mqtt', '1') === '1' ? ' checked' : '' ?>> <b>MQTT</b> <?php echo us_t('TEXT.EMPFOHLEN'); ?></label>
+<div class="sm-small"><?php echo us_t('TEXT.WERTE_GEHEN_RETAINED_AN_DEN_BROKER'); ?></div>
+<label style="margin-top:10px;"><?php echo us_t('TEXT.MQTT_THEMENPRFIX'); ?></label>
+<input data-role="none" type="text" name="themenpraefix" value="<?= us_e($us_praefix) ?>">
+<div class="sm-small"><?php echo us_t('MQTT.PRAEFIX_HINWEIS'); ?></div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION'); ?></span></div>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="1"><?php echo us_t('TEXT.SPEICHERN'); ?></button>
+</form>
+
+<h2><?php echo us_t('MQTT.H_ZUSTAND'); ?></h2>
+<?php $us_gw = us_mqtt_gateway_info(); ?>
+<?php if ($us_gw === null) { ?>
+<div class="sm-warnung"><?php echo us_t('MQTT.KEIN_GATEWAY'); ?></div>
+<?php } else { ?>
+<?php if (!$us_gw['autostart']) { ?>
+<div class="sm-warnung"><b>MQTT:</b> <?php echo us_t('TEXT.W_AUTOSTART'); ?></div>
+<?php } ?>
+<table class="sm-tbl">
+<tr><td><?php echo us_t('MQTT.BROKER'); ?></td><td class="sm-mono"><?= $us_broker !== '' ? us_e($us_broker) : us_e(us_t('MQTT.NICHT_GEFUNDEN')) ?></td></tr>
+<tr><td><?php echo us_t('MQTT.AUTOSTART'); ?></td><td><?= $us_gw['autostart'] ? us_e(us_t('PRUEF.JA')) : us_e(us_t('PRUEF.NEIN')) ?></td></tr>
+<tr><td><?php echo us_t('MQTT.FASSUNG'); ?></td><td><?= $us_gw['fassung'] > 0 ? 'V' . (int) $us_gw['fassung'] : us_e(us_t('PRUEF.UNBEKANNT')) ?></td></tr>
+<tr><td><?php echo us_t('TEXT.THEMENPRFIX'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?></td></tr>
+</table>
+<?php } ?>
+
+<h2><?php echo us_t('MQTT.H_ABO'); ?></h2>
+<div class="sm-step"><b><?php echo us_abo_text(); ?></b>
+<div class="sm-mono" style="background:#f4f4f4;border:1px solid #ccc;padding:8px;margin-top:6px;"><?= us_e($us_praefix) ?>/#</div></div>
+
+<h2><?php echo us_t('TEXT.WAS_VERFFENTLICHT_WIRD'); ?></h2>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:24%;"><?php echo us_t('TEXT.THEMA'); ?></th><th style="width:10%;"><?php echo us_t('TEXT.ART'); ?></th><th style="width:10%;"><?php echo us_t('MQTT.EINHEIT'); ?></th><th><?php echo us_t('TEXT.BEDEUTUNG'); ?></th></tr>
+<?php foreach (us_felder() as $us_n => $us_f) { ?>
+<tr><td><span class="sm-mono"><?= us_e($us_praefix . '/' . $us_n) ?></span></td>
+    <td><?= us_e($us_f['art']) ?></td>
+    <td><?= us_e($us_f['einheit']) ?></td>
+    <td><?php echo us_thema_lang($us_n); ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?php echo us_t('TEXT.ALLE_THEMEN_SIND'); ?> <b><?php echo us_t('TEXT.RETAINED'); ?></b><?php echo us_t('TEXT.DER_BROKER_MERKT_SICH_DEN_LETZTEN_'); ?></div>
+<div class="sm-hinweis"><?php echo us_t('MQTT.HERZSCHLAG'); ?></div>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
@@ -537,7 +760,8 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_1_SENSOR_EINRICHTEN'); ?></b><br><br>
 <?php echo us_t('TEXT.IM_REITER'); ?> <i><?php echo us_t('REITER.EINSTELLUNGEN'); ?></i><?php echo us_t('TEXT.DANN_IM_REITER'); ?> <i><?php echo us_t('REITER.TEST'); ?></i> mit <i><?php echo us_t('TEXT.JETZT_MESSEN'); ?></i> <?php echo us_t('TEXT.PRFEN_OB_EIN_PLAUSIBLER_WERT_HERAU'); ?></div>
 <div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_2_ABO_IM_MQTT_GATEWAY_EINT'); ?></b><br><br>
-<?php if (!function_exists('us_hs_autostart')) { function us_hs_autostart() { $h = getenv('LBHOMEDIR') ?: '/opt/loxberry'; $g = $h . '/config/system/general.json'; if (!is_file($g)) { return null; } $j = json_decode((string) @file_get_contents($g), true); if (!is_array($j) || !isset($j['Mqtt'])) { return null; } return !empty($j['Mqtt']['Gatewayautostart']); } } if (us_hs_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo us_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
+
+<?php $us_gw2 = us_mqtt_gateway_info(); if ($us_gw2 !== null && !$us_gw2['autostart']) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo us_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
 <b><?php echo us_abo_text(); ?></b> <?php echo us_t('TEXT.EINZUTRAGEN_UNTER'); ?>
 <i><?php echo us_t('TEXT.SYSTEM_EINSTELLUNGEN_MQTT_GATEWAY_'); ?></i>:
 <div class="sm-mono" style="background:#f4f4f4;border:1px solid #ccc;padding:8px;margin-top:6px;"><?= us_e($us_praefix) ?>/#</div></div>
@@ -561,9 +785,60 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <div class="sm-alert sm-err"><?php echo us_t('TEXT.MQTT_IST_IM_REITER_EINSTELLUNGEN_A'); ?></div>
 <?php } ?>
 
+
+<h2><?php echo us_t('LOX.H_ENDPUNKT'); ?></h2>
+<div class="sm-small"><?php echo us_t('LOX.ENDPUNKT_ERKLAERT'); ?></div>
+<?php
+/* Eine angezeigte Adresse traegt JEDEN Parameter, den der eigene Endpunkt
+ * verlangt - sonst weist das Plugin die eigene Anleitung ab. Und sie wird
+ * aus DEMSELBEN Bauteil gebildet wie die Adresse, die das Plugin selbst
+ * benutzt: zwei Stellen, die dasselbe zusammensetzen, laufen auseinander. */
+$us_tok = us_roh($us_cfg, 'aktionstoken');
+$us_host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : 'loxberry';
+?>
+<?php if ($us_tok === '') { ?>
+<div class="sm-warnung"><?php echo us_t('LOX.KEIN_TOKEN'); ?></div>
+<?php } else { ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:22%;"><?php echo us_t('LOX.WOFUER'); ?></th><th><?php echo us_t('LOX.ADRESSE'); ?></th></tr>
+<tr><td><?php echo us_t('LOX.STATUSZEILE'); ?></td>
+    <td><span class="sm-mono">http://<?= us_e($us_host) . us_e(us_endpunkt_pfad('status', $us_tok)) ?></span></td></tr>
+<tr><td><?php echo us_t('LOX.SELBSTTEST'); ?></td>
+    <td><span class="sm-mono">http://<?= us_e($us_host) ?>/plugins/<?= us_e($us_p['plugin']) ?>/index.php?selftest=1&amp;token=<?= us_e($us_tok) ?></span></td></tr>
+</table>
+</div>
+<div class="sm-small"><?php echo us_t('LOX.ZEILE_BEISPIEL'); ?>
+<span class="sm-mono"><?= us_e(us_zeile(array('distance' => '123.4', 'level' => '42.1', 'liter' => '2105', 'valid' => '1', 'online' => '1', 'ts' => '1787000000', 'zaehler' => '418'))) ?></span></div>
+
+<h2><?php echo us_t('LOX.H_BEFEHLE'); ?></h2>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?php echo us_t('TEXT.THEMA'); ?></th><th><?php echo us_t('MQTT.EINHEIT'); ?></th><th><?php echo us_t('LOX.SUCHTEXT'); ?></th><th><?php echo us_t('LOX.GRENZEN'); ?></th></tr>
+<?php foreach (us_felder_zeile() as $us_n => $us_f) { ?>
+<tr><td class="sm-mono"><?= us_e(strtoupper($us_n)) ?></td>
+    <td><?= us_e($us_f['einheit']) ?></td>
+    <td class="sm-mono"><?= us_e(us_check($us_n)) ?></td>
+    <td><?= us_e($us_f['min'] . ' bis ' . $us_f['max']) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?php echo us_t('LOX.SUCHTEXT_ERKLAERT'); ?></div>
+
+<h2><?php echo us_t('LOX.H_TOKEN_NEU'); ?></h2>
+<div class="sm-warnung"><?php echo us_t('LOX.TOKEN_NEU_WARNUNG'); ?></div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION'); ?></span></div>
+<div class="sm-knopfreihe">
+<form method="post" action="index.php" onsubmit="return confirm(<?= us_e(json_encode(us_t('LOX.TOKEN_NEU_FRAGE'))) ?>);">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone"><?php echo us_fmt($us_cfg); ?>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?php echo us_t('LOX.K_TOKEN_NEU'); ?></button>
+</form>
+</div>
+<?php } ?>
+
 <h2><?php echo us_t('TEXT.VORLAGEN'); ?></h2>
 <form method="post" action="index.php">
-<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone"><?php echo us_fmt($us_cfg); ?>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION_DATEI'); ?></span></div>
 <div class="sm-knopfreihe">
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="download" value="mqtt_in"><?php echo us_t('TEXT.VORLAGE_EINGNGE_MQTT'); ?></button>
@@ -629,27 +904,55 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION'); ?></span>
 </div>
 
+
+<h2><?php echo us_t('PRUEF.H'); ?></h2>
+<div class="sm-small"><?php echo us_t('PRUEF.ERKLAERT'); ?></div>
+<?php
+/* Die teuren Zeilen laufen NUR, wenn der Reiter Test serverseitig der offene
+ * ist. Alle Reiter werden mitgerendert; sonst riefe sich der Webserver bei
+ * jedem Klick selbst auf, und die Zeitschranke laege bei jedem Speichern im
+ * Weg. */
+$us_zeilen_pruef = us_pruefzeilen($us_cfg, $us_lage, $us_tab === 'tab-test');
+$us_offen = 0;
+?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<?php foreach ($us_zeilen_pruef as $us_pz) {
+    $us_z = $us_pz[1];
+    if ($us_z === 'offen') { $us_offen++; }
+    $us_sym = ($us_z === 'ja') ? '&#10004;' : (($us_z === 'nein') ? '&#10008;' : '&ndash;');
+    $us_far = ($us_z === 'ja') ? '#4f7d17' : (($us_z === 'nein') ? '#c62828' : '#888');
+?>
+<tr><td style="width:26px;color:<?= $us_far ?>;font-weight:700;"><?= $us_sym ?></td>
+    <td style="width:34%;"><?= us_e($us_pz[0]) ?></td>
+    <td><?= us_e($us_pz[2]) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?php printf(us_t('PRUEF.BILANZ'), count($us_zeilen_pruef), $us_offen); ?></div>
+
 <h3 class="sm-h3"><?php echo us_t('TEXT.ANSEHEN'); ?></h3>
 <div class="sm-knopfreihe">
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="status"><?php echo us_t('TEXT.ZUSTAND_DES_DIENSTES'); ?></button></form>
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="messwert"><?php echo us_t('TEXT.LETZTER_MESSWERT'); ?></button></form>
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="mqttinfo"><?php echo us_t('TEXT.MQTT_GATEWAY'); ?></button></form>
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="udpinfo"><?php echo us_t('TEXT.UDP_AN_DEN_MINISERVER'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="status"><?php echo us_t('TEXT.ZUSTAND_DES_DIENSTES'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="messwert"><?php echo us_t('TEXT.LETZTER_MESSWERT'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="mqttinfo"><?php echo us_t('TEXT.MQTT_GATEWAY'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="udpinfo"><?php echo us_t('TEXT.UDP_AN_DEN_MINISERVER'); ?></button></form>
 </div>
 
 <h3 class="sm-h3"><?php echo us_t('TEXT.TECHNISCHE_AUSKUNFT'); ?></h3>
 <div class="sm-knopfreihe">
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="sensor"><?php echo us_t('TEXT.SENSOR_PRUEFEN'); ?></button></form>
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="konfig"><?php echo us_t('TEXT.KONFIGURATION_ANZEIGEN'); ?></button></form>
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="umgebung"><?php echo us_t('TEXT.UMGEBUNG_UND_MODULE'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="sensor"><?php echo us_t('TEXT.SENSOR_PRUEFEN'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="konfig"><?php echo us_t('TEXT.KONFIGURATION_ANZEIGEN'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="umgebung"><?php echo us_t('TEXT.UMGEBUNG_UND_MODULE'); ?></button></form>
 </div>
 
 <h3 class="sm-h3"><?php echo us_t('TEXT.LST_ETWAS_AUS'); ?></h3>
+<div class="sm-small"><?php echo us_t('TEXT.WAECHTER_HINWEIS'); ?></div>
 <div class="sm-knopfreihe">
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="messen"><?php echo us_t('TEXT.JETZT_MESSEN'); ?></button></form>
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="udptest"><?php echo us_t('TEXT.UDP_TESTPAKET_SENDEN'); ?></button></form>
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="restart"><?php echo us_t('TEXT.DIENST_NEU_STARTEN'); ?></button></form>
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="stop"><?php echo us_t('TEXT.DIENST_ANHALTEN'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="messen"><?php echo us_t('TEXT.JETZT_MESSEN'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="udptest"><?php echo us_t('TEXT.UDP_TESTPAKET_SENDEN'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="restart"><?php echo us_t('TEXT.DIENST_NEU_STARTEN'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="stop"><?php echo us_t('TEXT.DIENST_ANHALTEN'); ?></button></form>
 </div>
 
 <?php if ($us_test_titel !== '') { ?>
@@ -676,24 +979,6 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 </div>
 
 
-<h2><?= us_t('TEXT.H_SICHERUNG') ?></h2>
-<div class="sm-hinweis"><?= us_t('TEXT.SICH_ERKLAERUNG') ?></div>
-<div class="sm-warnung"><?= us_t('TEXT.SICH_WARNUNG') ?></div>
-<div class="sm-knopfreihe">
-  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
-       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
-       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
-       einen Download, der das Speichern verschluckt. -->
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="us_sichern" value="1"><?= us_t('TEXT.K_SICHERN') ?></button>
-  </form>
-  <form action="index.php" method="post" enctype="multipart/form-data">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <input data-role="none" type="file" name="us_sicherung" accept=".json">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="us_zurueck" value="1"><?= us_t('TEXT.K_ZURUECK') ?></button>
-  </form>
-</div>
 </div>
 <script>
 (function () {

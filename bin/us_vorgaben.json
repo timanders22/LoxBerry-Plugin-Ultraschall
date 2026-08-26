@@ -1,0 +1,59 @@
+{
+ "_zweck": "Vorgabewerte und Feldtabelle - EINE Quelle fuer beide Sprachen.",
+ "_warum": [
+  "Bis 1.1.12 fuehrten us_lib.php (PHP) und us_common.py (Python) je eine",
+  "eigene Liste mit denselben 21 Schluesseln. Dass sie uebereinstimmten, war",
+  "von Hand gepflegtes Glueck: bei Gardena bedeutete derselbe fehlende",
+  "Schluessel in der Oberflaeche 'an' und im Dienst 'aus', und niemand hat es",
+  "gemerkt. Ueber die Sprachgrenze hinweg gibt es keine gemeinsame Funktion -",
+  "also eine gemeinsame DATEI.",
+  "",
+  "Faellt diese Datei aus, wird das GEMELDET und nichts geraten: die",
+  "Oberflaeche verweigert das Speichern, der Dienst bricht mit Rueckgabewert 1",
+  "ab. Eine erfundene Ersatzliste waere die zweite Wahrheit, gegen die es",
+  "diese Datei gibt."
+ ],
+ "_felder_erklaert": {
+  "art": "analog | digital | text - entscheidet ueber Analog= in der Loxone-Vorlage",
+  "einheit": "wandert als Unit=\"<v.1> …\" in die Vorlage; leer = keine",
+  "min": "MinVal der Vorlage. NICHT pauschal +-2147483647 - Loxone zieht daraus die Reglergrenzen",
+  "max": "MaxVal der Vorlage",
+  "zeile": "1 = steht in der Statuszeile des Endpunkts. Textfelder gehoeren dort NICHT hinein: ein ; oder = darin zerlegt die Zeile, die Loxone liest"
+ },
+
+ "vorgaben": {
+  "enabled": "0",
+  "sensor": "srf02",
+  "i2c_bus": "1",
+  "i2c_adresse": "0x70",
+  "gpio_trigger": "23",
+  "gpio_echo": "24",
+  "messungen": "5",
+  "messabstand": "0.2",
+  "min_cm": "3",
+  "max_cm": "400",
+  "offset_cm": "0",
+  "leer_cm": "",
+  "voll_cm": "",
+  "volumen_liter": "",
+  "intervall": "60",
+  "aktualisierung": "300",
+  "themenpraefix": "ultraschall",
+  "mqtt": "1",
+  "udp": "0",
+  "udp_miniserver": "1",
+  "udp_port": "",
+  "aktionstoken": ""
+ },
+
+ "felder": {
+  "distance":   {"art": "analog",  "einheit": "cm", "min": 0,  "max": 2000,       "zeile": 1},
+  "level":      {"art": "analog",  "einheit": "%",  "min": 0,  "max": 100,        "zeile": 1},
+  "liter":      {"art": "analog",  "einheit": "l",  "min": 0,  "max": 1000000,    "zeile": 1},
+  "valid":      {"art": "digital", "einheit": "",   "min": 0,  "max": 1,          "zeile": 1},
+  "online":     {"art": "digital", "einheit": "",   "min": 0,  "max": 1,          "zeile": 1},
+  "ts":         {"art": "analog",  "einheit": "s",  "min": 0,  "max": 2147483647, "zeile": 1},
+  "zaehler":    {"art": "analog",  "einheit": "",   "min": -1, "max": 999,        "zeile": 1},
+  "last_error": {"art": "text",    "einheit": "",   "min": 0,  "max": 0,          "zeile": 0}
+ }
+}

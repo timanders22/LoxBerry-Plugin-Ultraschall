@@ -10,6 +10,7 @@
 daemon/daemon       text eol=lf
 uninstall/uninstall text eol=lf
 dpkg/apt            text eol=lf
+cron/cron.05min     text eol=lf
 
 *.png binary
 *.svg text eol=lf

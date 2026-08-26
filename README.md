@@ -30,6 +30,105 @@ schlägt fehl.
 > MIT-Lizenz (siehe `LICENSE`). Auf den ursprünglichen Bestand kann sich diese
 > Freigabe naturgemäß nicht erstrecken.
 
+## Version 1.2.0 — Endpunkt, Aktionstoken, Lebenszeichen
+
+### Ein eigener Endpunkt für den Miniserver
+
+Bis 1.1.12 gab es genau einen Weg zum Miniserver: das MQTT-Gateway. Wer es
+nicht betreibt oder wer einen Wert **abfragen** statt zugeschickt bekommen
+will, stand vor nichts. 1.2.0 hat einen eigenen Endpunkt:
+
+```
+http://<loxberry>/plugins/ultraschall/index.php?token=<TOKEN>&aktion=status
+-> ULTRA;OK=1;DISTANCE=123.4;LEVEL=42.1;LITER=2105;VALID=1;ONLINE=1;TS=…;ZAEHLER=418;ALTER=7
+```
+
+Er liegt in `webfrontend/html/` — dem Baum **ohne** Anmeldung; anders wäre er
+für den Miniserver nicht erreichbar. Deshalb ist er durch ein **Aktionstoken**
+geschützt, das beim ersten Anlegen der Konfiguration entsteht und im Reiter
+*Einbindung in Loxone* steht. Ohne gültiges Token antwortet er mit HTTP 403 und
+`ERR=TOKEN`; ist überhaupt keines eingerichtet, mit `ERR=KEIN_TOKEN_EINGERICHTET`
+statt wahllos zu antworten. `?selftest=1&token=…` ist die stille Probe: sie
+sagt nur, ob das Token stimmt.
+
+Die Suchtexte für die virtuellen Eingänge stehen im Reiter *Einbindung in
+Loxone* und tragen alle das führende Semikolon (`\i;DISTANCE=\i\v`). Ohne das
+läse ein Eingang mit kurzem Namen den erstbesten längeren mit — der Fehler
+meldet sich nie, er zeigt nur die falsche Zahl.
+
+### Lebenszeichen: `ts`, `zaehler`, `online`
+
+Ein Plugin, das schweigt, sieht in Loxone aus wie ein Plugin, dessen Wert sich
+nicht ändert. Der Dienst sendet deshalb **in jedem Durchgang** drei Werte, und
+zwar an der Doppelmeldungssperre vorbei:
+
+* `ts` — der Zeitpunkt der Messung,
+* `zaehler` — 0…999 und wieder von vorn; **-1 heißt: noch kein Durchgang**,
+* `online` — 1, solange der Dienst läuft.
+
+Der Endpunkt rechnet daraus `ALTER` in Sekunden und setzt `OK=0`, sobald die
+Werte älter sind als `max(180, 3 × Takt)`. In Loxone genügt damit ein Blick auf
+`ONLINE`, um zwischen "steht still" und "misst denselben Wert" zu unterscheiden.
+
+### Ein Wachposten vor jedem Formular
+
+Jedes Formular trägt ein Merkmal, das aus dem Aktionstoken abgeleitet, aber
+nirgends gespeichert wird. Fehlt es oder stimmt es nicht, wird `$_POST` geleert
+und die Seite meldet, dass das Formular nicht von ihr kam. Gemessen: ein
+untergeschobenes "Dienst anhalten" und ein untergeschobenes "neues Token"
+bewirken beide nichts, dieselben Formulare mit Merkmal wirken.
+
+### Cron-Wächter alle fünf Minuten
+
+`cron/cron.05min` sieht nach, ob der Dienst läuft, während er laufen soll —
+Sollmerker ist `enabled=1` in der Konfiguration, nicht eine Datei nebenher. Er
+sucht den Prozess **argumentweise** statt über einen Namensschnipsel, damit
+eine Zweitinstallation nicht die erste erwischt. Läuft alles, schweigt er.
+
+### Ein eigener Reiter für MQTT
+
+MQTT-Haken und Themenpräfix standen bisher zwischen den Sensoreinstellungen.
+Jetzt hat MQTT einen eigenen Reiter, und jedes Formular fasst **ausschließlich
+seine eigenen Schlüssel** an. Das ist kein Schönheitsgrund: Ein nicht
+angehakter Haken steht überhaupt nicht im Formularinhalt. Läse der
+Einstellungszweig alle Felder, würde aus "MQTT ein" beim Speichern der
+Sensorwerte still ein "MQTT aus".
+
+### Eine Quelle für Vorgaben und Felder
+
+`bin/us_vorgaben.json` nennt die 22 Vorgabewerte und die 8 Felder mit Art,
+Einheit und Bereich. Python und PHP lesen dieselbe Datei. Vorher standen die
+Grenzen an drei Stellen, und die Loxone-Vorlage trug `MinVal="-2147483647"` —
+eine Zahl, die nichts über den Wertebereich aussagt und in Loxone Config jede
+Plausibilitätsprüfung aushebelt. Findet Python die Datei nicht, startet der
+Dienst **nicht**; er rät nicht.
+
+### Behoben beim Nachmessen
+
+* **Das Aktionstoken überlebte kein Speichern.** `us_pruefen()` beginnt bei den
+  Vorgaben und füllt nur die Schlüssel, die sie selbst prüft — das Token war
+  keiner davon, also stand nach jedem Speichern die Vorgabe darin, und die ist
+  leer. Wirkung: jede Adresse im Miniserver wäre tot gewesen und die
+  Sicherungsdatei wertlos. Gefunden hat es keine Syntaxprüfung, sondern eine
+  Messung, die nach dem Speichern **in die Konfigurationsdatei sah**.
+
+## Version 1.1.12 — zwei tödliche Fehler
+
+Kleine Korrekturfassung auf 1.1.11, ohne neue Funktionen.
+
+* **`us_cfg()` ohne Argumente.** Die Oberfläche rief die Funktion an einer
+  Stelle ohne ihre Parameter auf. Unter PHP 7.4 wie unter 8.4 gemessen:
+  Rückgabewert 255, Seite leer. Der Reiter *Einstellungen* war damit in der
+  ausgelieferten Fassung nicht benutzbar.
+* **Der Sicherungsblock lief nach dem Seitenkopf.** Ein `header()` nach der
+  ersten Ausgabe wirkt nicht; die Sicherungsdatei kam als Text mitten in der
+  Seite an. Der Block steht jetzt vor `LBWeb::lbheader()`.
+* Eine gemeinsame Prüfung `us_pruefen()` für Formular **und** Sicherungsdatei,
+  damit beide Wege nicht auseinanderlaufen.
+* Die Logdatei des Dienstes wird bei 500 kB gekappt.
+* Der Reiter *Test* behauptete, das MQTT-Gateway sei ein eigenes Plugin. Es ist
+  seit LoxBerry 3 Bestandteil des Systems.
+
 ## Version 1.1.2 — nachgemessen und korrigiert
 
 ### Der Ramdisk-Ordner trägt jetzt den Plugin-Namen
@@ -372,9 +471,15 @@ Nachgeprüft in dieser Reihenfolge:
 | `<Präfix>/liter` | Inhalt in Litern (nur mit Gesamtvolumen) |
 | `<Präfix>/valid` | 1 = die letzte Messung war brauchbar |
 | `<Präfix>/online` | 1 = der Dienst läuft |
+| `<Präfix>/ts` | Zeitpunkt der Messung (Sekunden seit 1970) |
+| `<Präfix>/zaehler` | zählt je Durchgang 0…999 und beginnt von vorn; **-1 = noch kein Durchgang** |
 | `<Präfix>/last_error` | letzte Fehlermeldung, sonst leer |
 
 Voreingestelltes Präfix: `ultraschall`. Alle Themen sind **retained**.
+
+`ts`, `zaehler` und `online` gehen in **jedem** Durchgang hinaus, auch wenn sich
+der Messwert nicht geändert hat — sonst ließe sich ein stehengebliebener Dienst
+nicht von einem gleichbleibenden Füllstand unterscheiden.
 
 ## Anschluss
 
@@ -407,8 +512,27 @@ der Oberfläche, das Speichern mit ungültigen Eingaben (Kommazahlen, vertauscht
 Grenzen, doppelt belegter GPIO-Pin), das Einlesen einer Konfiguration im alten
 Format auf beiden Seiten und die erzeugten Loxone-Vorlagen.
 
+Für 1.2.0 kamen hinzu, jeweils am laufenden Aufbau mit **getrennten Bäumen**
+(`webfrontend/htmlauth/plugins/…` und `webfrontend/html/plugins/…`) gemessen,
+unter PHP 7.4 **und** 8.4:
+
+* der Endpunkt mit richtigem, falschem, fehlendem und gar nicht eingerichtetem
+  Token, mit unbekannter Aktion und mit einem Token, das als Feld statt als
+  Zeichenkette ankommt — sowie der unmittelbare Aufruf der Bibliothek, der mit
+  403 endet statt mit einer Seite;
+* der Wachposten in beide Richtungen: ohne Merkmal wirkt kein Formular und die
+  Konfiguration bleibt unverändert, mit Merkmal wirkt dasselbe Formular;
+* dass der MQTT-Reiter keinen Sensorschlüssel anfasst und der
+  Einstellungsreiter keinen MQTT-Schlüssel;
+* Sichern und Zurückspielen gegen alle sieben Hausregeln: unveränderte Datei,
+  geänderte Datei, halb gültige Datei (ändert nichts und nennt **alle**
+  Beanstandungen), unbekannter Schlüssel, kein JSON, leere Datei, keine Datei,
+  zu große Datei — und dass die Datei das Aktionstoken trägt;
+* dass das Aktionstoken drei Speichervorgänge hintereinander übersteht.
+
 **Nicht geprüft: der Betrieb an einem echten Sensor.** Weder SRF02 noch HC-SR04
-standen zur Verfügung.
+standen zur Verfügung. Ebenso ungemessen: das Verhalten am echten MQTT-Gateway
+und der Cron-Wächter unter einem echten crond.
 
 ## Installation
 

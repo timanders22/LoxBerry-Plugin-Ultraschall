@@ -1,0 +1,98 @@
+#!/bin/sh
+# Ultraschall Entfernung - Waechter fuer den Dauerlaeufer (seit 1.2.0)
+#
+# WARUM ES IHN GIBT
+#
+# Bis 1.1.12 hatte dieses Plugin kein cron-Verzeichnis. Starb der Dienst, lief
+# er bis zum naechsten Neustart des Rechners nicht wieder an - und bei einem
+# Zisternen-Plugin heisst das: der Fuellstand friert ein, waehrend in Loxone
+# alles normal aussieht, weil ein virtueller Eingang seinen letzten Wert
+# behaelt.
+#
+# Schwerer wog der Aktualisierungsfall, und der trat bei JEDEM Update ein:
+# preupgrade.sh haelt den Dienst an, postinstall.sh und postupgrade.sh starten
+# ihn nicht, und daemon/daemon laeuft nur beim Systemstart. Nach jedem
+# Auto-Update stand das Plugin still, bis jemand die Oberflaeche oeffnete und
+# speicherte - und die Installation meldete dabei "ALLES ERLEDIGT".
+#
+# WAS HIER DER SOLLMERKER IST
+#
+# Nicht eine eigene Datei, sondern "enabled" in der Konfiguration. Das hat
+# zwei Vorteile: der Anwender SIEHT ihn in der Oberflaeche, und er uebersteht
+# ein Update ohne Zutun - der Installer raeumt config/plugins/<ordner>/ zwar
+# ab, aber preupgrade.sh sichert die Datei vorher und postinstall.sh spielt
+# sie zurueck. Ein zusaetzlicher Merker im Datenordner ueberlebte das NICHT:
+# purge_installation laeuft auch im Upgrade-Zweig.
+#
+# Wer den Dienst im Reiter Test anhaelt, ohne das Plugin auszuschalten,
+# bekommt ihn hier binnen fuenf Minuten zurueck. Das steht so am Knopf.
+#
+# ZUM TAKT: cron.05min, nicht cron.01min. Der Dienst ist ein Dauerlaeufer,
+# kein Abrufskript - fuenf Minuten Ausfall sind verschmerzbar, und ein
+# minuetlicher Waechter, der nichts zu tun hat, ist Rauschen.
+
+set -u
+
+BIN=REPLACELBPBINDIR
+CFG=REPLACELBPCONFIGDIR
+LOG=REPLACELBPLOGDIR
+
+SKRIPT="$BIN/ultraschall.py"
+DATEI="$CFG/ultraschall.cfg"
+
+# Ein Waechter, der gegen den Willen des Anwenders arbeitet, ist schlimmer als
+# keiner: ist das Plugin ausgeschaltet, wird NICHTS getan und NICHTS gemeldet.
+[ -r "$DATEI" ] || exit 0
+grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*1[[:space:]]*$' "$DATEI" || exit 0
+[ -x "$SKRIPT" ] || exit 0
+
+# Den Ramdisk-Ordner genauso bilden wie bin/us_common.py und us_lib.php: aus
+# dem PLUGIN-Ordnernamen. Steht dort fest "ultraschall", teilen sich eine
+# Zweitinstallation und die erste dieselbe PID-Datei, und dieser Waechter
+# beurteilte den falschen Dienst.
+PDIR=$(basename "$BIN")
+if [ -d /run/shm ]; then RAMDIR="/run/shm/$PDIR"; else RAMDIR="/tmp/$PDIR"; fi
+
+# Argumentweise erkennen, nicht per Teilstringsuche ueber die Befehlszeile:
+# "pgrep -f ultraschall.py" traefe auch einen Editor mit offener Datei und ein
+# zweites Exemplar des Plugins. Geprueft werden die ersten beiden Argumente
+# gegen den VOLLEN Pfad.
+ist_unser() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | head -2 | grep -qxF "$SKRIPT"
+}
+
+LAEUFT=0
+if [ -f "$RAMDIR/dienst.pid" ]; then
+    P=$(cat "$RAMDIR/dienst.pid" 2>/dev/null)
+    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null && ist_unser "$P"; then
+        LAEUFT=1
+    fi
+fi
+if [ "$LAEUFT" -eq 0 ]; then
+    for D in /proc/[0-9]*; do
+        P=$(basename "$D")
+        if ist_unser "$P" && kill -0 "$P" 2>/dev/null; then LAEUFT=1; break; fi
+    done
+fi
+
+# Im Normalfall schweigt der Waechter. Ein Dienst, der laeuft, ist keine
+# Meldung wert - in einem Protokoll, das alle fuenf Minuten dasselbe ruft,
+# findet niemand mehr die Zeile, die zaehlt.
+[ "$LAEUFT" -eq 1 ] && exit 0
+
+mkdir -p "$LOG" 2>/dev/null
+DATUM=$(date '+%Y-%m-%d %H:%M:%S')
+echo "$DATUM WARNING Der Messdienst lief nicht und wird vom Waechter gestartet." >> "$LOG/ultraschall.log"
+nohup "$SKRIPT" >> "$LOG/ultraschall.log" 2>&1 &
+
+# Nachsehen, ob es geholfen hat - und einen Fehlschlag MELDEN statt ihn nach
+# /dev/null zu schreiben. Ein Waechter, der schweigend nichts tut, ist
+# schlimmer als keiner.
+sleep 3
+for D in /proc/[0-9]*; do
+    P=$(basename "$D")
+    if ist_unser "$P" && kill -0 "$P" 2>/dev/null; then exit 0; fi
+done
+echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR   Der Waechter konnte den Messdienst nicht starten." >> "$LOG/ultraschall.log"
+exit 1

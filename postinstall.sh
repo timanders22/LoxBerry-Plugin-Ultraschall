@@ -172,4 +172,45 @@ netz_zurueck() {
 }
 netz_zurueck "ultraschall.cfg" "1ee3355c6f3812ade3c09e74b5b791217448d949daccda4334832b5822833ea0"
 
+# ---------------------------------------------------------------------------
+# DEN DIENST WIEDER ANWERFEN - erst hier, nach dem Zurueckspielen.
+#
+# preupgrade.sh haelt den laufenden Dienst an, damit er nicht in die neue
+# Fassung hineinlaeuft. Bis 1.1.12 hat ihn danach NIEMAND wieder gestartet:
+# postinstall und postupgrade taten es nicht, und daemon/daemon laeuft nur
+# beim Systemstart. Nach jedem Auto-Update stand das Plugin still, bis
+# jemand die Oberflaeche oeffnete und speicherte - und die Installation
+# meldete dabei "ALLES ERLEDIGT".
+#
+# Der Sollmerker ist "enabled" in der Konfiguration, keine eigene Datei:
+# der Anwender sieht ihn, und er uebersteht das Update, weil preupgrade ihn
+# sichert und die Zeilen darueber ihn zurueckspielen. Ein Merker im
+# Datenordner ueberlebte es NICHT - purge_installation laeuft auch im
+# Upgrade-Zweig und raeumt data/plugins/<ordner>/ vollstaendig ab.
+#
+# Ist das Plugin ausgeschaltet, wird NICHTS gestartet. Eine Neuinstallation
+# faellt darunter: dort steht enabled=0, und erst sollen Sensor und Masse
+# eingetragen werden.
+# ---------------------------------------------------------------------------
+US_CFG="$NETZ_CFG/ultraschall.cfg"
+US_SKRIPT="$LBPBIN/$PDIR/ultraschall.py"
+if [ -r "$US_CFG" ] \
+   && grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*1[[:space:]]*$' "$US_CFG" \
+   && [ -x "$US_SKRIPT" ]; then
+    # Als loxberry, nicht als root: der Dienst braucht keine Rootrechte,
+    # und liefen PID-Datei und Protokoll root, koennte die Oberflaeche ihn
+    # hinterher nicht mehr anhalten.
+    su loxberry -s /bin/bash -c "nohup $US_SKRIPT >> $PLOG/ultraschall.log 2>&1 &" >/dev/null 2>&1
+    sleep 2
+    # Die Wirkung pruefen, nicht den Rueckgabewert des Starts.
+    if pgrep -u loxberry -f "$US_SKRIPT" >/dev/null 2>&1; then
+        echo "<OK> Messdienst wieder gestartet."
+    else
+        echo "<INFO> Messdienst noch nicht gestartet - der Waechter"
+        echo "<INFO> (cron.05min) holt ihn binnen fuenf Minuten nach."
+    fi
+else
+    echo "<INFO> Das Plugin ist ausgeschaltet - der Messdienst wird nicht gestartet."
+fi
+
 exit 0

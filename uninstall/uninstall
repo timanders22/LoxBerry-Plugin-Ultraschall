@@ -96,6 +96,41 @@ if [ -f /etc/modules-load.d/ultraschall.conf ]; then
         && echo "<OK> /etc/modules-load.d/ultraschall.conf entfernt."
 fi
 
+# Die Zweitschrift, die preupgrade.sh NEBEN den Konfigurationsordner legt.
+#
+# Der Installer entfernt nur das VERZEICHNIS config/plugins/<ordner>/;
+# was eine Ebene darueber mit einem Punkt im Namen liegt, bleibt. Bis
+# 1.1.11 blieb es liegen - und postinstall.sh holte daraus bei einer
+# spaeteren NEUinstallation still die alte Konfiguration zurueck. Eine
+# saubere Neuinstallation war damit keine.
+#
+# Nachgezaehlt statt behauptet: gemeldet wird der Erfolg nur, wenn die
+# Datei danach wirklich weg ist.
+ZWEITSCHRIFT="$BASE/config/plugins/$PDIR.backup.ultraschall.cfg"
+if [ -f "$ZWEITSCHRIFT" ]; then
+    rm -f "$ZWEITSCHRIFT"
+    if [ -f "$ZWEITSCHRIFT" ]; then
+        echo "<WARNING> Zweitschrift $ZWEITSCHRIFT liess sich nicht entfernen."
+        echo "<WARNING> Sie enthaelt die Einstellungen und gehoert von Hand geloescht."
+    else
+        echo "<OK> Zweitschrift der Einstellungen entfernt."
+    fi
+fi
+
+# Der Cron-Waechter. LoxBerry legt ihn beim Installieren unter
+# system/cron/cron.05min/<plugin> ab und entfernt ihn beim Deinstallieren
+# selbst - hier wird nur nachgesehen und gemeldet, falls doch etwas
+# liegenbleibt. Ein Rest in einem anderen Cron-Ordner findet sonst nie
+# wieder jemand.
+for TAKT in 01 05 10 15 30 60; do
+    REST="$BASE/system/cron/cron.${TAKT}min/$PDIR"
+    if [ -e "$REST" ]; then
+        rm -rf "$REST" 2>/dev/null
+        [ -e "$REST" ] && echo "<WARNING> Cron-Rest $REST liess sich nicht entfernen." \
+                       || echo "<OK> Cron-Eintrag cron.${TAKT}min entfernt."
+    fi
+done
+
 echo "<INFO> Der Dienst sendet MQTT mit gesetztem Retain-Merker."
 echo "<INFO> Die Themen unter <praefix>/ bleiben deshalb im Broker stehen und"
 echo "<INFO> sind dort von Hand zu loeschen (System -> MQTT Gateway)."
