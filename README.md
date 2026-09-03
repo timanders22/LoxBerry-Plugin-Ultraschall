@@ -30,6 +30,147 @@ schlägt fehl.
 > MIT-Lizenz (siehe `LICENSE`). Auf den ursprünglichen Bestand kann sich diese
 > Freigabe naturgemäß nicht erstrecken.
 
+## Version 1.2.2 — was still bediente, meldet jetzt
+
+Ein Durchgang Zeile für Zeile durch alle 32 Dateien. Was dabei gefunden
+wurde, hat eine gemeinsame Gestalt: **das Plugin hat bedient, wo es hätte
+melden müssen** — es lieferte eine plausible Zahl statt einer Fehlanzeige.
+
+### Zahlen, die keine sind
+
+- **Eine negative Entfernung war ein Messwert.** Bis 1.2.1 wurde ein nach
+  der Korrektur negatives Ergebnis auf `0.0` gesetzt. Gemessen mit
+  `offset_cm = -50` und einem Sensorwert von 30 cm: Ergebnis 0,0 cm, daraus
+  mit `leer_cm=100`/`voll_cm=20` ein Füllstand von **100 %** und der volle
+  Behälterinhalt in Litern — mit `valid=1`. In Loxone stand „randvoll", wo
+  in Wahrheit eine unmögliche Zahl herauskam. Jetzt gibt es keinen Wert,
+  und der Grund steht dabei.
+- **Vertauschte Kalibrierung lief rückwärts.** Abgefangen war nur
+  `leer == voll`. Gemessen mit `leer_cm=20`/`voll_cm=100`: 25 cm ergaben
+  6,2 %, 95 cm ergaben 93,8 % — je weiter der Wasserspiegel weg, desto
+  voller. Beide Felder sind in der Oberfläche unabhängig voneinander
+  geprüft; es gab nichts, was widersprochen hätte. Jetzt wird `leer <= voll`
+  als Widerspruch gemeldet (`FEHLER.LEER_VOLL`) und kein Füllstand
+  gerechnet.
+- **Ein unlesbarer Zahlenwert fiel lautlos auf die Vorgabe zurück.** Die
+  Oberfläche nimmt das deutsche Komma an und schreibt einen Punkt in die
+  Datei — eine von Hand bearbeitete Datei mit `offset_cm=1,5` wurde aber
+  ohne ein Wort zu `0`. Jetzt steht es im Protokoll und im Reiter *Test*.
+- **Die Messschleife hatte keine Obergrenze.** `messungen=100000` in der
+  Textdatei ließ den Dienst nicht mehr aus dem Durchgang heraus: keine
+  Zustandsdatei, kein MQTT, kein Herzschlag — und der Wächter startet ihn
+  nicht neu, weil der Prozess ja läuft. Jetzt bei 180 s gekappt, laut. Was
+  das Formular zulässt (25 Messungen à 5 s = 120 s), bleibt unangetastet.
+
+### MQTT
+
+- **Ein misslungener erster Verbindungsversuch war endgültig.** Beim
+  Systemstart fahren Broker und Gateway noch hoch, der erste Versuch
+  scheitert — das ist der Normalfall. Bis 1.2.1 blieb ein halb aufgebauter
+  Client stehen; `senden()` prüfte nur `if not $client` und veröffentlichte
+  danach in eine nie verbundene Verbindung. MQTT war für die ganze Laufzeit
+  des Prozesses tot, und im Broker standen weiter die zurückbehaltenen
+  Werte von vorher. Jetzt wird nachgefasst: nach einer Minute, dann immer
+  seltener, höchstens alle fünf Minuten — und nach geglückter Verbindung
+  wird **alles** neu gesendet, weil der Broker die Werte nicht kennt.
+
+### Der Zeitstempel sagt wieder die Wahrheit
+
+- **`TS` wurde auch ohne Messung aufgefrischt.** Damit meldete der Endpunkt
+  `OK=1`, während seit Stunden nichts gemessen wurde. Jetzt wandert `TS` nur
+  bei einer **gelungenen** Messung; dass der Dienst lebt, sagt der neue
+  Schlüssel `herzschlag` in der Zustandsdatei (kein neues MQTT-Thema — dafür
+  gibt es `zaehler`). Ein Dienstneustart übernimmt den letzten Zeitstempel
+  aus der Zustandsdatei, statt eine gelungene Messung von vorhin für nie
+  geschehen zu erklären.
+- **Nach einem Sensorfehler wurde der Sensor nie neu geöffnet.** Ein Wackler
+  am I2C-Kabel hieß: das alte Busobjekt bleibt, jede weitere Messung
+  scheitert daran, die Meldung wird auf eine je Stunde gedämpft — und der
+  Fehler überlebte bis zum nächsten Dienstneustart. Jetzt wird der Sensor
+  bei einem **Sensor**fehler geschlossen und neu aufgebaut; bei bloß
+  unplausiblen Werten nicht, denn da hilft es nicht.
+
+### Oberfläche
+
+- **Ohne Aktionstoken war die Seite eine Sackgasse.** Fehlte die
+  Konfigurationsdatei, gab es kein Token; ohne Token wies der Wachposten
+  jeden POST ab — auch den, der ein Token erzeugt hätte. Jetzt legt der
+  erste Seitenaufruf die Datei an, der Knopf *Neues Token erzeugen* ist
+  immer sichtbar, und er ist die **einzige** Ausnahme, die ohne Token
+  angenommen wird.
+- **Ein geleertes Themenpräfix fiel still auf `ultraschall` zurück** — der
+  Dienst veröffentlichte ab da unter einem anderen Präfix, im Miniserver kam
+  nichts mehr an. Jetzt bleibt der bisherige Wert stehen, und es wird
+  beanstandet.
+- **Eine Sicherung aus 1.1.x löschte das Aktionstoken**, weil sie keines
+  enthält. Jetzt bleibt das vorhandene stehen.
+- **Die Seite nannte acht virtuelle Eingänge, die Vorlage legt sieben an.**
+- Der Speichern-Knopf trägt jetzt `sm-b-aktion`; die Beispielzeile und die
+  Befehle-Tabelle nennen `OK` und `ALTER` mit; vier neue Sprachschlüssel in
+  **beiden** Dateien (jetzt je 349, deckungsgleich).
+
+### Installation, Dienst, Wächter
+
+- `uninstall/uninstall` suchte die LoxBerry-Wurzel über vier feste `..`
+  und löschte `/tmp/ultraschall.SAVE` — bei einer Zweitinstallation traf das
+  die Sicherung der **ersten**. Jetzt Aufwärtssuche und nur der eigene
+  Ordner.
+- `daemon/daemon` legte den Protokollordner unter Umständen als `root` an;
+  der Dienst startete beim Systemstart dann gar nicht. Jetzt mit
+  Eigentumsübergabe und Nachschau, ob er wirklich läuft.
+- `cron/cron.05min` startet den Dienst als `loxberry`, wenn der Lauf selbst
+  `root` ist. Unter welchem Benutzer LoxBerry `system/cron/cron.05min`
+  ausführt, ist **nicht gemessen** — deshalb wird gefragt (`id -u`), nicht
+  angenommen.
+- `postinstall.sh` verglich die Konfiguration gegen eine fest eingetragene
+  SHA-256-Summe; jetzt gegen die mitgelieferte Datei selbst. Schlägt das
+  Eintragen von I2C in `config.txt` fehl, steht es als Warnung da, statt
+  still zu bleiben.
+- `postupgrade.sh` behauptete die Rücksicherung; jetzt wird sie nachgemessen.
+- `--einmal` gibt es nicht mehr. Der Schalter stand in der Positivliste,
+  wurde angenommen — und danach las keine Zeile `sys.argv` wieder: der
+  Aufruf landete in der Dienstschleife. Wer der eingebauten Hilfe folgte,
+  startete ein **zweites** Exemplar neben dem laufenden Dienst, beide am
+  selben Sensor. Den Einmalabruf macht `bin/us_messen.py`.
+- `ARCHITECTURE=false` statt leer; `bin/us_common.py` trägt wieder die
+  richtige Fassungsnummer (sie stand seit 1.2.0 auf `1.2.0`).
+
+### Zeilenenden
+
+`plugin.cfg`, `release.cfg`, `prerelease.cfg` und beide `language_*.ini`
+liegen jetzt auch im Arbeitsordner als LF — so, wie der Anwender sie seit
+v1.1.11 aus jedem Tag-Archiv bekommt (`.gitattributes` normalisiert beim
+Einchecken). Für bestehende Installationen ändert das kein Byte.
+
+### Geprüft
+
+Ein eigener Prüfstand, `Pruefung-Ultraschall-1.2.2/`:
+
+* `messen.py` — **28 Prüfungen an der laufenden Seite** über HTTP gegen
+  `php -S` mit **getrennten Bäumen**, unter PHP 7.4.33 **und** 8.4.24: beide
+  0 Beanstandungen. Gegen 1.2.1 werden **12 von 12** Eichfällen rot (unter
+  7.4 zehn — zwei Fälle prüfen PHP-8-Warnungen, die unter 7.4 Notices sind
+  und vom `error_reporting` des Hausstandards unterdrückt werden).
+* `kern.py` — **23 Prüfungen am Python-Teil** mit einem Sensor-Stellvertreter:
+  0 Beanstandungen, gegen 1.2.1 **15 von 15** Eichfällen rot.
+
+**Ungemessen und nicht behauptet:** der Betrieb an einem echten Sensor (es
+gibt keinen), `retain` am laufenden MQTT-Gateway, das Mithören fremder
+Themen am Broker, der Cron-Wächter unter einem echten `crond` und der
+Endpunkt aus einem echten Miniserver.
+
+## Version 1.2.1 — die Überschrift für Gateway V2
+
+Gemessen am Tag-Archiv (v1.2.0 gegen v1.2.1, Datei für Datei): 1.2.1 hat
+**einen** Sprachschlüssel geändert, in beiden Sprachdateien —
+`SCHRITT_2_ABO_IM_MQTT_GATEWAY_EINT` von „Schritt 2: Abo im MQTT-Gateway
+eintragen" auf „Schritt 2: Das Abo im MQTT-Gateway" (englisch entsprechend).
+Dazu die Fassungsnummer in `plugin.cfg`. `release.cfg` und `prerelease.cfg`
+tragen im Tag-Archiv v1.2.1 noch die Nummer 1.2.0 — der bekannte Nachlauf:
+die beiden Dateien werden erst nach dem Tag gezogen.
+
+Sonst ist keine Datei angefasst worden.
+
 ## Version 1.2.0 — Endpunkt, Aktionstoken, Lebenszeichen
 
 ### Ein eigener Endpunkt für den Miniserver
@@ -338,8 +479,9 @@ Test acht Treffer.
   Fläche.
 - **Rund 30 sichtbare Texte** liefen noch nicht über `us_t()`: die Meldungen
   nach dem Speichern und Kalibrieren, die Spaltenköpfe der Baustein-Tabelle,
-  der Seitentitel. Beide Sprachdateien haben jetzt **221 Schlüssel und sind
-  deckungsgleich**; jeder wird benutzt, keiner fehlt.
+  der Seitentitel. Beide Sprachdateien waren mit 1.1.1 **deckungsgleich**;
+  jeder Schlüssel wird benutzt, keiner fehlt. (Die damals genannte Zahl
+  221 gilt für 1.1.1; nachgemessen sind es mit 1.2.2 je **349**.)
 - **Sieben tote Schlüssel entfernt.** Drei davon (`TEXT.MQTT`,
   `TEXT.STAND_VOR_2`, `TEXT.NEUESTE_ZEILE_ZUERST_NOCH_KEINE_PR`) waren
   Bruchstücke aus einem automatischen Übersetzungslauf, der über eine

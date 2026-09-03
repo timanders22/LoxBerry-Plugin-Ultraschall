@@ -31,16 +31,16 @@ def main():
     cfg, _alt = gem.konfiguration_lesen()
     try:
         ergebnis = gem.messen(cfg)
-    except gem.SensorFehler as fehler:
-        print(json.dumps({
-            "entfernung": None,
-            "roh": [],
-            "verworfen": [],
-            "fehler": str(fehler),
-            "hinweis": "Der Sensor liess sich nicht ansprechen. Der Knopf "
-                       "\"Sensor pruefen\" zeigt, woran es liegt.",
-        }, ensure_ascii=False))
-        return
+    # HIER STAND EIN "except gem.SensorFehler" (bis 1.2.1). Er konnte nie
+    # greifen: gem.messen() faengt SensorFehler selbst ab und gibt ihn im
+    # Feld "fehler" zurueck; gem.sensor_aufbauen() wirft ihn nicht. Gemessen
+    # an einem Lauf ohne smbus-Bibliothek - die Antwort trug "fehler", aber
+    # kein "hinweis": der Zweig wurde nicht durchlaufen. Der sorgfaeltig
+    # formulierte Satz "Der Knopf 'Sensor pruefen' zeigt, woran es liegt"
+    # hat den Anwender deshalb NIE erreicht.
+    #
+    # Der Hinweis steht jetzt dort, wo der Fall wirklich ankommt - unten, an
+    # der Angabe, die gem.messen() ueber sich selbst macht.
     except Exception as fehler:  # noqa: BLE001
         # Alles Unerwartete ebenfalls als JSON melden - die Oberflaeche kann
         # mit einem Python-Rueckverfolgungsprotokoll nichts anfangen.
@@ -53,6 +53,9 @@ def main():
         return
 
     ergebnis["sensor"] = cfg.get("sensor", "srf02")
+    if ergebnis.get("sensorfehler"):
+        ergebnis["hinweis"] = ("Der Sensor liess sich nicht ansprechen. Der "
+                               "Knopf \"Sensor pruefen\" zeigt, woran es liegt.")
     print(json.dumps(ergebnis, ensure_ascii=False))
 
 

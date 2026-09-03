@@ -17,12 +17,33 @@ PBIN=$LBPBIN/$PDIR
 # ---------------------------------------------------------------------------
 # WARUM GESICHERT WIRD
 #
-# LoxBerry loescht config/plugins/<ordner> beim Upgrade nicht - es kopiert
-# aber die MITGELIEFERTE config/ultraschall.cfg darueber
-# (plugininstall.pl: cp -r $tempfolder/config/* $lbhomedir/config/plugins/...).
+# BERICHTIGT IN 1.2.2. Hier stand: "LoxBerry loescht
+# config/plugins/<ordner> beim Upgrade nicht - es kopiert aber die
+# MITGELIEFERTE config/ultraschall.cfg darueber."
+#
+# Der zweite Halbsatz stimmt, der erste nicht. purge_installation hat
+# ZWEI Aufrufstellen, und eine davon liegt IM Upgrade-Zweig; sie
+# entfernt config/plugins/<ordner>/ UND data/plugins/<ordner>/
+# vollstaendig. Nachgemessen an sbin/plugininstall.pl (Zweig master):
+#
+#   :858   if ($isupgrade) {
+#   :886       &purge_installation;        <- im Upgrade-Zweig
+#   :916/:920  danach wird config/plugins/<ordner>/ neu angelegt und
+#              der Archivinhalt hineinkopiert
+#   :233   &purge_installation("all")      <- der zweite Aufruf, beim
+#              Deinstallieren
+#
+# Das ist keine Wortklauberei: die falsche Praemisse ist genau die, aus
+# der bis zum 02.09.2026 ein Merker im Konfigurationsordner entstand,
+# der dort nie ankommen konnte (siehe unten). Dreissig Zeilen tiefer
+# stand in derselben Datei bereits das Richtige.
+#
 # Ohne diese Sicherung stuenden nach jedem Upgrade Sensortyp, Adressen,
-# Behaeltermasse und Takt wieder auf Werkseinstellung. Die Reihenfolge im
-# Installer passt dazu: preupgrade -> Konfig kopieren -> postupgrade.
+# Behaeltermasse und Takt wieder auf Werkseinstellung. Die Reihenfolge
+# im Installer: preupgrade -> purge_installation -> Konfig aus dem
+# Archiv kopieren -> postinstall -> postupgrade. Es gibt genau ein
+# Rettungsfenster (hier) und zwei Rueckgabefenster (postinstall aus der
+# Zweitschrift, postupgrade aus dem Arbeitsordner).
 #
 # WOHIN GESICHERT WIRD
 #
@@ -49,16 +70,37 @@ else
     SICHERUNG="/tmp/${PDIR}.SAVE"
 fi
 mkdir -p "$SICHERUNG" 2>/dev/null
-# Den benutzten Ort hinterlegen, damit postupgrade.sh ihn nicht erneut raten
-# muss - das waere die eine Stelle, an der beide auseinanderlaufen koennen.
-mkdir -p "$PCONFIG" 2>/dev/null
-echo "$SICHERUNG" > "$PCONFIG/.upgrade_pfad" 2>/dev/null
+
+# HIER STAND EIN MERKER .upgrade_pfad IM KONFIGURATIONSORDNER, den
+# postupgrade.sh als ersten von drei Wegen lesen sollte - mit der
+# Begruendung, das sei "die eine Stelle, an der beide auseinanderlaufen".
+#
+# Er kann dort nie ankommen: purge_installation entfernt genau dieses
+# Verzeichnis, bevor postupgrade laeuft. Nachgestellt: nach preupgrade da,
+# nach dem Abraeumen weg. Der Zweig war tot und das rm -f darauf ebenfalls.
+#
+# Gefaehrlich war es nicht - der Rueckfall auf den Arbeitsordner traegt -,
+# aber die Zusicherung sagte das Gegenteil dessen, was der Code tut. Beide
+# Skripte rechnen den Pfad aus DEMSELBEN Argument aus, und das ist die eine
+# Stelle, an der sie nicht auseinanderlaufen koennen.
+#
+# Ausgebaut am 02.09.2026. Die Schwesterlinie Smartmeter classic hatte
+# denselben Merker schon in 2.3.14 aus demselben Grund entfernt.
 
 echo "<INFO> Sicherungsordner: $SICHERUNG"
-if cp -a "$PCONFIG/." "$SICHERUNG/" 2>/dev/null; then
+# Die beiden Faelle sind ENTGEGENGESETZT und bekommen deshalb zwei
+# Meldungen (seit 1.2.2): bis 1.2.1 sagte der else-Zweig "nichts zu
+# sichern" - auch dann, wenn eine vorhandene Konfiguration sich NICHT
+# kopieren liess. Einmal ist nichts zu retten, einmal ist die Rettung
+# misslungen.
+if [ ! -s "$PCONFIG/ultraschall.cfg" ]; then
+    echo "<INFO> Keine bestehende Konfiguration gefunden - nichts zu sichern."
+elif cp -a "$PCONFIG/." "$SICHERUNG/" 2>/dev/null \
+     && [ -s "$SICHERUNG/ultraschall.cfg" ]; then
     echo "<OK> Konfiguration gesichert."
 else
-    echo "<INFO> Keine bestehende Konfiguration gefunden - nichts zu sichern."
+    echo "<ERROR> Die vorhandene Konfiguration liess sich NICHT sichern."
+    echo "<ERROR> Nach dem Upgrade die Einstellungen bitte nachsehen."
 fi
 
 # ---------------------------------------------------------------------------
@@ -102,10 +144,20 @@ done
 NETZ_BASE="${5:-$LBHOMEDIR}"
 NETZ_PDIR="${3:-ultraschall}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
-if [ -s "$NETZ_CFG/ultraschall.cfg" ]; then
-    cp -p "$NETZ_CFG/ultraschall.cfg" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.ultraschall.cfg" 2>/dev/null \
-        && chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.ultraschall.cfg" 2>/dev/null
+# Die Meldung stand bis 1.2.1 AUSSERHALB dieses if und hinter zwei
+# Befehlen mit 2>/dev/null - sie erschien also auch dann, wenn gar keine
+# Konfiguration da war oder das Kopieren scheiterte. Die Zweitschrift
+# ist der einzige Rettungsweg, der purge_installation ueberlebt; ihr
+# Vorhandensein gehoert gemessen, nicht behauptet.
+NETZ_ZWEIT="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.ultraschall.cfg"
+if [ ! -s "$NETZ_CFG/ultraschall.cfg" ]; then
+    echo "<INFO> Keine Einstellungen vorhanden - keine Zweitschrift noetig."
+elif cp -p "$NETZ_CFG/ultraschall.cfg" "$NETZ_ZWEIT" 2>/dev/null \
+     && [ -s "$NETZ_ZWEIT" ]; then
+    chmod 0600 "$NETZ_ZWEIT" 2>/dev/null
+    echo "<INFO> Zweitschrift der Einstellungen angelegt."
+else
+    echo "<WARNING> Die Zweitschrift der Einstellungen liess sich nicht anlegen."
 fi
-echo "<INFO> Zweitschrift der Einstellungen angelegt."
 
 exit 0

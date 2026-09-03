@@ -115,7 +115,7 @@ for _alt in ("/run/shm/ultraschall_status.json", "/run/shm/ultraschall.pid",
 # Die Zustandsdatei und die erste Protokollzeile jedes Starts nannten damit
 # eine Fassung, die es nicht mehr gibt. Werkzeuge/fassung_setzen.py setzt
 # alle Stellen auf einmal; wer die Nummer von Hand aendert, vergisst diese.
-VERSION = "1.2.0"
+VERSION = "1.2.2"
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -250,13 +250,31 @@ def konfiguration_schreiben(werte, pfad=None):
         return False
 
 
-def zahl(werte, schluessel, vorgabe, typ=float):
+def zahl(werte, schluessel, vorgabe, typ=float, unlesbar=None):
+    """Einen Zahlenwert aus der Konfiguration holen.
+
+    EIN UNLESBARER WERT WIRD GEMELDET (seit 1.2.2).
+
+    Der Rueckfall auf die Vorgabe bleibt - der Dienst soll weiterlaufen -,
+    aber er geschieht nicht mehr stumm: wer eine Liste in 'unlesbar'
+    mitgibt, bekommt (Schluessel, Wert) darin zurueck und kann es sagen.
+
+    Warum das zaehlt: die Oberflaeche nimmt das deutsche Komma an und
+    schreibt einen Punkt in die Datei (us_lib.php, Abschnitt Kommazahlen).
+    Eine von Hand bearbeitete oder aus dem Originalplugin uebernommene
+    Datei kann aber "offset_cm=1,5" enthalten. Bis 1.2.1 wurde daraus
+    lautlos die Vorgabe 0 - gemessen wurde ab da ohne Korrektur, und im
+    Protokoll stand kein Wort davon. Dasselbe gilt fuer min_cm, max_cm und
+    messungen.
+    """
     try:
         wert = werte.get(schluessel, "")
         if wert is None or str(wert).strip() == "":
             return typ(vorgabe)
         return typ(str(wert).strip())
     except (TypeError, ValueError):
+        if unlesbar is not None:
+            unlesbar.append((schluessel, str(wert)))
         return typ(vorgabe)
 
 
@@ -482,6 +500,46 @@ def median(werte):
     return (werte[n // 2 - 1] + werte[n // 2]) / 2.0
 
 
+# Laenger als das darf ein Durchgang nicht dauern - siehe messplan().
+MESSDAUER_MAX = 180.0
+
+
+def messplan(cfg, unlesbar=None):
+    """Wie viele Messungen in welchem Abstand - und was daran zu sagen ist.
+
+    DIE SCHLEIFE HAT EINE OBERGRENZE (seit 1.2.2).
+
+    anzahl und abstand kommen beide aus der Konfiguration, und bis 1.2.1 gab
+    es nach oben nichts. Ein von Hand eingetragenes "messungen=100000" - die
+    Datei ist eine gewoehnliche Textdatei - liess den Dienst nicht mehr aus
+    dem Durchgang heraus: keine Zustandsdatei, kein MQTT, kein Herzschlag,
+    und der Waechter startet ihn nicht neu, weil der Prozess ja laeuft.
+
+    Die Schranke ist bewusst weit: die Oberflaeche laesst hoechstens 25
+    Messungen im Abstand von 5 s zu (us_lib.php, Abschnitte Ganzzahlen und
+    Kommazahlen), also 120 s. Was ein Formular erzeugen kann, wird hier
+    nicht beschnitten - nur das, was kein Formular je erzeugt hat. Und
+    beschnitten wird laut, nicht still.
+
+    Rueckgabe: (anzahl, abstand, hinweise).
+    """
+    unlesbar = [] if unlesbar is None else unlesbar
+    anzahl = max(1, zahl(cfg, "messungen", 5, int, unlesbar))
+    abstand = max(0.05, zahl(cfg, "messabstand", 0.2, float, unlesbar))
+    hinweise = []
+    for k, w in unlesbar:
+        hinweise.append("Der Wert fuer '{0}' ist keine Zahl: '{1}'. "
+                        "Gerechnet wurde mit der Vorgabe.".format(k, str(w)[:40]))
+    if (anzahl - 1) * abstand > MESSDAUER_MAX:
+        gekuerzt = anzahl
+        anzahl = max(1, int(MESSDAUER_MAX / abstand) + 1)
+        hinweise.append("Es waren {0} Messungen im Abstand von {1:.2f} s "
+                        "eingetragen - laenger als {2:.0f} s. Gemessen wird "
+                        "mit {3}.".format(gekuerzt, abstand, MESSDAUER_MAX,
+                                          anzahl))
+    return anzahl, abstand, hinweise
+
+
 def messen(cfg, sensor=None):
     """Einen Messdurchgang ausfuehren.
 
@@ -491,15 +549,30 @@ def messen(cfg, sensor=None):
     if sensor is None:
         sensor = sensor_aufbauen(cfg)
 
-    anzahl = max(1, zahl(cfg, "messungen", 5, int))
-    abstand = max(0.05, zahl(cfg, "messabstand", 0.2, float))
-    min_cm = zahl(cfg, "min_cm", 3, float)
-    max_cm = zahl(cfg, "max_cm", 400, float)
-    offset = zahl(cfg, "offset_cm", 0, float)
+    unlesbar = []
+    anzahl, abstand, hinweise = messplan(cfg, unlesbar)
+    schon = len(unlesbar)
+    min_cm = zahl(cfg, "min_cm", 3, float, unlesbar)
+    max_cm = zahl(cfg, "max_cm", 400, float, unlesbar)
+    offset = zahl(cfg, "offset_cm", 0, float, unlesbar)
+    # Was messplan() noch nicht kennen konnte, kommt hier dazu - in
+    # derselben Form, damit der Anwender nicht zwei Sorten Satz liest.
+    for k, w in unlesbar[schon:]:
+        hinweise.append("Der Wert fuer '{0}' ist keine Zahl: '{1}'. "
+                        "Gerechnet wurde mit der Vorgabe."
+                        .format(k, str(w)[:40]))
 
     roh = []
     verworfen = []
     fehler = ""
+    # Ein SENSORfehler ist etwas anderes als "nichts Brauchbares gemessen".
+    # Der erste heisst: die Verbindung zum Geraet ist hin, ein Neuoeffnen
+    # kann helfen. Der zweite heisst: das Geraet antwortet, die Werte passen
+    # nur nicht in den Bereich - da hilft kein Neuoeffnen, und wer es
+    # trotzdem in jedem Takt versucht, erzeugt Last und Protokollzeilen ohne
+    # Gegenwert. Bis 1.2.1 waren beide Faelle im Feld "fehler" nicht zu
+    # unterscheiden, und der Dienst hat den Sensor deshalb NIE neu geoeffnet.
+    sensorfehler = False
     try:
         for i in range(anzahl):
             wert = sensor.messen()
@@ -514,22 +587,53 @@ def messen(cfg, sensor=None):
                 time.sleep(abstand)
     except SensorFehler as f:
         fehler = str(f)
+        sensorfehler = True
     finally:
         if eigener:
             sensor.schliessen()
 
     mitte = median(roh)
     entfernung = round(mitte + offset, 1) if mitte is not None else None
-    if entfernung is not None and (entfernung < 0):
-        entfernung = 0.0
+    # EIN NEGATIVES ERGEBNIS IST KEIN MESSWERT (seit 1.2.2).
+    #
+    # Bis 1.2.1 stand hier
+    #     if entfernung is not None and (entfernung < 0):
+    #         entfernung = 0.0
+    # Gemessen mit offset_cm = -50 und einem Sensorwert von 30 cm: das
+    # Ergebnis war 0.0 cm - und mit leer_cm=100/voll_cm=20 daraus ein
+    # Fuellstand von 100 % und der volle Behaelterinhalt in Litern. Der
+    # Dienst meldete dazu valid=1. In Loxone stand "randvoll", wo in
+    # Wahrheit eine unmoegliche Zahl herauskam.
+    #
+    # Eine 0 ist hier kein Messwert, sondern ein Rueckfallwert, der BEDIENT
+    # statt zu melden - und er ist von einer echten 0 nicht zu unterscheiden.
+    # Was rechnerisch hinter dem Sensor liegt, gibt es nicht; dann gibt es
+    # auch keinen Wert, und der Grund steht dabei.
+    #
+    # Der Plausibilitaetsbereich min_cm/max_cm bleibt bewusst auf dem
+    # ROHwert. Ihn zusaetzlich auf das Ergebnis anzuwenden waere naheliegend
+    # und wuerde bestehende Anlagen treffen, die mit einer Korrektur knapp
+    # unter min_cm arbeiten - die Beschriftung des Feldes ("kleinster
+    # plausibler Wert") laesst beide Lesarten zu. Ohne eine Messung an einer
+    # echten Anlage wird hier nichts umgedeutet.
+    if entfernung is not None and entfernung < 0:
+        fehler = ("Der Messwert liegt nach der Korrektur ({0:+.1f} cm) bei "
+                  "{1:.1f} cm. Ein negativer Abstand ist unmoeglich - "
+                  "Korrektur pruefen."
+                  .format(offset, entfernung))
+        entfernung = None
     if not fehler and entfernung is None:
         fehler = ("Keine brauchbare Messung. {0} von {1} Werten lagen "
                   "ausserhalb von {2:.0f} bis {3:.0f} cm oder blieben aus."
                   .format(len(verworfen), anzahl, min_cm, max_cm))
+    # Was an der Konfiguration nicht stimmte, faehrt im Ergebnis mit. Der
+    # Dienst meldet es einmal (durchgang), us_messen.py zeigt es an.
     return {"entfernung": entfernung,
             "roh": [round(w, 1) for w in roh],
             "verworfen": verworfen,
-            "fehler": fehler}
+            "fehler": fehler,
+            "sensorfehler": sensorfehler,
+            "hinweise": hinweise}
 
 
 def fuellstand(cfg, entfernung):
@@ -549,7 +653,21 @@ def fuellstand(cfg, entfernung):
         voll = float(voll)
     except ValueError:
         return None, None
-    if abs(leer - voll) < 0.001:
+    # VERTAUSCHT IST KEIN FUELLSTAND (seit 1.2.2).
+    #
+    # Bis 1.2.1 wurde nur "leer == voll" abgefangen. Gemessen mit
+    # leer_cm=20 und voll_cm=100 (also vertauscht) lief der Fuellstand
+    # RUECKWAERTS: 25 cm ergaben 6,2 %, 95 cm ergaben 93,8 %. Je weiter der
+    # Wasserspiegel weg ist, desto voller meldete der Behaelter - und beide
+    # Felder sind in der Oberflaeche unabhaengig voneinander auf 0..2000
+    # geprueft, es gab also nichts, was widersprochen haette. In Loxone
+    # steht dann eine plausible Zahl mit umgekehrtem Vorzeichen; das faellt
+    # erst auf, wenn jemand in den Behaelter sieht.
+    #
+    # Der Sensor sitzt oben: leer heisst grosser Abstand, voll heisst
+    # kleiner. leer <= voll kann es also nicht geben. Ein Wert entsteht dann
+    # nicht - lieber kein Wert als eine Zahl, die richtig aussieht.
+    if leer - voll < 0.001:
         return None, None
 
     anteil = (leer - entfernung) / (leer - voll)

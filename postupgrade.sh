@@ -31,30 +31,53 @@ PWORKDIR=$6   # Arbeitsordner des Installers (absolut)
 
 PCONFIG=$LBPCONFIG/$PDIR
 PBIN=$LBPBIN/$PDIR
-MERKER="$PCONFIG/.upgrade_pfad"
-
-# preupgrade.sh hat den tatsaechlich benutzten Ordner hinterlegt.
-if [ -r "$MERKER" ]; then
-    SICHERUNG=$(cat "$MERKER")
-elif [ -n "$PWORKDIR" ] && [ -d "$PWORKDIR" ]; then
+# Der Sicherungsort wird aus DEMSELBEN Argument gerechnet wie in
+# preupgrade.sh - siehe die ausfuehrliche Begruendung dort. Ein Merker
+# .upgrade_pfad im Konfigurationsordner stand hier bis 02.09.2026 an erster
+# Stelle; purge_installation entfernt dieses Verzeichnis, bevor dieses Skript
+# laeuft, der Zweig war also tot.
+if [ -n "$PWORKDIR" ] && [ -d "$PWORKDIR" ]; then
     SICHERUNG="$PWORKDIR/ultraschall_upgrade"
 else
     SICHERUNG="/tmp/${PDIR}.SAVE"
 fi
 
+# GEMESSEN WIRD DIE WIRKUNG, NICHT DIE EXISTENZ DES ORDNERS
+# (seit 1.2.2).
+#
+# Bis 1.2.1 stand hier "if [ -d $SICHERUNG ]" und dahinter ein
+# "cp -a ... && echo <OK> Konfiguration wiederhergestellt". Beides
+# gelingt auch ueber einem LEEREN Ordner: preupgrade.sh legt ihn mit
+# mkdir -p an, und scheitert das cp dort (unlesbare Datei, voller
+# Arbeitsspeicher unter data/system/tmp), bleibt er leer. Nachgestellt:
+# das Protokoll meldete zweimal OK, und in der Datei stand die
+# Werkseinstellung - Sensortyp, Behaeltermasse und Takt waren fort.
+#
+# "Nachgezaehlt statt behauptet" steht im uninstall dieses Plugins
+# ausdruecklich als Grundsatz. Hier war er nicht angewandt.
 mkdir -p "$PCONFIG" 2>/dev/null
-if [ -d "$SICHERUNG" ]; then
+if [ -d "$SICHERUNG" ] && [ -s "$SICHERUNG/ultraschall.cfg" ]; then
     echo "<INFO> Spiele gesicherte Konfiguration zurueck aus $SICHERUNG"
-    # Den eigenen Merker nicht mitkopieren.
-    rm -f "$SICHERUNG/.upgrade_pfad" 2>/dev/null
-    cp -a "$SICHERUNG/." "$PCONFIG/" 2>/dev/null && \
+    cp -a "$SICHERUNG/." "$PCONFIG/" 2>/dev/null
+    if [ -s "$PCONFIG/ultraschall.cfg" ]; then
         echo "<OK> Konfiguration wiederhergestellt."
+    else
+        echo "<ERROR> Die Konfiguration liess sich NICHT zurueckspielen."
+        echo "<ERROR> Die Sicherung liegt unter $SICHERUNG."
+        echo "<ERROR> Die Einstellungen bitte nachsehen und neu eintragen."
+    fi
+elif [ -s "$PCONFIG/ultraschall.cfg" ]; then
+    # postinstall.sh hat sie aus der Zweitschrift neben dem Ordner
+    # schon zurueckgeholt - der zweite von zwei Wegen. Kein Grund zur
+    # Warnung.
+    echo "<OK> Die Konfiguration steht bereits - nichts zurueckzuspielen."
 else
     echo "<WARNING> Keine gesicherte Konfiguration unter $SICHERUNG gefunden."
-    echo "<INFO> Die Einstellungen bitte einmal nachsehen."
+    echo "<WARNING> Die Einstellungen bitte einmal nachsehen."
 fi
 
-rm -f "$MERKER" 2>/dev/null
+# Hier stand "rm -f $MERKER". Mit dem Merker ist auch das entfallen - die
+# Variable gab es danach nicht mehr, und "rm -f ''" ist kein Aufraeumen.
 
 # Der Arbeitsordner des Installers wird von LoxBerry selbst aufgeraeumt.
 # Nur der Rueckfallweg unter /tmp gehoert uns.

@@ -188,6 +188,29 @@ function us_felder()
 }
 
 /** Nur die Felder, die in die Statuszeile gehoeren. */
+/**
+ * Die Felder, aus denen die MQTT-Vorlage virtuelle Eingaenge macht.
+ *
+ * Textthemen bleiben draussen: das nachgebaute Vorlagenformat ist nur fuer
+ * Zahlenwerte belegt, und ein Eingang mit Analog="true" auf einen Text zeigt
+ * dauerhaft 0. Das Gateway legt sie beim ersten Empfang selbst an.
+ *
+ * Es gibt diese Funktion seit 1.2.2, weil der Hinweistext daneben die Zahl
+ * nennt. Bis dahin zaehlte er us_status_themen(), also ALLE acht Themen,
+ * waehrend die Datei sieben Befehle enthielt - gemessen an der erzeugten
+ * Vorlage. Wer sie einlas, zaehlte sieben Eingaenge und suchte den achten.
+ */
+function us_felder_vorlage()
+{
+    $aus = array();
+    foreach (us_felder() as $name => $f) {
+        if ($f['art'] !== 'text') {
+            $aus[$name] = $f;
+        }
+    }
+    return $aus;
+}
+
 function us_felder_zeile()
 {
     $aus = array();
@@ -304,6 +327,32 @@ function us_config_read($erzeugen = false)
     }
     if (!is_file($file)) {
         $lage['fehlend'] = array_keys($vorgaben);
+        /* FEHLT DIE DATEI, WIRD SIE ANGELEGT - aber nur aus dem angemeldeten
+         * Bereich (seit 1.2.2).
+         *
+         * Bis 1.2.1 kehrte diese Stelle sofort zurueck, VOR dem
+         * $erzeugen-Block weiter unten. Damit wurde genau der Zweig
+         * uebersprungen, fuer den er geschrieben ist, und das Ergebnis war
+         * eine Sackgasse, aus der die Oberflaeche nicht mehr herausfand:
+         *
+         *   Datei fehlt -> kein Aktionstoken -> us_formtoken() liefert ''
+         *   -> der Wachposten weist JEDEN POST ab -> nichts laesst sich
+         *   speichern -> die Datei entsteht auch beim Speichern nicht.
+         *
+         * Gemessen an einem nachgebauten LoxBerry: nach dem Loeschen der
+         * Datei blieb sie fort, und jeder Klick auf Speichern lieferte "Das
+         * Formular kam nicht von dieser Seite und wurde abgewiesen."
+         *
+         * Der unangemeldete Endpunkt ruft weiterhin us_config_read(false)
+         * und legt nichts an - wer sich nicht ausweisen kann, hinterlaesst
+         * auch nichts Harmloses. */
+        if ($erzeugen) {
+            $werte['aktionstoken'] = us_token_neu();
+            if (us_config_write($werte)) {
+                $lage['ergaenzt'] = $lage['fehlend'];
+                $lage['fehlend'] = array();
+            }
+        }
         return array($werte, $alt, $lage);
     }
     $gesehen = array();
@@ -457,14 +506,47 @@ function us_pruefen($roh)
     }
 
     // --- Themenpraefix ------------------------------------------------------
+    /* EIN LEERES PRAEFIX IST EINE BEANSTANDUNG, KEIN RUECKFALL
+     * (seit 1.2.2).
+     *
+     * Bis 1.2.1 stand hier am Ende
+     *     $v['themenpraefix'] = ($sauber !== '') ? $sauber : $v['themenpraefix'];
+     * und $v kommt aus us_defaults(). Ein geleertes Feld fiel damit
+     * stillschweigend auf die VORGABE zurueck, nicht auf den bisherigen
+     * Wert - und weil $sauber bei leerer Eingabe gleich $p ist, gab es
+     * auch keine Beanstandung. Gemessen: Praefix 'keller', Feld geleert,
+     * gespeichert -> 'ultraschall', ohne ein Wort. Der Dienst wird beim
+     * Speichern neu gestartet und veroeffentlicht ab da unter einem
+     * anderen Praefix; im Miniserver kommt nichts mehr an.
+     *
+     * Der bisherige Wert steht im Rohsatz, den der Aufrufer mitgibt -
+     * der Speicher-Handler legt ihn ueber den GESPEICHERTEN Stand. Beim
+     * Zurueckspielen einer Sicherung ist er der Wert aus der Datei. In
+     * beiden Faellen ist er das Richtige. */
     $p = $saeubern($hol('themenpraefix'));
     $sauber = preg_replace('/[^A-Za-z0-9_-]+/', '', $p);
-    if ($sauber !== $p) {
-        // Ein Schraegstrich oder ein Leerzeichen im Praefix ergibt Themen,
-        // die das Gateway anders benennt, als die Vorlage sie anlegt.
+    if ($p === '') {
         $ruege('themenpraefix', $p);
+        if (isset($roh['themenpraefix_bisher'])
+            && (string) $roh['themenpraefix_bisher'] !== '') {
+            $v['themenpraefix'] = (string) $roh['themenpraefix_bisher'];
+        }
+    } elseif ($sauber === '') {
+        // Nur unerlaubte Zeichen - dann bleibt nichts uebrig.
+        $ruege('themenpraefix', $p);
+        if (isset($roh['themenpraefix_bisher'])
+            && (string) $roh['themenpraefix_bisher'] !== '') {
+            $v['themenpraefix'] = (string) $roh['themenpraefix_bisher'];
+        }
+    } else {
+        if ($sauber !== $p) {
+            // Ein Schraegstrich oder ein Leerzeichen im Praefix ergibt
+            // Themen, die das Gateway anders benennt, als die Vorlage
+            // sie anlegt.
+            $ruege('themenpraefix', $p);
+        }
+        $v['themenpraefix'] = $sauber;
     }
-    $v['themenpraefix'] = ($sauber !== '') ? $sauber : $v['themenpraefix'];
 
     // --- I2C-Adresse --------------------------------------------------------
     $adr = strtolower($saeubern($hol('i2c_adresse')));
@@ -584,6 +666,26 @@ function us_pruefen($roh)
             $v['max_cm'] = $vorgabe['max_cm'];
         }
     }
+    /* leer_cm und voll_cm duerfen nicht vertauscht sein (seit 1.2.2).
+     *
+     * Der Sensor sitzt oben: bei leerem Behaelter ist der Abstand GROSS,
+     * bei vollem klein. leer_cm <= voll_cm kann es also nicht geben. Bis
+     * 1.2.1 pruefte nur der Dienst auf Gleichheit, und bei vertauschten
+     * Werten lief der Fuellstand rueckwaerts - gemessen mit leer_cm=20 und
+     * voll_cm=100 ergaben 25 cm einen Fuellstand von 6,2 %, 95 cm einen von
+     * 93,8 %. Beide Felder sind einzeln auf 0..2000 geprueft; es gab nichts,
+     * was widersprochen haette.
+     *
+     * ZURECHTGERUECKT WIRD HIER NICHT. Bei min_cm/max_cm ist ein Tausch
+     * eindeutig richtig, hier nicht: welcher der beiden Werte bei leerem
+     * und welcher bei vollem Behaelter gemessen wurde, weiss nur der
+     * Anwender. Gemeldet wird es, und der Dienst rechnet solange keinen
+     * Fuellstand - lieber kein Wert als eine Zahl mit umgekehrtem
+     * Vorzeichen. */
+    if ($v['leer_cm'] !== '' && $v['voll_cm'] !== ''
+        && (float) $v['leer_cm'] <= (float) $v['voll_cm']) {
+        $m[] = us_t('FEHLER.LEER_VOLL');
+    }
     if ($v['udp'] === '1' && $v['udp_port'] === '') {
         $m[] = us_t('FEHLER.UDP_OHNE_PORT');
     }
@@ -607,7 +709,13 @@ function us_roh($cfg, $key)
 function us_config_write($werte)
 {
     $file = us_paths()['config'];
-    @mkdir(dirname($file), 0775, true);
+    // Erst fragen, dann anlegen. Ein mkdir mit recursive=true auf ein
+    // vorhandenes Verzeichnis meldet eine Warnung; das @ unterdrueckt nur
+    // die Anzeige, ein gesetzter Fehlerbehandler sieht sie trotzdem - und
+    // im Prueflauf steht sie dann als Befund da.
+    if (!is_dir(dirname($file))) {
+        @mkdir(dirname($file), 0775, true);
+    }
     $vorgaben = us_defaults();
     if (!$vorgaben) {
         // Ohne Datenquelle wird NICHT geschrieben. Eine aus dem Nichts
@@ -629,7 +737,10 @@ function us_config_write($werte)
      * eine aeltere Fassung dort abgelegt hat. Genannt werden sie im Reiter
      * Test; ausgewertet werden sie nicht. */
     $fremd = array();
-    foreach (preg_split('/\R/', (string) @file_get_contents($file)) as $zeile) {
+    // Dieselbe Regel: die Datei fehlt regelmaessig - beim allerersten
+    // Anlegen gibt es sie noch gar nicht.
+    $us_alt_roh = is_file($file) ? (string) @file_get_contents($file) : '';
+    foreach (preg_split('/\R/', $us_alt_roh) as $zeile) {
         $t = trim($zeile);
         if ($t === '' || $t[0] === ';' || $t[0] === '#' || $t[0] === '[') {
             continue;
@@ -657,11 +768,35 @@ function us_config_write($werte)
      * halbe Konfiguration. rename() ist im selben Dateisystem unteilbar:
      * der Dienst sieht entweder die alte oder die neue Datei. Die
      * Gegenseite in us_common.konfiguration_schreiben() macht es genauso. */
+    /* RECHTE VOR DEM INHALT, UND DIE LAENGE WIRD VERGLICHEN (seit 1.2.2).
+     *
+     * Bis 1.2.1 stand hier "schreiben, dann chmod" und ein Vergleich gegen
+     * false. Zwei Loecher:
+     *
+     * 1. file_put_contents liefert bei einem TEILweisen Schreibvorgang die
+     *    Zahl der geschriebenen Bytes, nicht false. Ein volles Dateisystem
+     *    ergab damit eine halbe Konfiguration, die per rename() ueber die
+     *    gute geschoben wurde - und die Oberflaeche meldete "gespeichert".
+     *    Diese Datei traegt das Aktionstoken; ein abgeschnittener
+     *    Schreibvorgang kostet jede Adresse im Miniserver.
+     * 2. Zwischen Anlegen und chmod stand die Datei mit den Rechten der
+     *    umask da. Sie ist zwar kein Passwortspeicher, traegt aber das
+     *    Aktionstoken - und das ist der Schluessel zum Endpunkt.
+     */
     $tmp = $file . '.tmp.' . getmypid();
-    if (@file_put_contents($tmp, $txt) === false) {
+    $fh = @fopen($tmp, 'c');
+    if ($fh === false) {
         return false;
     }
     @chmod($tmp, 0644);
+    $ok = (@ftruncate($fh, 0) !== false)
+          && (@fwrite($fh, $txt) === strlen($txt));
+    @fflush($fh);
+    @fclose($fh);
+    if (!$ok) {
+        @unlink($tmp);
+        return false;
+    }
     if (!@rename($tmp, $file)) {
         @unlink($tmp);
         return false;
@@ -740,7 +875,8 @@ function us_dienst_pid()
         return 0;
     }
     foreach ((array) @scandir('/proc') as $eintrag) {
-        if (ctype_digit((string) $eintrag) && us_ist_dienst((int) $eintrag, $skript)) {
+        if (preg_match('/^[0-9]+$/', (string) $eintrag) === 1
+            && us_ist_dienst((int) $eintrag, $skript)) {
             return (int) $eintrag;
         }
     }
@@ -879,6 +1015,57 @@ function us_zeile($werte)
         $teile[] = strtoupper($name) . '=' . $w;
     }
     return implode(';', $teile);
+}
+
+/**
+ * Die VOLLSTAENDIGE Antwortzeile des Endpunkts - an EINER Stelle.
+ *
+ * us_zeile() baut den Mittelteil aus der Feldtabelle. Der Endpunkt haengte
+ * bis 1.2.1 OK davor und ALTER dahinter, und die Oberflaeche zeigte als
+ * Beispiel us_zeile() ALLEIN. Gemessen:
+ *
+ *   angezeigt : ULTRA;DISTANCE=123.4;LEVEL=42.1;...;ZAEHLER=418
+ *   gesendet  : ULTRA;OK=1;DISTANCE=123.4;...;ZAEHLER=418;ALTER=7
+ *
+ * Zwei Stellen, die dasselbe zusammensetzen, laufen auseinander - hier waren
+ * es ausgerechnet die beiden Felder, ueber die eine Ausfallerkennung laeuft.
+ * Wer die Zeile aus der Oberflaeche abschrieb, baute eine Anlage ohne sie.
+ *
+ * OK sagt, ob der Wert AKTUELL ist - nicht, ob irgendwann einmal eine
+ * Messung gelungen ist. ALTER ist -1, solange es keine gab.
+ */
+function us_zeile_voll($werte, $frisch, $alter)
+{
+    return 'ULTRA;OK=' . ($frisch ? '1' : '0')
+         . ';' . substr(us_zeile($werte), strlen('ULTRA;'))
+         . ';ALTER=' . ((int) $alter < 0 ? -1 : (int) $alter);
+}
+
+/** Dieselbe Zeile mit Beispielwerten - fuer die Anzeige in der Oberflaeche. */
+function us_zeile_beispiel()
+{
+    return us_zeile_voll(array(
+        'distance' => '123.4', 'level' => '42.1', 'liter' => '2105',
+        'valid' => '1', 'online' => '1', 'ts' => '1787000000',
+        'zaehler' => '418',
+    ), true, 7);
+}
+
+/**
+ * Die beiden Felder, die der Endpunkt ZUSAETZLICH zur Feldtabelle sendet.
+ *
+ * Sie stehen bewusst nicht in us_felder(): daraus entstehen die
+ * Importvorlagen fuer den MQTT- und den UDP-Weg, und dort gibt es weder OK
+ * noch ALTER - beide rechnet erst der Endpunkt beim Abruf. In der Tabelle
+ * der Befehlserkennungen gehoeren sie dagegen aufgefuehrt, denn die schreibt
+ * der Anwender von Hand ab.
+ */
+function us_felder_endpunkt()
+{
+    return array(
+        'ok'    => array('einheit' => '', 'min' => 0, 'max' => 1),
+        'alter' => array('einheit' => 's', 'min' => -1, 'max' => 2147483647),
+    );
 }
 
 /** Sensorarten. */
@@ -1104,10 +1291,7 @@ function us_vorlage($cfg, $art)
      * dauerhaft 0. Das Gateway legt sie beim ersten Empfang selbst an, und
      * der Hinweistext sagt, wie viele es sind. */
     $cmds = array();
-    foreach (us_felder() as $name => $f) {
-        if ($f['art'] === 'text') {
-            continue;
-        }
+    foreach (us_felder_vorlage() as $name => $f) {
         $cmds[] = array(
             'title'   => $praefix . '_' . $name,
             'comment' => us_t('THEMA.' . strtoupper($name)),
@@ -1291,7 +1475,7 @@ function us_abo_text()
  *
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
  */
-function us_sicherung_lesen($roh)
+function us_sicherung_lesen($roh, $bestand = null)
 {
     $mangel = array();
     $daten = json_decode((string) $roh, true);
@@ -1317,6 +1501,33 @@ function us_sicherung_lesen($roh)
     }
     if ($anzahl === 0) {
         $mangel[] = us_t('TEXT.SICH_LEER');
+    }
+
+    /* EIN FEHLENDES AKTIONSTOKEN LOESCHT KEINES (seit 1.2.2).
+     *
+     * us_pruefen() beginnt bei den Vorgaben, und die Vorgabe fuer das Token
+     * ist leer. Eine Sicherung aus 1.1.x kennt den Schluessel gar nicht - er
+     * kam erst mit 1.2.0 dazu. Gemessen mit einer solchen Datei (21
+     * Schluessel): sie wurde mit "21 Werte uebernommen" und NULL
+     * Beanstandungen angenommen, und danach war das Token leer.
+     *
+     * Was das kostet: jede Adresse im Miniserver antwortet mit 403, und bis
+     * 1.2.1 kam die Oberflaeche aus diesem Zustand nicht mehr heraus (kein
+     * Token -> kein Formularmerkmal -> jeder POST abgewiesen). Genau der
+     * Fall, fuer den es die Sicherung gibt - der Umzug auf einen zweiten
+     * LoxBerry -, machte das Plugin unbedienbar.
+     *
+     * Fehlt der Schluessel, bleibt der bestehende Wert stehen. Steht er in
+     * der Datei, gilt die Datei: dort ist er gewollt, und beim Umzug ist er
+     * genau das, was man mitnehmen will. */
+    if (!array_key_exists('aktionstoken', $gelesen)) {
+        if ($bestand === null) {
+            list($bestand) = us_config_read(false);
+        }
+        if (is_array($bestand) && isset($bestand['aktionstoken'])
+            && (string) $bestand['aktionstoken'] !== '') {
+            $gelesen['aktionstoken'] = (string) $bestand['aktionstoken'];
+        }
     }
 
     /* Und jetzt DIESELBE Pruefung wie beim Speichern.
@@ -1428,11 +1639,28 @@ function us_endpunkt_probe($token, $frisch = false)
          * unterdrueckt nur die Standardbehandlung - ein mit
          * set_error_handler() eingehaengter Aufnehmer sieht die Warnung
          * trotzdem, und im Prueflauf staende sie dann als Befund da. */
+        /* UND DER VERBINDUNGSAUFBAU BRAUCHT SEINE EIGENE SCHRANKE
+         * (seit 1.2.2).
+         *
+         * Das 'timeout' im Kontext gilt nur fuer das LESEN. Fuer den
+         * Verbindungsaufbau gilt default_socket_timeout - ab Werk 60
+         * Sekunden. Gemessen im Pruefstand: ein Seitenaufbau blieb
+         * ueber eine Minute stehen, obwohl drei Sekunden zugesagt sind.
+         * Und diese Zeile laeuft bei JEDEM Aufbau der Seite, weil alle
+         * Reiter mitgerendert werden. Auf einem LoxBerry ohne php-curl
+         * ist das genau der Fall: dort gibt es curl_init() nicht.
+         *
+         * Zurueckgestellt wird der Wert unmittelbar danach - er ist
+         * global, und was hier gesetzt bleibt, trifft jeden weiteren
+         * Netzzugriff dieses Prozesses. */
         set_error_handler(function () { return true; });
+        $us_sock_alt = ini_get('default_socket_timeout');
+        @ini_set('default_socket_timeout', '3');
         $ctx = stream_context_create(array('http' => array(
             'timeout' => 3, 'ignore_errors' => true,
             'follow_location' => 0, 'max_redirects' => 1)));
         $rumpf = file_get_contents($adr, false, $ctx);
+        @ini_set('default_socket_timeout', (string) $us_sock_alt);
         restore_error_handler();
         if (isset($http_response_header)) {
             foreach ((array) $http_response_header as $z) {
@@ -1460,7 +1688,17 @@ function us_endpunkt_probe($token, $frisch = false)
         $erg['zustand'] = 'nein';
         $erg['text'] = sprintf(us_t('PRUEF.EP_FALSCH'), $code, substr(trim($rumpf), 0, 120));
     }
-    @file_put_contents($speicher, json_encode($erg));
+    /* Erst kodieren, dann den Rueckgabewert ansehen, dann schreiben
+     * (seit 1.2.2). $erg['text'] traegt bis zu 120 Zeichen rohe Antwort des
+     * Endpunkts; ist darin ungueltiges UTF-8, liefert json_encode false,
+     * und geschrieben wuerde eine LEERE Datei. Der Zwischenspeicher hoerte
+     * dann still auf zu wirken - jeder Aufbau des Reiters Test riefe den
+     * Endpunkt wieder ueber HTTP auf. Beide anderen Stellen des Plugins
+     * (der Endpunkt selbst und der Sicherungsknopf) pruefen es. */
+    $us_js = json_encode($erg);
+    if ($us_js !== false) {
+        @file_put_contents($speicher, $us_js);
+    }
     return $erg;
 }
 

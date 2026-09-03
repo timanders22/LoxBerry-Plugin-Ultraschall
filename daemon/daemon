@@ -21,7 +21,19 @@ if [ -x /usr/bin/logger ]; then
     /usr/bin/logger "loxberry-plugin-$pluginname - Starte Ultraschall Entfernung"
 fi
 
+# Der Protokollordner gehoert loxberry, nicht root (seit 1.2.2).
+#
+# log/plugins liegt auf einer Ramdisk und ist nach jedem Neustart leer.
+# Laeuft dieses Skript, bevor LoxBerry die Plugin-Protokollordner
+# angelegt hat, entsteht das Verzeichnis hier als root - und die
+# Umleitung ">>" unten wird von der loxberry-Schale ausgefuehrt und
+# scheitert dann am fehlenden Schreibrecht. Der Dienst startet beim
+# Systemstart gar nicht erst. postinstall.sh kennt die Eigentumsfrage;
+# hier fehlte sie.
 mkdir -p "$logdir" 2>/dev/null
+chown loxberry:loxberry "$logdir" 2>/dev/null
+[ -e "$log" ] || : > "$log" 2>/dev/null
+chown loxberry:loxberry "$log" 2>/dev/null
 
 # Der Dienst braucht keine Rootrechte: Lesen vom I2C-Bus erlaubt die Gruppe
 # i2c, die GPIO-Pins die Gruppe gpio. Beide setzt postinstall.sh.
@@ -31,5 +43,23 @@ mkdir -p "$logdir" 2>/dev/null
 # aus - lautlos, denn die Ausgabe geht nach /dev/null. Mit der Angabe ist es
 # gleichgueltig, was in /etc/passwd steht.
 su loxberry -s /bin/bash -c "nohup $pluginbindir/ultraschall.py >> $log 2>&1 &" >/dev/null 2>&1
+
+# UND NACHSEHEN, OB ES GEHOLFEN HAT (seit 1.2.2).
+#
+# Der Kommentar oben begruendet ausfuehrlich, warum "-s /bin/bash" gegen
+# ein LAUTLOSES Scheitern hilft - und die Zeile darunter schickte dann
+# doch jede Ausgabe nach /dev/null, ohne danach hinzusehen. Ein
+# Fehlstart beim Systemstart blieb bis zum ersten Waechterlauf
+# unsichtbar. postinstall.sh und cron/cron.05min machen die Nachschau;
+# das Startskript nicht.
+sleep 2
+if pgrep -u loxberry -f "$pluginbindir/ultraschall.py" >/dev/null 2>&1; then
+    [ -x /usr/bin/logger ] && /usr/bin/logger \
+        "loxberry-plugin-$pluginname - Messdienst gestartet"
+else
+    echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR   Der Messdienst liess sich beim Systemstart nicht starten." >> "$log" 2>/dev/null
+    [ -x /usr/bin/logger ] && /usr/bin/logger \
+        "loxberry-plugin-$pluginname - Messdienst NICHT gestartet"
+fi
 
 exit 0

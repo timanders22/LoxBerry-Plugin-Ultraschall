@@ -6,7 +6,7 @@
  * Zugangsdaten erreicht, und ist durch ein Token geschuetzt:
  *
  *     /plugins/<Ordner>/index.php?token=<TOKEN>&aktion=status
- *     -> ULTRA;OK=1;DISTANCE=123.4;LEVEL=42.1;LITER=2105;VALID=1;ONLINE=1;TS=…;ZAEHLER=418
+ *     -> ULTRA;OK=1;DISTANCE=123.4;LEVEL=42.1;LITER=2105;VALID=1;ONLINE=1;TS=…;ZAEHLER=418;ALTER=7
  *
  *     /plugins/<Ordner>/index.php?selftest=1&token=<TOKEN>
  *     -> SELFTEST;OK=1;TOKEN=OK
@@ -165,9 +165,8 @@ if ($us_aktion === 'json') {
     exit;
 }
 
-/* Die Statuszeile. OK sagt, ob der Wert aktuell ist - nicht, ob irgendwann
- * einmal eine Messung gelungen ist. */
-$us_zeile = 'ULTRA;OK=' . ($us_frisch ? '1' : '0')
-          . ';' . substr(us_zeile($us_werte), strlen('ULTRA;'))
-          . ';ALTER=' . ($us_alter < 0 ? -1 : $us_alter);
-us_ende(200, $us_zeile);
+/* Die Statuszeile - zusammengesetzt in us_zeile_voll(), also an derselben
+ * Stelle wie das Beispiel, das die Oberflaeche zum Abschreiben anzeigt. Bis
+ * 1.2.1 stand die Zusammensetzung hier, das Beispiel dort, und die beiden
+ * unterschieden sich um OK und ALTER. */
+us_ende(200, us_zeile_voll($us_werte, $us_frisch, $us_alter));

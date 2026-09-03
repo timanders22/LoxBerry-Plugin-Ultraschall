@@ -19,10 +19,19 @@ PCONFIG=$LBPCONFIG/$PDIR
 PSBIN=$LBPSBIN/$PDIR
 PBIN=$LBPBIN/$PDIR
 
-# Protokolldatei anlegen
-mkdir $PLOG
-touch $PLOG/$PSHNAME.log
-chown loxberry:loxberry $PLOG/$PSHNAME.log
+# Protokolldatei anlegen.
+#
+# -p und Anfuehrungszeichen: purge_installation raeumt config/, data/
+# und bin/ ab, NICHT log/. Beim Upgrade ist das Verzeichnis also schon
+# da, und ein blankes "mkdir" schrieb bei JEDEM Upgrade eine rote Zeile
+# ins Installationsprotokoll ("File exists"). Folgenlos - aber eine
+# Fehlerzeile, die immer dasteht, stumpft gegen die ab, die zaehlt.
+# Das chown ist ein Nichtstuer: dieses Skript laeuft bereits als
+# loxberry (plugininstall.pl ruft es ueber "sudo -n -u loxberry"), und
+# ein Eigentuemerwechsel braucht root. Die Datei gehoert ohnehin
+# loxberry, weil loxberry sie anlegt.
+mkdir -p "$PLOG"
+touch "$PLOG/$PSHNAME.log"
 
 # --- Ultraschall Entfernung ----------------------------------------------
 # Rechte.
@@ -53,9 +62,27 @@ done
 if [ -n "$BOOTCFG" ]; then
     if grep -qE '^[[:space:]]*dtparam=i2c_arm=on' "$BOOTCFG"; then
         echo "<OK> I2C ist in $BOOTCFG bereits eingeschaltet."
-    else
-        echo "dtparam=i2c_arm=on" >> "$BOOTCFG"
+    elif echo "dtparam=i2c_arm=on" >> "$BOOTCFG" 2>/dev/null; then
         echo "<INFO> I2C in $BOOTCFG eingeschaltet. Wirksam nach einem Neustart."
+    else
+        # DIE MELDUNG HAENGT AN DER WIRKUNG (seit 1.2.2).
+        #
+        # Bis 1.2.1 standen Umleitung und Erfolgsmeldung als zwei
+        # getrennte Befehle untereinander - die zweite lief also auch
+        # dann, wenn die erste scheiterte. Und sie scheitert hier im
+        # Regelfall: dieses Skript laeuft als loxberry, und
+        # /boot/firmware/config.txt gehoert root. Der Anwender las
+        # "I2C eingeschaltet, wirksam nach einem Neustart", startete neu
+        # und fand weiterhin kein /dev/i2c-1 - und suchte den Fehler
+        # beim Sensor, bei der Verkabelung, bei der Adresse.
+        #
+        # Die drei Nachbarbloecke (modules-load.d, /etc/modules,
+        # usermod) machen es seit jeher richtig und nennen den Grund.
+        echo "<WARNING> I2C ist in $BOOTCFG NICHT eingeschaltet - die Datei"
+        echo "<WARNING> ist fuer den Benutzer loxberry nicht schreibbar."
+        echo "<WARNING> Von Hand nachholen und danach neu starten:"
+        echo "<WARNING>   sudo raspi-config nonint do_i2c 0"
+        echo "<WARNING> oder die Zeile dtparam=i2c_arm=on selbst eintragen."
     fi
 else
     echo "<INFO> Keine config.txt gefunden - kein Raspberry Pi? I2C bitte selbst einrichten."
@@ -97,7 +124,17 @@ elif [ -f /etc/modules ]; then
         echo "<INFO> Modul i2c-dev in /etc/modules eingetragen."
     fi
 fi
-modprobe i2c-dev >/dev/null 2>&1 || true
+# modprobe braucht root; als loxberry scheitert es. Das ist kein Fehler
+# - das Modul laedt beim naechsten Start ueber modules-load.d -, aber
+# es gehoert gesagt, sonst sucht jemand /dev/i2c-1 noch heute.
+if modprobe i2c-dev >/dev/null 2>&1; then
+    echo "<OK> Modul i2c-dev geladen."
+elif [ -e /dev/i2c-1 ]; then
+    echo "<OK> /dev/i2c-1 ist vorhanden."
+else
+    echo "<INFO> Modul i2c-dev noch nicht geladen (dafuer braucht es root)."
+    echo "<INFO> Es laedt beim naechsten Neustart von selbst."
+fi
 
 # Der Dienst laeuft als loxberry. Fuer den I2C-Bus braucht er die Gruppe i2c,
 # fuer die GPIO-Pins des HC-SR04 die Gruppe gpio.
@@ -149,17 +186,38 @@ echo "<INFO> Wurde I2C gerade erst eingeschaltet, ist ein Neustart noetig."
 NETZ_BASE="${5:-$LBHOMEDIR}"
 NETZ_PDIR="${3:-ultraschall}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
+# DIE MITGELIEFERTE DATEI IST DER VERGLEICHSSTAND, KEINE PRUEFSUMME
+# (seit 1.2.2).
+#
+# Hier stand ein fest eingetragener SHA-256 der ausgelieferten
+# config/ultraschall.cfg. Er stimmte - aber er ist eine zweite Wahrheit
+# ueber eine Datei, die im selben Paket liegt, und er stand auf keiner
+# Pflegeliste. Nachgestellt: eine einzige geaenderte Vorgabe in der
+# mitgelieferten Datei, ohne die Konstante nachzuziehen, und das
+# Zurueckspielen unterbleibt; die Zeile darunter liest dann enabled=0
+# und meldet "Das Plugin ist ausgeschaltet - der Messdienst wird nicht
+# gestartet", obwohl es eingeschaltet war.
+#
+# Verglichen wird jetzt gegen die Datei selbst. Sie liegt im
+# Arbeitsordner des Installers - das SECHSTE Argument, nicht $1: $1 ist
+# eine zehnstellige Zufallskennung. Gibt es den Arbeitsordner nicht
+# (aeltere LoxBerry-Fassungen), wird NICHT geraten: eine vorhandene,
+# nicht leere Konfiguration bleibt dann unangetastet, und postupgrade.sh
+# spielt die Sicherung ohnehin ein zweites Mal zurueck.
+NETZ_WORKDIR=$6
 netz_zurueck() {
-    datei=$1; soll=$2
+    datei=$1
     ziel="$NETZ_CFG/$datei"
     zweit="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.$datei"
+    werk="$NETZ_WORKDIR/config/$datei"
     [ -f "$zweit" ] || return 0
     verloren=0
     if [ ! -f "$ziel" ] || [ ! -s "$ziel" ]; then
         verloren=1
-    else
-        ist=$(sha256sum "$ziel" 2>/dev/null | cut -d" " -f1)
-        [ -n "$ist" ] && [ "$ist" = "$soll" ] && verloren=1
+    elif [ -f "$werk" ] && cmp -s "$ziel" "$werk"; then
+        # Zeichengenau die mitgelieferte Vorgabe - genau so sieht die
+        # Datei nach dem Kopierschritt des Installers aus.
+        verloren=1
     fi
     if [ "$verloren" = "1" ]; then
         if cp -p "$zweit" "$ziel" 2>/dev/null; then
@@ -170,7 +228,7 @@ netz_zurueck() {
         fi
     fi
 }
-netz_zurueck "ultraschall.cfg" "1ee3355c6f3812ade3c09e74b5b791217448d949daccda4334832b5822833ea0"
+netz_zurueck "ultraschall.cfg"
 
 # ---------------------------------------------------------------------------
 # DEN DIENST WIEDER ANWERFEN - erst hier, nach dem Zurueckspielen.
@@ -197,10 +255,24 @@ US_SKRIPT="$LBPBIN/$PDIR/ultraschall.py"
 if [ -r "$US_CFG" ] \
    && grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*1[[:space:]]*$' "$US_CFG" \
    && [ -x "$US_SKRIPT" ]; then
-    # Als loxberry, nicht als root: der Dienst braucht keine Rootrechte,
-    # und liefen PID-Datei und Protokoll root, koennte die Oberflaeche ihn
-    # hinterher nicht mehr anhalten.
-    su loxberry -s /bin/bash -c "nohup $US_SKRIPT >> $PLOG/ultraschall.log 2>&1 &" >/dev/null 2>&1
+    # OHNE "su" (seit 1.2.2).
+    #
+    # Dieses Skript laeuft bereits als loxberry - plugininstall.pl ruft
+    # es ueber "sudo -n -u loxberry" auf; genau deshalb kann hier auch
+    # kein apt-get gelingen. Ein "su loxberry" von loxberry aus verlangt
+    # trotzdem eine PAM-Anmeldung (nur root ist ueber pam_rootok davon
+    # befreit), und stdin ist hier kein Terminal. Die Zeile lief also
+    # nach JEDEM Upgrade ins Leere, die Pruefung darunter fand keinen
+    # Prozess, und ausgegeben wurde "Messdienst noch nicht gestartet -
+    # der Waechter holt ihn nach". Das las sich wie ein seltener
+    # Ausnahmefall und war der Regelfall: der Fuellstand fror nach jedem
+    # Auto-Update bis zu fuenf Minuten ein. Der ganze Begruendungsblock
+    # darueber beschrieb damit eine Wirkung, die nie eintrat.
+    #
+    # daemon/daemon braucht das "su", weil es als root laeuft. Hier ist
+    # es falsch - us_lib.php startet denselben Dienst aus demselben
+    # Grund ohne.
+    nohup "$US_SKRIPT" >> "$PLOG/ultraschall.log" 2>&1 &
     sleep 2
     # Die Wirkung pruefen, nicht den Rueckgabewert des Starts.
     if pgrep -u loxberry -f "$US_SKRIPT" >/dev/null 2>&1; then

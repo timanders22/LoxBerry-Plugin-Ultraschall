@@ -1,11 +1,16 @@
 <?php
 /**
- * Ultraschall Entfernung - Admin-Oberflaeche (v1.0.0)
- * Reiter: Einstellungen | Einbindung in Loxone | Test | Logdateien
+ * Ultraschall Entfernung - Admin-Oberflaeche
+ * Reiter: Einstellungen | MQTT | Einbindung in Loxone | Test | Logdateien
  *
  * Loest die alte Perl-CGI-Oberflaeche ab (webfrontend/cgi/index.cgi mit
  * HTML::Template und je einer Sprachdatei fuer Deutsch und Englisch).
- * Alles auf Deutsch.
+ *
+ * KEINE FASSUNGSNUMMER IN DIESEM KOPF. Hier stand bis 1.2.1 "(v1.0.0)",
+ * und die Reiterzeile nannte vier statt fuenf Reitern - der MQTT-Reiter
+ * kam mit 1.1.12 dazu. Eine Nummer in einem Dateikopf ist eine weitere
+ * Stelle, die jemand mitpflegen muss; sie steht in plugin.cfg, und dort
+ * setzt sie Werkzeuge/fassung_setzen.py.
  *
  * Kompatibel mit PHP 7.4 und PHP 8.x (LoxBerry 3.x/4.x).
  */
@@ -85,7 +90,27 @@ if ($us_ist_post) {
     $us_fmt_soll = us_formtoken($us_cfg);
     $us_fmt_ist = (isset($_POST['formtoken']) && is_string($_POST['formtoken']))
         ? $_POST['formtoken'] : '';
-    if ($us_fmt_soll === '' || !hash_equals($us_fmt_soll, $us_fmt_ist)) {
+    /* GENAU EINE AUSNAHME, und sie ist der Weg aus der Sackgasse
+     * (seit 1.2.2).
+     *
+     * Das Merkmal wird aus dem Aktionstoken abgeleitet. Ist keines gesetzt,
+     * gibt es keines - und dann weist der Wachposten jeden POST ab,
+     * einschliesslich desjenigen, der ein neues Token erzeugen wuerde. Bis
+     * 1.2.1 war der Knopf dafuer obendrein ausgeblendet. Ein Zustand, den
+     * die Oberflaeche selbst vorsieht ("wurde es bewusst geleert, waechst
+     * es nicht nach"), liess sich damit nur noch von Hand in der
+     * Konfigurationsdatei verlassen.
+     *
+     * Zugelassen wird deshalb ohne Merkmal genau "token_neu", und zwar NUR
+     * solange gar kein Token hinterlegt ist. Was ein fremdes Formular damit
+     * ausloesen koennte, ist die Entstehung eines Tokens, das es nicht
+     * kennt - es macht keine Adresse ungueltig (es gibt keine), es
+     * verstellt nichts und es gibt nichts preis. Alles andere bleibt
+     * abgewiesen. */
+    $us_ohne_token_erlaubt = ($us_fmt_soll === '' && isset($_POST['token_neu'])
+                              && count($_POST) <= 3);
+    if (!$us_ohne_token_erlaubt
+        && ($us_fmt_soll === '' || !hash_equals($us_fmt_soll, $us_fmt_ist))) {
         $us_behalten = (isset($_POST['activetab']) && is_string($_POST['activetab']))
             ? $_POST['activetab'] : null;
         $_POST = array();
@@ -102,8 +127,10 @@ if ($us_ist_post) {
 /* Die Reiterwahl steht NACH dem Wachposten. Sonst uebernimmt sie das
  * activetab eines abgewiesenen POST, und ein fremdes Formular koennte
  * wenigstens noch den Reiter umschalten. */
-$us_wunsch = isset($_POST['activetab']) ? (string) $_POST['activetab']
-    : (isset($_GET['tab']) ? 'tab-' . (string) $_GET['tab'] : '');
+$us_wunsch = (isset($_POST['activetab']) && is_string($_POST['activetab']))
+    ? $_POST['activetab']
+    : ((isset($_GET['tab']) && is_string($_GET['tab']))
+        ? 'tab-' . $_GET['tab'] : '');
 /* Die Positivliste steht AUSGESCHRIEBEN da, nicht gerechnet.
  *
  * hausstandard_pruefen.py sucht sie als Literal; eine mit implode()
@@ -121,9 +148,16 @@ $us_reiter_liste = array('tab-settings', 'tab-mqtt', 'tab-loxone', 'tab-test', '
 $us_tab = in_array($us_wunsch, $us_reiter_liste, true) ? $us_wunsch : $us_reiter_liste[0];
 
 /* ============ Loxone-Vorlage herunterladen ============ */
-if ($us_ist_post && isset($_POST['download'])) {
+if ($us_ist_post && isset($_POST['download']) && is_string($_POST['download'])) {
     $art = (string) $_POST['download'];
-    if ($art === 'udp_in' && trim(us_roh($us_cfg, 'udp_port')) === '') {
+    /* Weissliste (seit 1.2.2). Bis 1.2.1 lief JEDER unbekannte Wert in den
+     * else-Zweig und bekam die MQTT-Vorlage - eine Antwort auf eine Frage,
+     * die niemand gestellt hat. Was nicht ins Muster passt, wird abgewiesen
+     * und gemeldet, nicht zurechtgebogen. */
+    if (!in_array($art, array('mqtt_in', 'udp_in'), true)) {
+        $us_error = us_t('FEHLER.VORLAGE_UNBEKANNT');
+        $us_tab = 'tab-loxone';
+    } elseif ($art === 'udp_in' && trim(us_roh($us_cfg, 'udp_port')) === '') {
         $us_error = us_t('FEHLER.UDP_VORLAGE_PORT');
         $us_tab = 'tab-loxone';
     } else {
@@ -157,12 +191,38 @@ if ($us_ist_post && isset($_POST['kalibrieren'])) {
             . (!empty($mess['fehler']) ? ': ' . us_e($mess['fehler']) : '.');
     } else {
         $feld = $_POST['kalibrieren'] === 'voll' ? 'voll_cm' : 'leer_cm';
-        $us_cfg[$feld] = (string) $mess['entfernung'];
-        if (us_config_write($us_cfg)) {
+        /* DURCH DIESELBE PRUEFUNG WIE DAS FORMULAR (seit 1.2.2).
+         *
+         * Bis 1.2.1 wurde der Messwert roh in die Konfiguration geschrieben.
+         * us_pruefen() ist aber ausdruecklich "EINE Stelle fuer BEIDE Wege" -
+         * und der Zusammenhang leer_cm > voll_cm faellt genau hier an: wer
+         * die beiden Knoepfe vertauscht drueckt, bekommt sonst einen
+         * Fuellstand, der rueckwaerts laeuft. */
+        $us_roh_kal = $us_cfg;
+        $us_roh_kal[$feld] = (string) $mess['entfernung'];
+        list($us_neu_kal, $us_maengel_kal) = us_pruefen($us_roh_kal);
+        if ($us_maengel_kal) {
+            $us_error = implode(' ', $us_maengel_kal);
+        }
+        if (us_config_write($us_neu_kal)) {
             $us_hinweis = sprintf(us_t('MELD.GEMESSEN'), us_e($mess['entfernung']),
                 $feld === 'voll_cm' ? us_t('TEXT.VOLL_Q') : us_t('TEXT.LEER_Q'));
+            /* UND WOHER DER WERT KAM.
+             *
+             * us_einmal_messen() misst nur, wenn der Dienst NICHT laeuft;
+             * sonst gibt es den letzten Stand aus der Zustandsdatei zurueck
+             * - bei einem Takt von 300 s also einen bis zu fuenf Minuten
+             * alten Wert. Der Reiter Test legt das offen, dieser Weg tat es
+             * bis 1.2.1 nicht: gemeldet wurde "Gemessen: X cm", waehrend
+             * der Behaelter womoeglich seither gefuellt worden war. Wer
+             * einen Kalibrierpunkt setzt, muss wissen, worauf er ihn
+             * setzt. */
+            if (isset($mess['alter']) && (int) $mess['alter'] > 0) {
+                $us_hinweis .= ' ' . sprintf(us_t('MELD.GEMESSEN_ALT'),
+                                             (int) $mess['alter']);
+            }
             $us_saved = true;
-            list($us_cfg, $us_altformat) = us_config_read();
+            list($us_cfg, $us_altformat, $us_lage) = us_config_read();
         } else {
             $us_error = sprintf(us_t('FEHLER.CONFIG_SCHREIBEN'), us_e($us_p['config']));
         }
@@ -210,6 +270,14 @@ if ($us_ist_post && isset($_POST['save'])) {
         // Grundlage ist der GESPEICHERTE Stand; darueber kommen ausschliesslich
         // die Felder DIESES Formulars.
         $us_roh = $us_cfg;
+        /* Der bisherige Wert des Themenpraefix reist mit (seit 1.2.2).
+         * us_pruefen() beginnt bei den Vorgaben; ohne diese Angabe fiele
+         * ein geleertes Feld auf 'ultraschall' zurueck statt auf das,
+         * was eingestellt war. Der Schluessel steht bewusst NICHT in den
+         * Vorgaben - er ist eine Angabe an die Pruefung, kein
+         * Konfigurationswert, und us_config_write() schreibt nur, was in
+         * den Vorgaben steht. */
+        $us_roh['themenpraefix_bisher'] = us_roh($us_cfg, 'themenpraefix');
         foreach ($us_feldsatz['haken'] as $us_h) {
             $us_roh[$us_h] = isset($_POST[$us_h]) ? '1' : '0';
         }
@@ -230,7 +298,11 @@ if ($us_ist_post && isset($_POST['save'])) {
             $us_hinweis = us_dienst_pid()
                 ? us_t('MELD.DIENST_NEUSTART')
                 : us_t('MELD.DIENST_LAEUFT_NICHT');
-            list($us_cfg, $us_altformat) = us_config_read();
+            /* $us_lage wird MITGENOMMEN (seit 1.2.2). Bis 1.2.1 stand hier
+             * "list($us_cfg, $us_altformat) = ..." - die Zeile
+             * "Ist die Konfiguration vollstaendig?" im Reiter Test urteilte
+             * danach ueber den Stand VOR dem Speichern. */
+            list($us_cfg, $us_altformat, $us_lage) = us_config_read();
         } else {
             $us_error = sprintf(us_t('FEHLER.CONFIG_SCHREIBEN'), us_e($us_p['config']));
         }
@@ -248,7 +320,7 @@ if ($us_ist_post && isset($_POST['token_neu'])) {
     if (us_config_write($us_cfg)) {
         $us_saved = true;
         $us_hinweis = us_t('TEXT.TOKEN_NEU_OK');
-        list($us_cfg, $us_altformat) = us_config_read();
+        list($us_cfg, $us_altformat, $us_lage) = us_config_read();
     } else {
         $us_error = sprintf(us_t('FEHLER.CONFIG_SCHREIBEN'), us_e($us_p['config']));
     }
@@ -268,8 +340,13 @@ $us_hat_kalibrierung = trim(us_roh($us_cfg, 'leer_cm')) !== '' && trim(us_roh($u
 
 /* ---------------- Einstellungen sichern ----------------
  *
- * Ausgegeben wird die VOLLE Konfiguration - alle 21 Schluessel aus
- * us_defaults(), nicht nur die abweichenden. Ein Schluessel, der in der
+ * Ausgegeben wird die VOLLE Konfiguration - JEDER Schluessel aus
+ * us_defaults(), nicht nur die abweichenden.
+ *
+ * (Hier stand bis 1.2.1 "alle 21 Schluessel". Es sind 22, seit das
+ * Aktionstoken mit 1.2.0 dazugekommen ist. Eine Zahl, die eine Menge
+ * beschreibt, wird beim Erweitern der Menge mitgefuehrt oder gar nicht
+ * erst geschrieben - hier gar nicht.) Ein Schluessel, der in der
  * Sicherung fehlt, kaeme beim Zurueckspielen aus der Vorgabe, und das ist
  * genau dann falsch, wenn jemand ihn bewusst auf den Vorgabewert gesetzt
  * hat und die Vorgabe sich spaeter aendert.
@@ -291,10 +368,18 @@ $us_hat_kalibrierung = trim(us_roh($us_cfg, 'leer_cm')) !== '' && trim(us_roh($u
  * Deshalb steht der Block jetzt VOR jeder Ausgabe. Wer ihn wieder nach unten
  * schiebt, nimmt Punkt 2 zurueck.
  *
- * KEIN AKTIONSTOKEN: dieses Plugin hat keines, weil es keinen Endpunkt im
- * unangemeldeten Bereich gibt - den Ordner webfrontend/html/ gibt es nicht.
- * Der Warntext am Knopf sagt deshalb NICHT, die Datei enthalte Zugangsdaten;
- * sie enthaelt keine. Kommt der Endpunkt, kommt der Satz mit ihm. */
+ * DAS AKTIONSTOKEN GEHOERT IN DIE DATEI - und der Warntext sagt es.
+ *
+ * Hier stand bis 1.2.1 das Gegenteil: "dieses Plugin hat keines, weil es
+ * keinen Endpunkt im unangemeldeten Bereich gibt - den Ordner
+ * webfrontend/html/ gibt es nicht". Beides ist seit 1.2.0 falsch. Der
+ * Endpunkt liegt in webfrontend/html/index.php, das Token steht in der
+ * Konfiguration, und der Warntext elf Zeilen weiter unten
+ * (TEXT.SICH_WARNUNG) sagt richtig, dass die Datei es traegt.
+ *
+ * Ohne das Token waere die zurueckgespielte Sicherung wertlos: alle
+ * Felder stuenden richtig, und jede Adresse im Miniserver antwortete mit
+ * 403. Wer den Kommentar befolgt haette, haette den Warntext entfernt. */
 if ($us_ist_post && isset($_POST['us_sichern'])) {
     $us_js = json_encode($us_cfg,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -324,8 +409,12 @@ if ($us_ist_post && isset($_POST['us_zurueck'])) {
     } elseif ((int) $_FILES['us_sicherung']['size'] > 262144) {
         $us_error = us_t('TEXT.SICH_ZU_GROSS');
     } else {
+        // Der bestehende Stand wird MITGEGEBEN: eine Sicherung aus 1.1.x
+        // kennt das Aktionstoken nicht, und ein fehlender Schluessel darf
+        // keines loeschen. Einzelheiten in us_sicherung_lesen().
         list($us_neu, $us_mangel, $us_n) = us_sicherung_lesen(
-            (string) @file_get_contents($_FILES['us_sicherung']['tmp_name']));
+            (string) @file_get_contents($_FILES['us_sicherung']['tmp_name']),
+            $us_cfg);
         if ($us_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
              * nichts. */
@@ -333,7 +422,7 @@ if ($us_ist_post && isset($_POST['us_zurueck'])) {
                             . implode(' ', $us_mangel);
         } elseif (us_config_write($us_neu)) {
             $us_saved = true;
-            list($us_cfg, $us_altformat) = us_config_read();
+            list($us_cfg, $us_altformat, $us_lage) = us_config_read();
             /* Punkt 7 der Hausregel: den Dienst nachziehen UND sagen, was mit
              * ihm geschehen ist.
              *
@@ -460,7 +549,8 @@ if ($us_frame) {
 <?php echo us_t('TEXT.DIENST'); ?> <b><?= $us_pid ? 'l&auml;uft' : 'l&auml;uft nicht' ?></b><?= $us_pid ? ' (PID ' . $us_pid . ')' : '' ?>
 <?php echo us_t('TEXT.PLUGIN'); ?> <b><?= us_cfg($us_cfg, 'enabled', '0') === '1' ? 'eingeschaltet' : 'ausgeschaltet' ?></b>
 <?php echo us_t('TEXT.SENSOR'); ?> <span class="sm-mono"><?= $us_sensor === 'hcsr04' ? 'HC-SR04' : 'SRF02' ?></span>
-<?php if ($us_status && $us_status['entfernung'] !== null) { ?>
+<?php if (is_array($us_status) && isset($us_status['entfernung'])
+         && $us_status['entfernung'] !== null) { ?>
 <?php echo us_t('TEXT.ZULETZT'); ?> <b><?= us_e(number_format((float) $us_status['entfernung'], 1, ',', '')) ?><?php echo us_t('TEXT.CM'); ?></b>
 <?php if (isset($us_status['prozent']) && $us_status['prozent'] !== null) { ?>
 (<?= us_e(number_format((float) $us_status['prozent'], 1, ',', '')) ?>&nbsp;%)
@@ -495,7 +585,8 @@ if ($us_frame) {
 <!-- ================= Reiter: <?php echo us_t('TEXT.EINSTELLUNGEN'); ?> ================= -->
 <div class="sm-pane<?php echo $us_tab === 'tab-settings' ? ' sm-active' : ''; ?>" id="tab-settings">
 
-<?php if ($us_status && $us_status['entfernung'] !== null) { ?>
+<?php if (is_array($us_status) && isset($us_status['entfernung'])
+         && $us_status['entfernung'] !== null) { ?>
 <h2><?php echo us_t('TEXT.AKTUELLER_MESSWERT'); ?></h2>
 <div class="sm-gross"><?= us_e(number_format((float) $us_status['entfernung'], 1, ',', '')) ?> cm</div>
 <?php if (isset($us_status['prozent']) && $us_status['prozent'] !== null) { ?>
@@ -648,7 +739,13 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 </div>
 </div>
 
-<button data-role="none" class="sm-btn" type="submit" name="save" value="1"><?php echo us_t('TEXT.SPEICHERN'); ?></button>
+<!-- SPEICHERN IST ORANGE (berichtigt in 1.2.2).
+     Hier stand class="sm-btn" ohne Farbklasse - und .sm-btn traegt denselben
+     Gruenton wie sm-b-lesen. Der Knopf sah also aus wie "liest nur", waehrend
+     er die Konfiguration schreibt und den Dienst neu startet. Im Reiter MQTT
+     war derselbe Knopf seit jeher richtig orange. -->
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION'); ?></span></div>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="1"><?php echo us_t('TEXT.SPEICHERN'); ?></button>
 <div class="sm-small"><?php echo us_t('TEXT.BEIM_SPEICHERN_WIRD_DER_DIENST_NEU'); ?></div>
 </form>
 
@@ -805,17 +902,40 @@ $us_host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : 'loxb
 <tr><td><?php echo us_t('LOX.STATUSZEILE'); ?></td>
     <td><span class="sm-mono">http://<?= us_e($us_host) . us_e(us_endpunkt_pfad('status', $us_tok)) ?></span></td></tr>
 <tr><td><?php echo us_t('LOX.SELBSTTEST'); ?></td>
-    <td><span class="sm-mono">http://<?= us_e($us_host) ?>/plugins/<?= us_e($us_p['plugin']) ?>/index.php?selftest=1&amp;token=<?= us_e($us_tok) ?></span></td></tr>
+    <td><span class="sm-mono">http://<?= us_e($us_host) . us_e(us_endpunkt_pfad('status', $us_tok)) ?>&amp;selftest=1</span></td></tr>
 </table>
 </div>
+<?php
+/* Die Beispielzeile wird GENAUSO gebaut wie die echte Antwort.
+ *
+ * Bis 1.2.1 stand hier us_zeile() allein. Der Endpunkt haengt aber OK vorn
+ * und ALTER hinten an (webfrontend/html/index.php) - gemessen:
+ *
+ *   angezeigt : ULTRA;DISTANCE=123.4;...;ZAEHLER=418
+ *   gesendet  : ULTRA;OK=1;DISTANCE=123.4;...;ZAEHLER=418;ALTER=7
+ *
+ * Es fehlten also ausgerechnet die beiden Felder, ueber die die
+ * Ausfallerkennung laeuft. Wer die Zeile abschrieb, baute eine Anlage ohne
+ * sie. Die Zusammensetzung steht jetzt in us_zeile_beispiel() - an
+ * derselben Stelle wie die des Endpunkts. */
+?>
 <div class="sm-small"><?php echo us_t('LOX.ZEILE_BEISPIEL'); ?>
-<span class="sm-mono"><?= us_e(us_zeile(array('distance' => '123.4', 'level' => '42.1', 'liter' => '2105', 'valid' => '1', 'online' => '1', 'ts' => '1787000000', 'zaehler' => '418'))) ?></span></div>
+<span class="sm-mono"><?= us_e(us_zeile_beispiel()) ?></span></div>
 
 <h2><?php echo us_t('LOX.H_BEFEHLE'); ?></h2>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th><?php echo us_t('TEXT.THEMA'); ?></th><th><?php echo us_t('MQTT.EINHEIT'); ?></th><th><?php echo us_t('LOX.SUCHTEXT'); ?></th><th><?php echo us_t('LOX.GRENZEN'); ?></th></tr>
-<?php foreach (us_felder_zeile() as $us_n => $us_f) { ?>
+<?php
+/* OK und ALTER stehen MIT in dieser Tabelle (seit 1.2.2).
+ *
+ * Sie kommen nicht aus us_felder() - daraus entstehen die Importvorlagen,
+ * und auf dem MQTT- und dem UDP-Weg gibt es beide nicht; sie rechnet erst
+ * der Endpunkt beim Abruf. In der Antwortzeile stehen sie aber, und zwar
+ * als erstes und letztes Feld. Bis 1.2.1 fehlten sie hier: wer die Tabelle
+ * abarbeitete, baute eine Anlage ohne Ausfallerkennung - ausgerechnet die
+ * beiden Felder, die dafuer da sind. */
+foreach (array_merge(us_felder_zeile(), us_felder_endpunkt()) as $us_n => $us_f) { ?>
 <tr><td class="sm-mono"><?= us_e(strtoupper($us_n)) ?></td>
     <td><?= us_e($us_f['einheit']) ?></td>
     <td class="sm-mono"><?= us_e(us_check($us_n)) ?></td>
@@ -824,9 +944,28 @@ $us_host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : 'loxb
 </table>
 </div>
 <div class="sm-small"><?php echo us_t('LOX.SUCHTEXT_ERKLAERT'); ?></div>
+<?php } ?>
 
+<?php
+/* DER KNOPF STEHT AUSSERHALB DES else-ZWEIGES (seit 1.2.2).
+ *
+ * Bis 1.2.1 lag der ganze Abschnitt im Zweig "es gibt schon ein Token".
+ * Bei leerem Token sah der Anwender nur den Satz LOX.KEIN_TOKEN - und
+ * keinen Weg zurueck: ohne Token gibt es kein Formularmerkmal, der
+ * Wachposten weist jeden POST ab, und der einzige Knopf, der geholfen
+ * haette, war ausgeblendet. Ein Zustand, den die Oberflaeche selbst
+ * ausdruecklich vorsieht ("wurde es bewusst geleert, waechst es nicht
+ * nach"), war damit eine Sackgasse.
+ *
+ * Der Knopf laeuft ueber denselben Wachposten wie alles andere. Ist gar
+ * kein Token da, kann er nicht greifen - deshalb steht bei leerem Token
+ * der Satz darueber, was zu tun ist. */
+?>
 <h2><?php echo us_t('LOX.H_TOKEN_NEU'); ?></h2>
 <div class="sm-warnung"><?php echo us_t('LOX.TOKEN_NEU_WARNUNG'); ?></div>
+<?php if ($us_tok === '') { ?>
+<div class="sm-alert sm-info"><?php echo us_t('LOX.TOKEN_LEER_WEG'); ?></div>
+<?php } ?>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION'); ?></span></div>
 <div class="sm-knopfreihe">
 <form method="post" action="index.php" onsubmit="return confirm(<?= us_e(json_encode(us_t('LOX.TOKEN_NEU_FRAGE'))) ?>);">
@@ -834,7 +973,6 @@ $us_host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : 'loxb
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?php echo us_t('LOX.K_TOKEN_NEU'); ?></button>
 </form>
 </div>
-<?php } ?>
 
 <h2><?php echo us_t('TEXT.VORLAGEN'); ?></h2>
 <form method="post" action="index.php">
@@ -845,7 +983,7 @@ $us_host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : 'loxb
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="download" value="udp_in"><?php echo us_t('TEXT.VORLAGE_EINGANG_UDP'); ?></button>
 </div>
 </form>
-<div class="sm-small"><?php echo us_t('TEXT.DIE_MQTT_VORLAGE_LEGT'); ?> <?= count(us_status_themen()) ?> <?php echo us_t('TEXT.VIRTUELLE_EINGNGE_AN_DIE_UDP_VORLA'); ?></div>
+<div class="sm-small"><?php echo us_t('TEXT.DIE_MQTT_VORLAGE_LEGT'); ?> <?= count(us_felder_vorlage()) ?> <?php echo us_t('TEXT.VIRTUELLE_EINGNGE_AN_DIE_UDP_VORLA'); ?></div>
 
 <h2><?php echo us_t('TEXT.WAS_VERFFENTLICHT_WIRD'); ?></h2>
 <table class="sm-tbl">
@@ -866,10 +1004,10 @@ $us_host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : 'loxb
 <table class="sm-tbl">
 <tr><th>#</th><th><?php echo us_t('TEXT.BAUSTEIN_TYP'); ?></th><th><?php echo us_t('TEXT.NAME_VORSCHLAG'); ?></th><th><?php echo us_t('TEXT.PARAMETER'); ?></th><th><?php echo us_t('TEXT.EINGNGE_VERBINDEN_MIT'); ?></th></tr>
 <tr><td>1</td><td><?php echo us_t('TEXT.VIRTUELLER_EINGANG'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_distance</td><td><?php echo us_t('TEXT.EINHEIT_CM'); ?></td><td><?php echo us_t('TEXT.KOMMT_BER_DAS_GATEWAY'); ?></td></tr>
-<tr><td>2</td><td><?php echo us_t('TEXT.VIRTUELLER_EINGANG'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?><?php echo us_t('TEXT.LEVEL_2'); ?></td><td><?php echo us_t('TEXT.EINHEIT'); ?></td><td><?php echo us_t('TEXT.TEXT'); ?></td></tr>
+<tr><td>2</td><td><?php echo us_t('TEXT.VIRTUELLER_EINGANG'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_level</td><td><?php echo us_t('TEXT.EINHEIT'); ?></td><td><?php echo us_t('TEXT.TEXT'); ?></td></tr>
 <tr><td>3</td><td><?php echo us_t('TEXT.VIRTUELLER_EINGANG'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_liter</td><td><?php echo us_t('TEXT.EINHEIT_L'); ?></td><td>&mdash;</td></tr>
-<tr><td>4</td><td><?php echo us_t('TEXT.VIRTUELLER_EINGANG'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?><?php echo us_t('TEXT.VALID'); ?></td><td><?php echo us_t('TEXT.DIGITAL_1_MESSUNG_BRAUCHBAR'); ?></td><td>&mdash;</td></tr>
-<tr><td>5</td><td><?php echo us_t('TEXT.VIRTUELLER_EINGANG'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?><?php echo us_t('TEXT.ONLINE'); ?></td><td><?php echo us_t('TEXT.DIGITAL_1_DIENST_LUFT'); ?></td><td>&mdash;</td></tr>
+<tr><td>4</td><td><?php echo us_t('TEXT.VIRTUELLER_EINGANG'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_valid</td><td><?php echo us_t('TEXT.DIGITAL_1_MESSUNG_BRAUCHBAR'); ?></td><td>&mdash;</td></tr>
+<tr><td>5</td><td><?php echo us_t('TEXT.VIRTUELLER_EINGANG'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_online</td><td><?php echo us_t('TEXT.DIGITAL_1_DIENST_LUFT'); ?></td><td>&mdash;</td></tr>
 <tr><td>6</td><td><?php echo us_t('TEXT.SCHWELLWERTSCHALTER'); ?></td><td><?php echo us_t('TEXT.FLLSTAND_NIEDRIG'); ?></td><td><?php echo us_t('TEXT.EIN'); ?> <b>18</b> <?php echo us_t('TEXT.AUS'); ?> <b>25</b> <?php echo us_t('TEXT.EIN_AUS_SCHALTET_BEIM'); ?> <b><?php echo us_t('TEXT.UNTER'); ?></b><?php echo us_t('TEXT.SCHREITEN_EIN'); ?></td><td><?php echo us_t('TEXT.EINGANG_2'); ?></td></tr>
 <tr><td>7</td><td><?php echo us_t('TEXT.UND'); ?></td><td><?php echo us_t('TEXT.WARNUNG_ERLAUBT'); ?></td><td>&mdash;</td><td>I1 = #6, I2 = #4</td></tr>
 <tr><td>8</td><td><?php echo us_t('TEXT.EINSCHALTVERZGERUNG'); ?></td><td><?php echo us_t('TEXT.NIEDRIG_UND_ZWAR_LNGER'); ?></td><td><?php echo us_t('TEXT.600S'); ?></td><td><?php echo us_t('TEXT.EINGANG_7'); ?></td></tr>

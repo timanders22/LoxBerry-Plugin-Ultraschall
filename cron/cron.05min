@@ -84,7 +84,26 @@ fi
 mkdir -p "$LOG" 2>/dev/null
 DATUM=$(date '+%Y-%m-%d %H:%M:%S')
 echo "$DATUM WARNING Der Messdienst lief nicht und wird vom Waechter gestartet." >> "$LOG/ultraschall.log"
-nohup "$SKRIPT" >> "$LOG/ultraschall.log" 2>&1 &
+# ALS loxberry, WENN DIESER LAUF ROOT IST (seit 1.2.2).
+#
+# Es gibt drei Startwege, und zwei davon steigen ausdruecklich ab:
+# daemon/daemon (laeuft als root) ueber "su loxberry", und die
+# Oberflaeche startet ohnehin als loxberry. Dieser Waechter tat es
+# nicht. Unter welchem Benutzer LoxBerry system/cron/cron.05min
+# ausfuehrt, ist hier NICHT gemessen - deshalb wird nicht angenommen,
+# sondern gefragt.
+#
+# Was daran haengt: startet der Waechter den Dienst als root, gehoeren
+# danach der Ramdisk-Ordner, dienst.pid und status.json root. Die
+# Oberflaeche laeuft als loxberry und kann den Dienst dann nicht mehr
+# anhalten, und ein spaeter regulaer als loxberry gestarteter Dienst
+# kann seine Zustandsdatei nicht mehr schreiben - der Endpunkt meldet
+# ONLINE=0, waehrend der Sensor einwandfrei misst.
+if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+    su loxberry -s /bin/bash -c "nohup \"$SKRIPT\" >> \"$LOG/ultraschall.log\" 2>&1 &" >/dev/null 2>&1
+else
+    nohup "$SKRIPT" >> "$LOG/ultraschall.log" 2>&1 &
+fi
 
 # Nachsehen, ob es geholfen hat - und einen Fehlschlag MELDEN statt ihn nach
 # /dev/null zu schreiben. Ein Waechter, der schweigend nichts tut, ist

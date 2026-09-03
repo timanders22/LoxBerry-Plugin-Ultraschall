@@ -29,8 +29,30 @@ BASE="${5:-$LBHOMEDIR}"
 # Systempfad - LoxBerry laesst sich anderswohin installieren, und der
 # Plugin-Pruefer sucht die Zeichenkette, ohne den Zusammenhang zu sehen.
 # Dieses Skript liegt unter <home>/data/plugins/<ordner>/uninstall/
+# AUFWAERTS SUCHEN, NICHT ZAEHLEN (seit 1.2.2).
+#
+# Hier stand eine feste Zahl von ".." - vier Ebenen. Das ist fuer
+# <home>/data/plugins/<ordner>/uninstall/ rechnerisch richtig und
+# bleibt trotzdem eine Wette: je nachdem, wohin LoxBerry eine Datei
+# legt, sind es drei oder vier, und wo ein Skript liegt, entscheidet
+# nicht dieses Plugin. Gesucht wird deshalb aufwaerts, bis ein
+# Verzeichnis gefunden ist, das nachweislich eine LoxBerry-Wurzel IST -
+# es traegt config/plugins UND data/plugins -, mit harter Obergrenze.
+# us_lib.php und us_common.py machen es im selben Plugin seit jeher so;
+# dieses Skript war der letzte Ausreisser.
+lb_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ]; then
+            echo "$v"; return 0
+        fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../../.." 2>/dev/null && pwd)
+    BASE=$(lb_wurzel_suchen)
 fi
 
 SKRIPT="$BASE/bin/plugins/$PDIR/ultraschall.py"
@@ -87,7 +109,16 @@ rm -f /run/shm/ultraschall_status.json /run/shm/ultraschall.pid 2>/dev/null
 # Sicherungsordner eines abgebrochenen Upgrades. Der Rueckfallweg von
 # preupgrade.sh legt ihn unter /tmp an; bricht die Installation zwischen
 # preupgrade und postupgrade ab, bleibt er liegen.
-rm -rf /tmp/ultraschall.SAVE "/tmp/${PDIR}.SAVE" 2>/dev/null
+# NUR DER EIGENE (seit 1.2.2).
+#
+# Hier stand zusaetzlich der feste Pfad /tmp/ultraschall.SAVE. Wird eine
+# Zweitinstallation (ultraschall_01) entfernt, loeschte sie damit den
+# Rueckfall-Sicherungsordner der ERSTEN - und das ist genau die Datei,
+# die nach einem zwischen preupgrade und postupgrade abgebrochenen
+# Upgrade als einzige die Einstellungen noch traegt. Drei Zeilen weiter
+# oben steht dasselbe Argument fuer den Ramdisk-Ordner; hier war es
+# nicht angewandt.
+rm -rf "/tmp/${PDIR}.SAVE" 2>/dev/null
 
 # Die eigene modules-load.d-Datei. In /etc/modules wird NICHT geschnitten:
 # dort koennte der Eintrag von jemand anderem stammen.

@@ -111,7 +111,7 @@ function us_einmal_messen()
                 . "sagt mehr.", US_MESSEN_GRENZE));
         }
         return array('fehler' => "Der Messlauf lieferte keine verwertbare Antwort:\n\n"
-            . mb_substr($roh, 0, 800));
+            . substr($roh, 0, 800));
     }
     $j['quelle'] = 'direkt';
     return $j;
@@ -173,7 +173,7 @@ function us_test_ausfuehren($was)
                     . "Laeuft der Dienst? Siehe \"Zustand des Dienstes\".");
             }
             $t = "Stand: vor " . us_status_alter() . " Sekunden\n\n";
-            if ($s['entfernung'] === null) {
+            if (!isset($s['entfernung']) || $s['entfernung'] === null) {
                 $t .= "Entfernung:   keine brauchbare Messung\n";
             } else {
                 $t .= sprintf("Entfernung:   %.1f cm\n", $s['entfernung']);
@@ -215,7 +215,9 @@ function us_test_ausfuehren($was)
                     . "\n          (Waehrend der Dienst laeuft, wird nicht zusaetzlich"
                     . " gemessen - zwei\n           Zugriffe auf denselben Sensor"
                     . " vertragen sich nicht. Fuer eine\n           Messung von Hand"
-                    . " den Dienst im Reiter Einstellungen anhalten.)\n";
+                    . " den Dienst weiter unten in DIESEM Reiter anhalten -\n"
+                    . "           der Waechter holt ihn binnen fuenf Minuten zurueck,\n"
+                    . "           solange das Plugin eingeschaltet ist.)\n";
             }
             $t .= "\n";
             $t .= "Einzelwerte:  " . (empty($j['roh']) ? '-' : implode('  ', $j['roh'])) . "\n";
@@ -225,6 +227,18 @@ function us_test_ausfuehren($was)
                     $liste[] = $v === null ? 'kein Echo' : $v;
                 }
                 $t .= "Verworfen:    " . implode('  ', $liste) . "\n";
+            }
+            // Was der Messlauf ueber die KONFIGURATION zu sagen hat (seit
+            // 1.2.2). Ohne diese Zeilen stuende der Hinweis im JSON und
+            // wuerde nirgends angezeigt - der stille Rueckfall auf eine
+            // Vorgabe waere weiterhin still, nur eine Ebene hoeher.
+            if (isset($j['hinweise']) && is_array($j['hinweise'])
+                && count($j['hinweise']) > 0) {
+                $t .= "Zur Konfiguration:\n";
+                foreach ($j['hinweise'] as $us_hw) {
+                    $t .= "- " . (string) $us_hw . "\n";
+                }
+                $t .= "\n";
             }
             $t .= "\n";
             if ($j['entfernung'] === null) {
@@ -396,7 +410,8 @@ function us_test_ausfuehren($was)
                     . "Einstellungen einschalten, Port eintragen und speichern.");
             }
             $s = us_status();
-            $wert = ($s && $s['entfernung'] !== null) ? (int) round($s['entfernung']) : 42;
+            $wert = (is_array($s) && isset($s['entfernung']) && $s['entfernung'] !== null)
+                ? (int) round($s['entfernung']) : 42;
             $ms = us_miniservers();
             $nr = us_cfg($cfg, 'udp_miniserver', '1');
             $port = us_roh($cfg, 'udp_port');
@@ -404,7 +419,7 @@ function us_test_ausfuehren($was)
                 return array('UDP-Testpaket senden',
                     "Miniserver $nr steht nicht in general.json.");
             }
-            if (trim($port) === '' || !ctype_digit(trim($port))) {
+            if (preg_match('/^[0-9]{1,5}$/', trim($port)) !== 1) {
                 return array('UDP-Testpaket senden', "Es ist kein gueltiger Port eingetragen.");
             }
             $sock = @fsockopen('udp://' . $ms[$nr]['ip'], (int) $port, $errno, $errstr, 3);
@@ -419,7 +434,7 @@ function us_test_ausfuehren($was)
                 . "An:       " . $ms[$nr]['ip'] . ":" . $port . "\n\n"
                 . "UDP bestaetigt nichts. Ob der Miniserver das Paket bekommen hat,\n"
                 . "sieht man nur dort - in Loxone Config unter Monitor / UDP-Monitor.\n"
-                . ($s && $s['entfernung'] !== null
+                . (is_array($s) && isset($s['entfernung']) && $s['entfernung'] !== null
                     ? "Gesendet wurde der letzte gemessene Wert.\n"
                     : "Es gab noch keine Messung, deshalb der Platzhalter 42.\n"));
 
