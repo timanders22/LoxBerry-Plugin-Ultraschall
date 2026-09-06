@@ -23,6 +23,7 @@ Grundlage ist das Plugin von Dietmar Wimmer. Neu geschrieben fuer LoxBerry 4:
 
 import json
 import logging
+import logging.handlers
 import os
 import signal
 import socket
@@ -68,7 +69,15 @@ _handlers = []
 try:
     os.makedirs(gem.LOG_DIR, exist_ok=True)
     log_kappen()
-    _handlers.append(logging.FileHandler(LOGDATEI))
+    # WatchedFileHandler, NICHT FileHandler.
+    # Am Geraet gemessen (06.09.2026, LoxBerry 4.0.0.15): log/plugins liegt auf
+    # einer Ramdisk (/dev/zram0). Wird sie geleert, ist die Protokolldatei fort -
+    # und ein FileHandler, der sie beim Start EINMAL geoeffnet hat, schreibt bis
+    # zum naechsten Neustart in einen geloeschten Inode. Sichtbar wird davon
+    # nichts. Der WatchedFileHandler prueft bei jeder Zeile Geraetenummer und
+    # Inode und oeffnet noetigenfalls neu; er steht in der Standardbibliothek.
+    # Aufgefallen am Heimkino-Dienst, der sieben Stunden ohne Protokoll lief.
+    _handlers.append(logging.handlers.WatchedFileHandler(LOGDATEI))
 except OSError:
     pass
 # KEIN zweiter Kanal auf stdout.
