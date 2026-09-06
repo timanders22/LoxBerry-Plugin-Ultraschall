@@ -115,13 +115,25 @@ if [ -d /etc/modules-load.d ]; then
     # zwei Stellen steht.
     if [ -f /etc/modules ] && grep -qE '^[[:space:]]*i2c-(dev|bcm2708)([[:space:]]|$)' /etc/modules; then
         sed -i -E '/^[[:space:]]*i2c-(dev|bcm2708)[[:space:]]*$/d' /etc/modules 2>/dev/null \
-            && echo "<INFO> Alte Eintraege aus /etc/modules entfernt."
+            && echo "<INFO> Alte Eintraege aus /etc/modules entfernt." \
+            || echo "<INFO> /etc/modules nicht schreibbar (nicht als root?) - der alte Eintrag bleibt stehen. Er schadet nicht: er meint dasselbe Modul wie modules-load.d."
     fi
 elif [ -f /etc/modules ]; then
     # Sehr altes System ohne modules-load.d: dann eben wie bisher.
     if ! grep -qE "^[[:space:]]*i2c-dev([[:space:]]|$)" /etc/modules; then
-        echo "i2c-dev" >> /etc/modules
-        echo "<INFO> Modul i2c-dev in /etc/modules eingetragen."
+        # Gemeldet wird, was nachher dasteht. postinstall.sh laeuft als
+        # loxberry (Regeln/06) und darf /etc/modules nicht schreiben; bis
+        # 1.2.4 stand die Erfolgsmeldung trotzdem da. Der Zweig greift nur
+        # auf sehr alten Systemen ohne /etc/modules-load.d - deshalb ist es
+        # nie aufgefallen.
+        if echo "i2c-dev" >> /etc/modules 2>/dev/null \
+           && grep -qE "^[[:space:]]*i2c-dev([[:space:]]|$)" /etc/modules; then
+            echo "<INFO> Modul i2c-dev in /etc/modules eingetragen."
+        else
+            echo "<INFO> /etc/modules ist nicht schreibbar (nicht als root?) -"
+            echo "<INFO> i2c-dev wurde NICHT eingetragen. Von Hand nachtragen:"
+            echo "<INFO>   echo i2c-dev | sudo tee -a /etc/modules"
+        fi
     fi
 fi
 # modprobe braucht root; als loxberry scheitert es. Das ist kein Fehler
