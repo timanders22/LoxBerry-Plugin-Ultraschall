@@ -18,9 +18,9 @@
   "einheit": "wandert als Unit=\"<v.1> …\" in die Vorlage; leer = keine",
   "min": "MinVal der Vorlage. NICHT pauschal +-2147483647 - Loxone zieht daraus die Reglergrenzen",
   "max": "MaxVal der Vorlage",
-  "zeile": "1 = steht in der Statuszeile des Endpunkts. Textfelder gehoeren dort NICHT hinein: ein ; oder = darin zerlegt die Zeile, die Loxone liest"
+  "zeile": "1 = steht in der Statuszeile des Endpunkts. Textfelder gehoeren dort NICHT hinein: ein ; oder = darin zerlegt die Zeile, die Loxone liest",
+  "retain": "true = das Thema wird zurueckbehalten (Zustand). false = fluechtig (Messwert mit Zeitbezug, Lebenszeichen). Hausstandard seit 03.09.2026. Ein LEERER Wert geht nie retained hinaus - eine leere Nutzlast loescht das Thema im Broker."
  },
-
  "vorgaben": {
   "enabled": "0",
   "sensor": "srf02",
@@ -45,15 +45,70 @@
   "udp_port": "",
   "aktionstoken": ""
  },
-
  "felder": {
-  "distance":   {"art": "analog",  "einheit": "cm", "min": 0,  "max": 2000,       "zeile": 1},
-  "level":      {"art": "analog",  "einheit": "%",  "min": 0,  "max": 100,        "zeile": 1},
-  "liter":      {"art": "analog",  "einheit": "l",  "min": 0,  "max": 1000000,    "zeile": 1},
-  "valid":      {"art": "digital", "einheit": "",   "min": 0,  "max": 1,          "zeile": 1},
-  "online":     {"art": "digital", "einheit": "",   "min": 0,  "max": 1,          "zeile": 1},
-  "ts":         {"art": "analog",  "einheit": "s",  "min": 0,  "max": 2147483647, "zeile": 1},
-  "zaehler":    {"art": "analog",  "einheit": "",   "min": -1, "max": 999,        "zeile": 1},
-  "last_error": {"art": "text",    "einheit": "",   "min": 0,  "max": 0,          "zeile": 0}
+  "distance": {
+   "art": "analog",
+   "einheit": "cm",
+   "min": 0,
+   "max": 2000,
+   "zeile": 1,
+   "retain": false
+  },
+  "level": {
+   "art": "analog",
+   "einheit": "%",
+   "min": 0,
+   "max": 100,
+   "zeile": 1,
+   "retain": false
+  },
+  "liter": {
+   "art": "analog",
+   "einheit": "l",
+   "min": 0,
+   "max": 1000000,
+   "zeile": 1,
+   "retain": false
+  },
+  "valid": {
+   "art": "digital",
+   "einheit": "",
+   "min": 0,
+   "max": 1,
+   "zeile": 1,
+   "retain": true
+  },
+  "online": {
+   "art": "digital",
+   "einheit": "",
+   "min": 0,
+   "max": 1,
+   "zeile": 1,
+   "retain": false
+  },
+  "ts": {
+   "art": "analog",
+   "einheit": "s",
+   "min": 0,
+   "max": 2147483647,
+   "zeile": 1,
+   "retain": false
+  },
+  "zaehler": {
+   "art": "analog",
+   "einheit": "",
+   "min": -1,
+   "max": 999,
+   "zeile": 1,
+   "retain": false
+  },
+  "last_error": {
+   "art": "text",
+   "einheit": "",
+   "min": 0,
+   "max": 0,
+   "zeile": 0,
+   "retain": true
+  }
  }
 }

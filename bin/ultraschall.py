@@ -82,10 +82,12 @@ except OSError:
     pass
 # KEIN zweiter Kanal auf stdout.
 #
-# daemon/daemon und us_dienst('start') leiten stdout mit ">>" in GENAU
-# DIESE Datei um. Bis 1.1.11 stand deshalb jede Zeile zweimal darin.
-# Der Umleitung bleibt, wofuer sie da ist: einen Absturz aufzufangen,
-# bevor das Protokoll ueberhaupt steht.
+# Bis 1.1.11 leiteten die Startwege stdout mit ">>" in GENAU DIESE Datei
+# um; jede Zeile stand deshalb zweimal darin. Seit 1.2.6 geht die
+# Umleitung in eine eigene Datei (ultraschall_start.log) - weil ein von
+# der Schale gehaltener Deskriptor einer geloeschten Datei nicht mehr
+# nachzufassen ist. Der Umleitung bleibt, wofuer sie da ist: einen
+# Absturz aufzufangen, bevor das Protokoll ueberhaupt steht.
 #
 # Nur wenn sich die Datei nicht anlegen laesst, ist stdout die letzte
 # Zuflucht - sonst saehe niemand irgendetwas.
@@ -99,6 +101,80 @@ logging.basicConfig(
     handlers=_handlers,
 )
 log = logging.getLogger("ultraschall")
+# Zweiter Name fuer DENSELBEN Logger, kein zweiter Logger.
+#
+# Werkzeuge/connack_klartext_pruefen.py schneidet den Anmelde-Rueckruf
+# aus dieser Datei und fuehrt ihn mit eigenen Attrappen aus; die
+# Protokoll-Attrappe haengt es unter dem Namen _LOGGER ein. Ohne diesen
+# Namen scheitert der Lauf mit einem NameError, und die Pruefung meldet
+# "nicht gemessen" - eine Regel, die kein Werkzeug findet, ist eine
+# halbe Regel (CLAUDE.md, Abschnitt 6).
+_LOGGER = log
+
+
+# ---------------------------------------------------------------------------
+# Was der Broker auf eine Anmeldung antwortet - im Klartext (seit 1.2.6)
+# ---------------------------------------------------------------------------
+#
+# paho 1.x liefert die CONNACK-Codes aus MQTT 3.1.1 (1-5), paho 2.x bildet
+# dieselben Faelle auf die Ursachencodes von MQTT 5 ab (132-136). Ein
+# Rueckruf, der nur eine Reihe kennt, meldet unter der anderen Fassung nur
+# die nackte Zahl - ausgerechnet bei falschen Zugangsdaten. Am Geraet
+# gemessen (11.09.2026, andere Linie): die paho-Fassung haengt am Venv jeder
+# Linie einzeln, im selben Haus liefen 1.6.1 und 2.1.0 nebeneinander. Beide
+# Reihen stehen deshalb hier, und 4/134 wie 5/135 sagen dasselbe.
+MQTT_GRUENDE = {
+    0: "",
+    1: "Der Broker lehnt die Protokollfassung ab.",
+    2: "Der Broker lehnt die Client-Kennung ab.",
+    3: "Der Broker ist nicht bereit (Dienst nicht verfuegbar).",
+    4: "Benutzername oder Passwort sind falsch.",
+    5: "Nicht autorisiert - der Broker weist diese Anmeldung zurueck.",
+    132: "Der Broker lehnt die Protokollfassung ab.",
+    133: "Der Broker lehnt die Client-Kennung ab.",
+    134: "Benutzername oder Passwort sind falsch.",
+    135: "Nicht autorisiert - der Broker weist diese Anmeldung zurueck.",
+    136: "Der Broker ist nicht bereit (Dienst nicht verfuegbar).",
+}
+
+
+def mqtt_angemeldet(client, userdata, flags, rc, properties=None):
+    """Rueckruf des Brokers auf die Anmeldung (seit 1.2.6).
+
+    WARUM ES IHN GEBEN MUSS - am laufenden Broker gemessen (13.09.2026):
+    mit falschen Zugangsdaten gibt client.connect() eine 0 zurueck und wirft
+    nichts. Bis 1.2.5 schrieb der Dienst daraufhin "MQTT verbunden mit ..."
+    und veroeffentlichte ins Leere; die Ablehnung kam asynchron danach und
+    wurde von niemandem gelesen. Das ist der Unterschied zwischen
+    "erreichbar" und "angemeldet" (CLAUDE.md, Abschnitt 2): der Broker LIEF,
+    er wies nur ab.
+
+    Die Aufrufform ist die von paho 2 (reason_code, properties); paho 1 ruft
+    mit vier Argumenten auf - deshalb hat 'properties' eine Vorgabe. Der Code
+    kommt bei paho 2 als Objekt; int() darauf ergibt die Zahl, und wo das
+    nicht geht, steht sie in .value.
+
+    Der Zustand reist ueber userdata zurueck in die Huelle - der von paho
+    vorgesehene Weg. Das Pruefwerkzeug ruft ohne userdata auf; dann wird nur
+    protokolliert, und genau das misst es.
+    """
+    try:
+        code = int(rc)
+    except (TypeError, ValueError):
+        code = int(getattr(rc, "value", -1))
+    if code == 0:
+        _LOGGER.info("MQTT-Anmeldung angenommen")
+        grund = ""
+    else:
+        grund = MQTT_GRUENDE.get(
+            code, "Der Broker hat die Anmeldung abgelehnt.")
+        _LOGGER.error("MQTT-Anmeldung abgelehnt: %s (Code %s)", grund, code)
+    if userdata is not None:
+        try:
+            userdata.connack = code
+            userdata.abgelehnt = grund
+        except AttributeError:
+            pass
 
 
 class Mqtt:
@@ -108,6 +184,10 @@ class Mqtt:
     def __init__(self, praefix):
         self.praefix = praefix
         self.client = None
+        # Was der Broker auf die Anmeldung geantwortet hat. None heisst
+        # "noch keine Antwort" - siehe start().
+        self.connack = None
+        self.abgelehnt = ""
 
     def start(self):
         try:
@@ -146,7 +226,24 @@ class Mqtt:
                 self.client = mqtt.Client()
         if zugang["user"]:
             self.client.username_pw_set(zugang["user"], zugang["pass"] or "")
-        self.client.will_set(self.praefix + "/online", "0", retain=True)
+        self.connack = None
+        self.abgelehnt = ""
+        # Der Rueckruf bekommt die Huelle als userdata mit; user_data_set()
+        # gibt es in paho 1.x wie 2.x.
+        try:
+            self.client.user_data_set(self)
+        except Exception:  # noqa: BLE001
+            pass
+        self.client.on_connect = mqtt_angemeldet
+        # DAS LETZTE WORT IST NICHT RETAINED (seit 1.2.6).
+        #
+        # "online" ist das Lebenszeichen, und der Hausstandard vom 03.09.2026
+        # (Regeln/07) sagt: das Lebenszeichen nie retained - sonst steht dort
+        # fuer immer ein Zustand, den niemand mehr auffrischt. Am Geraet
+        # gemessen am 13.09.2026 lag genau dieses Thema als EINZIGES
+        # zurueckbehalten im Broker: "ultraschall/online 0", vom Last-Will
+        # eines Dienstes, der lange vorher beendet worden war.
+        self.client.will_set(self.praefix + "/online", "0", retain=False)
         try:
             self.client.connect(zugang["host"], zugang["port"], keepalive=60)
         except OSError as fehler:
@@ -171,19 +268,115 @@ class Mqtt:
             self.client = None
             return False
         self.client.loop_start()
+
+        # ERST NACHSEHEN, DANN "verbunden" SAGEN (seit 1.2.6).
+        #
+        # connect() baut die Verbindung auf und schickt das CONNECT-Paket;
+        # die Antwort des Brokers kommt asynchron im Netzlauf an. Bis 1.2.5
+        # stand die Erfolgsmeldung unmittelbar hier - auch dann, wenn der
+        # Broker gleich darauf ablehnte. Gewartet wird hoechstens drei
+        # Sekunden; der Rueckruf oben hat den Grund dann schon ins Protokoll
+        # geschrieben.
+        for _ in range(30):
+            if self.connack is not None:
+                break
+            time.sleep(0.1)
+        if self.connack is None:
+            log.error("Der Broker %s:%s antwortet nicht auf die Anmeldung. "
+                      "MQTT bleibt aus.", zugang["host"], zugang["port"])
+            self._abraeumen()
+            return False
+        if self.connack != 0:
+            self._abraeumen()
+            return False
+
         log.info("MQTT verbunden mit %s:%s, Themenpräfix %s",
                  zugang["host"], zugang["port"], self.praefix)
+        self.retained_aufraeumen()
         self.senden("online", "1")
         return True
 
+    def _abraeumen(self):
+        """Den Client zuruecknehmen - dieselbe Reihenfolge wie im
+        Fehlerzweig von connect(). Ein stehengelassener Client sieht fuer
+        jede spaetere Pruefung wie eine bestehende Verbindung aus, und
+        senden() veroeffentlichte hinein (der Befund von 1.2.2)."""
+        for schritt in ("loop_stop", "disconnect"):
+            try:
+                getattr(self.client, schritt)()
+            except Exception:  # noqa: BLE001
+                pass
+        self.client = None
+
+    def retained_aufraeumen(self):
+        """Einmal je Verbindung: die Themen raeumen, die es nicht mehr
+        zurueckbehalten gibt (seit 1.2.6).
+
+        Bis 1.2.5 ging JEDES Thema retained hinaus. Ohne diesen Schritt
+        blieben die alten Werte im Broker liegen und wuerden nach einem
+        Neustart des Miniservers als frisch ausgeliefert - genau das, was
+        der Hausstandard verhindern soll. Eine LEERE Nutzlast loescht ein
+        zurueckbehaltenes Thema; dasselbe beschreibt mqttgateway.pl fuer den
+        UDP-Weg ("Delete ... because of empty message").
+
+        Der virtuelle Eingang in Loxone behaelt dabei seinen letzten Wert -
+        wie alt er ist, beantwortet das Lebenszeichen.
+        """
+        if not self.client:
+            return 0
+        anzahl = 0
+        for name, feld in gem.FELDER.items():
+            if feld.get("retain"):
+                continue
+            try:
+                self.client.publish(self.praefix + "/" + name, "",
+                                    qos=0, retain=True)
+                anzahl += 1
+            except Exception as fehler:  # noqa: BLE001
+                log.error("Aufraeumen von %s misslang: %s", name, fehler)
+        if anzahl:
+            log.info("%d fluechtige Themen im Broker zurueckgesetzt "
+                     "(Umstieg auf den Retain-Hausstandard)", anzahl)
+        return anzahl
+
     def senden(self, unterthema, wert):
+        """Ein Thema veroeffentlichen - Retain aus der TABELLE (seit 1.2.6).
+
+        Die Entscheidung haengt am Themenstamm, nicht am Aufruf. Wer sie an
+        der Aufrufstelle trifft, macht bei einem Sammelaufruf entweder das
+        Lebenszeichen retained (falsch) oder die Zustaende nicht (auch
+        falsch) - so geschehen bei ACTiKamera 1.9.19. Die Tabelle steht in
+        bin/us_vorgaben.json, derselben Datei, aus der die Oberflaeche die
+        Spalte "zurueckbehalten" im Reiter "Einbindung in Loxone" fuellt.
+
+        Zwei Ausnahmen, beide bewusst:
+          * Ein Thema OHNE Tabelleneintrag geht fluechtig hinaus. Was
+            niemand beschrieben hat, soll nicht auf Dauer im Broker stehen.
+          * Ein LEERER Wert geht nie retained hinaus - eine leere Nutzlast
+            LOESCHT das Thema im Broker, und last_error ist im Regelfall
+            leer.
+        """
         if not self.client:
             return
+        text = "" if wert is None else str(wert)
+        feld = gem.FELDER.get(unterthema) or {}
+        behalten = bool(feld.get("retain")) and text != ""
         try:
-            self.client.publish(self.praefix + "/" + unterthema,
-                                str(wert), qos=0, retain=True)
+            erg = self.client.publish(self.praefix + "/" + unterthema,
+                                      text, qos=0, retain=behalten)
         except Exception as fehler:  # noqa: BLE001
             log.error("MQTT-Veröffentlichung fehlgeschlagen: %s", fehler)
+            return
+        # DEN RUECKGABEWERT ANSEHEN (seit 1.2.6).
+        #
+        # publish() wirft nicht, wenn die Verbindung fort ist - es gibt einen
+        # Rueckgabewert ungleich 0 zurueck. Am laufenden Broker gemessen
+        # (13.09.2026): nach einer abgelehnten Anmeldung scheitert jede
+        # Veroeffentlichung still, und bis 1.2.5 sah das niemand.
+        rc = getattr(erg, "rc", 0)
+        if rc:
+            log.error("MQTT-Veröffentlichung von %s abgewiesen (Code %s)",
+                      unterthema, rc)
 
     def stop(self):
         if not self.client:

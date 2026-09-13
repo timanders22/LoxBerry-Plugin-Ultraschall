@@ -855,16 +855,17 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <h2><?php echo us_t('TEXT.WAS_VERFFENTLICHT_WIRD'); ?></h2>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th style="width:24%;"><?php echo us_t('TEXT.THEMA'); ?></th><th style="width:10%;"><?php echo us_t('TEXT.ART'); ?></th><th style="width:10%;"><?php echo us_t('MQTT.EINHEIT'); ?></th><th><?php echo us_t('TEXT.BEDEUTUNG'); ?></th></tr>
+<tr><th style="width:22%;"><?php echo us_t('TEXT.THEMA'); ?></th><th style="width:9%;"><?php echo us_t('TEXT.ART'); ?></th><th style="width:9%;"><?php echo us_t('MQTT.EINHEIT'); ?></th><th style="width:10%;"><?php echo us_t('TEXT.RETAINED'); ?></th><th><?php echo us_t('TEXT.BEDEUTUNG'); ?></th></tr>
 <?php foreach (us_felder() as $us_n => $us_f) { ?>
 <tr><td><span class="sm-mono"><?= us_e($us_praefix . '/' . $us_n) ?></span></td>
     <td><?= us_e($us_f['art']) ?></td>
     <td><?= us_e($us_f['einheit']) ?></td>
+    <td><?= empty($us_f['retain']) ? us_e(us_t('PRUEF.NEIN')) : us_e(us_t('PRUEF.JA')) ?></td>
     <td><?php echo us_thema_lang($us_n); ?></td></tr>
 <?php } ?>
 </table>
 </div>
-<div class="sm-small"><?php echo us_t('TEXT.ALLE_THEMEN_SIND'); ?> <b><?php echo us_t('TEXT.RETAINED'); ?></b><?php echo us_t('TEXT.DER_BROKER_MERKT_SICH_DEN_LETZTEN_'); ?></div>
+<div class="sm-small"><?php echo us_t('MQTT.RETAIN_ERKLAERT'); ?></div>
 <div class="sm-hinweis"><?php echo us_t('MQTT.HERZSCHLAG'); ?></div>
 </div>
 
@@ -1006,12 +1007,12 @@ foreach (array_merge(us_felder_zeile(), us_felder_endpunkt()) as $us_n => $us_f)
 
 <h2><?php echo us_t('TEXT.WAS_VERFFENTLICHT_WIRD'); ?></h2>
 <table class="sm-tbl">
-<tr><th style="width:26%;"><?php echo us_t('TEXT.THEMA'); ?></th><th style="width:14%;"><?php echo us_t('TEXT.ART'); ?></th><th><?php echo us_t('TEXT.BEDEUTUNG'); ?></th></tr>
+<tr><th style="width:24%;"><?php echo us_t('TEXT.THEMA'); ?></th><th style="width:12%;"><?php echo us_t('TEXT.ART'); ?></th><th style="width:12%;"><?php echo us_t('TEXT.RETAINED'); ?></th><th><?php echo us_t('TEXT.BEDEUTUNG'); ?></th></tr>
 <?php foreach (us_status_themen() as $k => $info) { ?>
-<tr><td><span class="sm-mono"><?= us_e($us_praefix . '/' . $k) ?></span></td><td><?= us_e($info[1]) ?></td><td><?= $info[0] ?></td></tr>
+<tr><td><span class="sm-mono"><?= us_e($us_praefix . '/' . $k) ?></span></td><td><?= us_e($info[1]) ?></td><td><?= empty($info[2]) ? us_e(us_t('PRUEF.NEIN')) : us_e(us_t('PRUEF.JA')) ?></td><td><?= $info[0] ?></td></tr>
 <?php } ?>
 </table>
-<div class="sm-small"><?php echo us_t('TEXT.ALLE_THEMEN_SIND'); ?> <b><?php echo us_t('TEXT.RETAINED'); ?></b><?php echo us_t('TEXT.DER_BROKER_MERKT_SICH_DEN_LETZTEN_'); ?></div>
+<div class="sm-small"><?php echo us_t('MQTT.RETAIN_ERKLAERT'); ?></div>
 
 <?php if (!$us_hat_kalibrierung) { ?>
 <div class="sm-alert sm-info"><b><?php echo us_t('TEXT.HINWEIS'); ?></b> <?php echo us_t('TEXT.OHNE_EINGETRAGENE_KALIBRIERUNG_LEE'); ?>

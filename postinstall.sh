@@ -242,6 +242,24 @@ netz_zurueck() {
 }
 netz_zurueck "ultraschall.cfg"
 
+# DIE KONFIGURATION TRAEGT DAS AKTIONSTOKEN - ALSO 0600 (seit 1.2.6).
+#
+# Aus dem Archiv kommt sie mit 0644 an, und beide Schreibwege der
+# Oberflaeche setzen seit 1.2.6 selbst 0600 - aber erst beim ersten
+# Speichern. Bis dahin stuende sie offen. Hausstandard seit 03.09.2026
+# (Regeln/05). Die Zweitschrift daneben setzt preupgrade.sh schon lange
+# so; am Geraet gemessen am 13.09.2026 war die Kopie geschuetzt und das
+# Original nicht.
+if [ -f "$NETZ_CFG/ultraschall.cfg" ]; then
+    if chmod 600 "$NETZ_CFG/ultraschall.cfg" 2>/dev/null; then
+        echo "<OK> Rechte der Konfiguration auf 0600 gesetzt."
+    else
+        echo "<WARNING> Rechte der Konfiguration liessen sich nicht auf 0600"
+        echo "<WARNING> setzen. Sie traegt das Aktionstoken - von Hand:"
+        echo "<WARNING>   chmod 600 $NETZ_CFG/ultraschall.cfg"
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # DEN DIENST WIEDER ANWERFEN - erst hier, nach dem Zurueckspielen.
 #
@@ -284,7 +302,20 @@ if [ -r "$US_CFG" ] \
     # daemon/daemon braucht das "su", weil es als root laeuft. Hier ist
     # es falsch - us_lib.php startet denselben Dienst aus demselben
     # Grund ohne.
-    nohup "$US_SKRIPT" >> "$PLOG/ultraschall.log" 2>&1 &
+    # EIGENE STARTDATEI, NICHT DAS PROTOKOLL (seit 1.2.6).
+    #
+    # Bis 1.2.5 ging die Ausgabe des Dienstes anhaengend in dieselbe
+# Protokolldatei -
+    # in dieselbe Datei, die der Dienst selbst ueber seinen Handler fuehrt.
+    # Wird log/plugins geleert (Ramdisk) oder raeumt die Logwartung auf,
+    # schreibt dieser von der SCHALE gehaltene Deskriptor bis zum Prozessende
+    # in einen geloeschten Inode. Der Handler im Programm faengt sich wieder,
+    # die Umleitung nie. Am Geraet gemessen am 13.09.2026: drei Deskriptoren
+    # des laufenden Dienstes zeigten auf eine geloeschte Datei.
+    #
+    # ">" statt ">>": die Datei faengt auf, was VOR dem Protokoll passiert,
+    # und wird bei jedem Start geleert, statt zu wachsen.
+    nohup "$US_SKRIPT" > "$PLOG/ultraschall_start.log" 2>&1 &
     sleep 2
     # Die Wirkung pruefen, nicht den Rueckgabewert des Starts.
     if pgrep -u loxberry -f "$US_SKRIPT" >/dev/null 2>&1; then

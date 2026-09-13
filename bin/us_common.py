@@ -108,14 +108,80 @@ for _alt in ("/run/shm/ultraschall_status.json", "/run/shm/ultraschall.pid",
 # Beide Ablageorte liegen auf einer Ramdisk: eine verwaiste PID-Datei ist
 # spaetestens nach dem naechsten Neustart fort.
 
-# Muss zu plugin.cfg, release.cfg und prerelease.cfg passen.
+# ---------------------------------------------------------------------------
+# Die eigene Fassungsnummer - GELESEN, nicht eingetragen (seit 1.2.6)
+# ---------------------------------------------------------------------------
 #
-# ZWEIMAL IST DAS SCHON AUSEINANDERGELAUFEN: bis 1.1.1 stand hier 1.0.0,
-# und von 1.1.2 bis 1.1.11 blieb es auf 1.1.2 stehen - neun Freigaben lang.
-# Die Zustandsdatei und die erste Protokollzeile jedes Starts nannten damit
-# eine Fassung, die es nicht mehr gibt. Werkzeuge/fassung_setzen.py setzt
-# alle Stellen auf einmal; wer die Nummer von Hand aendert, vergisst diese.
-VERSION = "1.2.2"
+# Hier stand eine Konstante, und sie ist DREIMAL weggelaufen: bis 1.1.1 auf
+# 1.0.0, von 1.1.2 bis 1.1.11 auf 1.1.2 (neun Freigaben), und von 1.2.3 bis
+# 1.2.5 auf 1.2.2 (drei Freigaben). Am Geraet gemessen am 13.09.2026: die
+# Plugindatenbank nannte 1.2.5, dieses Modul 1.2.2 - und dieser Wert geht in
+# die Zustandsdatei und ueber "aktion=json" bis in den Miniserver.
+#
+# Der Grund ist nicht Nachlaessigkeit, sondern die Stelle: fassung_setzen.py
+# kennt die drei .cfg und die Kopfzeile der README - eine Konstante in einer
+# Programmdatei sieht kein Werkzeug. Eine Nummer, die von Hand mitgepflegt
+# werden muss, laeuft irgendwann weg. Also wird sie gelesen.
+#
+# GELESEN WIRD IN DIESER REIHENFOLGE:
+#   1. data/system/plugindatabase.json ueber den ORDNERNAMEN. Das ist die
+#      einzige Quelle, die auf einer Installation vorliegt: plugininstall.pl
+#      liest die plugin.cfg aus dem Auspackordner und LOESCHT sie danach.
+#      Gesucht wird ueber den Ordnernamen, nie ueber den MD5-Schluessel -
+#      der entsteht aus Autorenname, E-Mail und Plugin-Name und aendert sich
+#      bei jedem Fork (Werkzeuge/fassungsquelle_pruefen.py, Anlass Intercom
+#      2.2.9).
+#   2. ../plugin.cfg - die gibt es nur im Arbeitsordner und im Archiv, also
+#      im Prueflauf. Ohne sie maesse ein Prueflauf die Datenbank der
+#      Attrappe.
+#   3. Leer. Eine erfundene Nummer waere schlimmer als keine: der Endpunkt
+#      liefert dann ein leeres Feld, und das ist eine ehrliche Aussage.
+#
+# Hier wird NICHT geworfen - der Block steht auf Modulebene und risse sonst
+# den Import mit sich (siehe die Begruendung bei den Vorgaben weiter unten).
+
+
+def fassung_ermitteln():
+    """Die eigene Fassungsnummer, aus der Datenbank oder aus plugin.cfg."""
+    pfad = os.path.join(HOME_DIR or "", "data", "system", "plugindatabase.json")
+    try:
+        with open(pfad, "r", encoding="utf-8", errors="replace") as fh:
+            daten = json.load(fh)
+    except (OSError, ValueError):
+        daten = None
+    eintraege = []
+    if isinstance(daten, dict):
+        innen = daten.get("plugins")
+        if isinstance(innen, dict):
+            eintraege = list(innen.values())
+        elif isinstance(innen, list):
+            eintraege = innen
+        else:
+            eintraege = [w for w in daten.values() if isinstance(w, dict)]
+    elif isinstance(daten, list):
+        eintraege = daten
+    for eintrag in eintraege:
+        if not isinstance(eintrag, dict):
+            continue
+        if str(eintrag.get("folder", "")) == PLUGIN_NAME:
+            wert = str(eintrag.get("version", "")).strip()
+            if wert:
+                return wert
+    cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       os.pardir, "plugin.cfg")
+    try:
+        with open(cfg, "r", encoding="utf-8", errors="replace") as fh:
+            for zeile in fh:
+                if zeile.strip().startswith("VERSION="):
+                    wert = zeile.split("=", 1)[1].strip()
+                    if wert:
+                        return wert
+    except OSError:
+        pass
+    return ""
+
+
+VERSION = fassung_ermitteln()
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -239,7 +305,22 @@ def konfiguration_schreiben(werte, pfad=None):
             fh.write("\n".join(zeilen) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
-        os.chmod(tmp, 0o644)
+        # 0600, NICHT 0644 (seit 1.2.6).
+        #
+        # In dieser Datei steht das Aktionstoken. Wer es lesen kann, kann den
+        # Endpunkt abfragen und - weil das Formularmerkmal daraus abgeleitet
+        # wird - jedes Formular der Oberflaeche absenden. Hausstandard seit
+        # 03.09.2026 (Regeln/05): eine Konfiguration, die Zugangsdaten
+        # traegt, hat 0600. Am Geraet gemessen am 13.09.2026 stand sie auf
+        # -rw-r--r--, waehrend die Zweitschrift DANEBEN mit 0600 richtig lag
+        # (preupgrade.sh setzt sie so) - die Kopie war geschuetzt, das
+        # Original nicht.
+        #
+        # Gesetzt wird auf der NEBENdatei, vor dem Umbenennen: zwischen
+        # Anlegen und chmod stuende die Datei sonst kurz mit den Rechten der
+        # umask da, und genau dieses Fenster ist der Grund fuer die
+        # Reihenfolge.
+        os.chmod(tmp, 0o600)
         os.replace(tmp, pfad)
         return True
     except OSError:

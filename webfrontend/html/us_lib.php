@@ -723,8 +723,24 @@ function us_config_write($werte)
         // bin/us_vorgaben.json gibt.
         return false;
     }
+    /* KEIN ZEITSTEMPEL IM KOPF (seit 1.2.6).
+     *
+     * Hier stand eine Zeile mit Datum und Uhrzeit. Sie machte JEDES
+     * Speichern zu einer Aenderung der Datei, auch wenn kein Wert
+     * anders war - und Werkzeuge/wirkungstest.py, das jedes Formular
+     * unveraendert absendet und die Konfiguration vergleicht, schlug
+     * genau dann an, wenn zwischen seinen beiden Laeufen die Minute
+     * umsprang. Eine Pruefung, die bei jedem Lauf anders ausgeht, ist
+     * keine.
+     *
+     * Nebenbei schrieb die PHP-Seite damit DREI Kopfzeilen und
+     * us_common.konfiguration_schreiben() ZWEI: dieselben Werte ergaben
+     * je nach Schreiber verschiedene Bytes. Jetzt sind beide Koepfe
+     * zeichengleich.
+     *
+     * Wann die Datei geschrieben wurde, sagt ihr Aenderungsdatum. */
     $txt = "; Ultraschall Entfernung\n; Geschrieben von der Plugin-Oberflaeche.\n"
-         . '; Stand ' . date('d.m.Y H:i') . "\n\n[ultraschall]\n";
+         . "\n[ultraschall]\n";
     foreach ($vorgaben as $k => $vorgabe) {
         $v = array_key_exists($k, $werte) ? $werte[$k] : $vorgabe;
         $v = str_replace(array("\r", "\n"), array('', ' '), (string) $v);
@@ -782,13 +798,26 @@ function us_config_write($werte)
      * 2. Zwischen Anlegen und chmod stand die Datei mit den Rechten der
      *    umask da. Sie ist zwar kein Passwortspeicher, traegt aber das
      *    Aktionstoken - und das ist der Schluessel zum Endpunkt.
+     *
+     * UND SEIT 1.2.6 SIND ES 0600, NICHT 0644.
+     *
+     * Wer das Aktionstoken lesen kann, kann den Endpunkt abfragen und -
+     * weil das Formularmerkmal daraus abgeleitet wird - jedes Formular
+     * dieser Oberflaeche absenden. Hausstandard seit 03.09.2026
+     * (Regeln/05): eine Konfiguration, die Zugangsdaten traegt, hat
+     * 0600. Am Geraet gemessen am 13.09.2026 stand sie auf -rw-r--r--,
+     * waehrend die Zweitschrift DANEBEN mit 0600 richtig lag: die Kopie
+     * war geschuetzt, das Original nicht.
+     *
+     * Lesen kann sie weiterhin, wer sie lesen muss: Oberflaeche,
+     * Endpunkt und Dienst laufen alle als loxberry.
      */
     $tmp = $file . '.tmp.' . getmypid();
     $fh = @fopen($tmp, 'c');
     if ($fh === false) {
         return false;
     }
-    @chmod($tmp, 0644);
+    @chmod($tmp, 0600);
     $ok = (@ftruncate($fh, 0) !== false)
           && (@fwrite($fh, $txt) === strlen($txt));
     @fflush($fh);
@@ -912,8 +941,22 @@ function us_dienst($aktion)
         if (!is_file($skript)) {
             return 'Dienst nicht gefunden: ' . $skript;
         }
-        $log = $p['logdir'] . '/ultraschall.log';
-        @exec('nohup ' . escapeshellarg($skript) . ' >> ' . escapeshellarg($log)
+        /* EIGENE STARTDATEI, NICHT DAS PROTOKOLL (seit 1.2.6).
+         *
+         * Bis 1.2.5 ging die Ausgabe des Dienstes mit ">>" in
+         * ultraschall.log - in dieselbe Datei, die der Dienst selbst
+         * ueber seinen Handler fuehrt. Wird log/plugins geleert
+         * (Ramdisk) oder raeumt die Logwartung auf, schreibt dieser von
+         * der SCHALE gehaltene Deskriptor bis zum Prozessende in einen
+         * geloeschten Inode; der Handler im Programm faengt sich wieder,
+         * die Umleitung nie. Am Geraet gemessen am 13.09.2026: drei
+         * Deskriptoren des laufenden Dienstes zeigten auf eine
+         * geloeschte Datei.
+         *
+         * ">" statt ">>": die Datei faengt auf, was VOR dem Protokoll
+         * passiert, und wird bei jedem Start geleert. */
+        $log = $p['logdir'] . '/ultraschall_start.log';
+        @exec('nohup ' . escapeshellarg($skript) . ' > ' . escapeshellarg($log)
             . ' 2>&1 & echo gestartet', $meldungen);
         sleep(3);
     }
@@ -985,7 +1028,12 @@ function us_status_themen()
 {
     $aus = array();
     foreach (us_felder() as $name => $f) {
-        $aus[$name] = array(us_t('THEMA.' . strtoupper($name)), $f['art']);
+        /* Drittes Glied seit 1.2.6: geht das Thema zurueckbehalten
+         * hinaus? Die Angabe kommt aus derselben Datei, aus der der
+         * Dienst seine Entscheidung liest - eine zweite Liste in der
+         * Oberflaeche waere die zweite Wahrheit. */
+        $aus[$name] = array(us_t('THEMA.' . strtoupper($name)), $f['art'],
+                            !empty($f['retain']));
     }
     return $aus;
 }

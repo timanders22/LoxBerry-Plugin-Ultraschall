@@ -4,6 +4,122 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.6
+
+Sechs Punkte, alle am laufenden Gerät gemessen (13.09.2026, LoxBerry über
+SSH und am Broker).
+
+### Die Fassungsnummer wird gelesen, nicht eingetragen
+
+`bin/us_common.py` trug sie als Konstante — und sie ist **dreimal**
+weggelaufen: bis 1.1.1 auf 1.0.0, von 1.1.2 bis 1.1.11 auf 1.1.2, und von
+1.2.3 bis 1.2.5 auf 1.2.2. Am Gerät gemessen: die Plugindatenbank nannte
+1.2.5, das Modul 1.2.2 — und dieser Wert geht in die Zustandsdatei und über
+`aktion=json` bis in den Miniserver.
+
+Der Grund ist die Stelle, nicht die Sorgfalt: `fassung_setzen.py` kennt die
+drei `.cfg` und die Kopfzeile der README; eine Konstante in einer
+Programmdatei sieht kein Werkzeug. Gelesen wird jetzt aus
+`data/system/plugindatabase.json` über den **Ordnernamen** — die einzige
+Quelle, die auf einer Installation vorliegt, denn der Installer liest die
+`plugin.cfg` und löscht sie danach. Ersatzweise aus `plugin.cfg` (das ist
+der Fall im Prüfstand), sonst leer: eine erfundene Nummer wäre schlimmer
+als keine.
+
+### Retain je Thema statt für alle
+
+Hausstandard seit 03.09.2026: **Zustände** zurückbehalten, **Messwerte mit
+Zeitbezug** nicht, das **Lebenszeichen nie**. Bis 1.2.5 ging jedes Thema
+retained hinaus. Am Broker gemessen lag genau ein Thema zurückbehalten:
+`ultraschall/online 0` — das Lebenszeichen, vom Last-Will eines längst
+beendeten Dienstes.
+
+Die Entscheidung steht jetzt **je Thema** in `bin/us_vorgaben.json`, der
+gemeinsamen Datei von Dienst und Oberfläche:
+
+| Thema | zurückbehalten | warum |
+|---|---|---|
+| `valid`, `last_error` | ja | Zustände |
+| `distance`, `level`, `liter` | nein | Messwerte mit Zeitbezug |
+| `ts`, `zaehler`, `online` | nein | Lebenszeichen |
+
+Zwei Ausnahmen: ein Thema ohne Tabelleneintrag geht flüchtig hinaus, und
+ein **leerer** Wert nie zurückbehalten — eine leere Nutzlast löscht das
+Thema im Broker, und `last_error` ist im Regelfall leer.
+
+**Was sich für den Anwender ändert:** nach einem Neustart des Miniservers
+steht die Entfernung erst mit der nächsten Messung wieder da statt sofort.
+Dafür ist nie ein alter Wert zu sehen, der wie ein frischer aussieht. Der
+Reiter *Einbindung in Loxone* zeigt die Spalte **retained** je Thema — aus
+derselben Datei, aus der der Dienst sie liest.
+
+Beim ersten Verbinden nach dem Update setzt der Dienst die nicht mehr
+zurückbehaltenen Themen im Broker **einmal zurück** (leere Nutzlast). Ohne
+das lägen die alten Werte weiter dort und würden nach einem Neustart als
+frisch ausgeliefert — genau das, was der Hausstandard verhindern soll.
+
+### Das Startprotokoll steht nicht mehr im Protokoll
+
+1.2.4 hat den `WatchedFileHandler` gebracht; die **zweite Hälfte** blieb
+offen. Alle vier Startwege hängten die Ausgabe des Dienstes an dieselbe
+`ultraschall.log`, und diesen Deskriptor hält die Schale — kein Handler kann
+ihn nachfassen. Am Gerät gemessen (PID 1868, seit 10.09.): **drei**
+Deskriptoren zeigten auf eine gelöschte Datei, zwei davon von der Schale.
+
+Die Umleitung geht jetzt in eine eigene `ultraschall_start.log`, die bei
+jedem Start geleert wird. Sie fängt auf, was passiert, **bevor** das
+Protokoll steht.
+
+### Eine abgelehnte MQTT-Anmeldung fällt auf
+
+Am laufenden Broker gemessen: mit falschen Zugangsdaten gibt
+`client.connect()` eine **0** zurück und wirft nichts. Bis 1.2.5 schrieb der
+Dienst daraufhin „MQTT verbunden mit …" und veröffentlichte ins Leere; die
+Ablehnung kam asynchron danach und wurde von niemandem gelesen — der Broker
+lief, er wies nur ab.
+
+Jetzt hängt ein Rückruf an der Anmeldung, der den Grund im **Klartext**
+nennt — unter paho 1.x (Codes 1–5) wie unter paho 2.x (132–136), denn die
+paho-Fassung hängt am Venv jeder Linie einzeln. `start()` wartet die Antwort
+ab, bevor es „verbunden" sagt, und lässt bei einer Ablehnung keinen halben
+Client stehen. Außerdem wird der Rückgabewert von `publish()` angesehen: er
+ist ungleich 0, wenn die Verbindung fort ist, und wirft nichts.
+
+### Die Konfiguration steht auf 0600
+
+Sie trägt das Aktionstoken — wer es lesen kann, kann den Endpunkt abfragen
+und, weil das Formularmerkmal daraus abgeleitet wird, jedes Formular dieser
+Oberfläche absenden. Hausstandard seit 03.09.2026. Am Gerät gemessen stand
+sie auf `-rw-r--r--`, während die Zweitschrift daneben mit 0600 richtig lag:
+die Kopie war geschützt, das Original nicht. Geändert an drei Stellen —
+beide Schreibwege und der Installer, denn aus dem Archiv kommt sie mit 0644
+an.
+
+### Geprüft
+
+`Pruefung-Ultraschall-1.2.6/`: `messen.py` **30 Prüfungen** an der laufenden
+Seite unter PHP 7.4.33 **und** 8.4.24, je 0 Beanstandungen; `kern.py`
+**33 Prüfungen** am Python-Teil, 0 Beanstandungen. Gegen 1.2.5 werden alle
+neuen Eichfälle rot (2 von 2 bzw. 10 von 10). Der Klartext zu allen zehn
+CONNACK-Codes ist zusätzlich mit `Werkzeuge/connack_klartext_pruefen.py`
+gemessen: 15 von 15.
+
+**Ungemessen und nicht behauptet:** der Betrieb an einem echten Sensor (es
+gibt keinen), das Mithören fremder Themen am Broker und der Aufruf des
+Endpunkts aus einem echten Miniserver.
+
+## Neu in 1.2.5
+
+**Gemeldet wird, was nachher dasteht.** `postinstall.sh` läuft als
+`loxberry` und darf `/etc/modules` nicht schreiben — bis 1.2.4 stand die
+Erfolgsmeldung „Modul i2c-dev eingetragen" trotzdem da. Jetzt wird nach dem
+Schreiben nachgelesen; gelingt es nicht, steht die Anweisung zum Nachtragen
+im Installationsprotokoll. Der Zweig greift nur auf sehr alten Systemen ohne
+`/etc/modules-load.d` — deshalb ist es nie aufgefallen. Dasselbe gilt für
+das Entfernen alter Einträge eine Zeile darüber.
+
+Sonst ist an dieser Fassung nichts geändert.
+
 ## Neu in 1.2.4
 
 **Der Dienst konnte sein Protokoll verlieren, ohne dass es auffiel.**
