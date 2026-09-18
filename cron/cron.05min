@@ -39,12 +39,49 @@ LOG=REPLACELBPLOGDIR
 
 SKRIPT="$BIN/ultraschall.py"
 DATEI="$CFG/ultraschall.cfg"
+# Die Marke liegt NEBEN dem Datenordner: purge_installation raeumt
+# data/plugins/<ordner>/ auch im Upgrade-Zweig ab.
+MARKE=REPLACELBPDATADIR.upgrade_laeuft
 
 # Ein Waechter, der gegen den Willen des Anwenders arbeitet, ist schlimmer als
 # keiner: ist das Plugin ausgeschaltet, wird NICHTS getan und NICHTS gemeldet.
 [ -r "$DATEI" ] || exit 0
 grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*1[[:space:]]*$' "$DATEI" || exit 0
 [ -x "$SKRIPT" ] || exit 0
+
+# LAEUFT GERADE EINE AKTUALISIERUNG? (seit 1.2.7)
+#
+# preupgrade.sh legt die Marke als Erstes an, postupgrade.sh - das letzte
+# Hakenskript dieser Linie - entfernt sie nach dem Start. Dazwischen liegt
+# eine Luecke, in der die Cron-Datei bereits neu eingebaut ist, der Dienst
+# aber noch nicht wieder laeuft. In dieser Linie steigt der Waechter dort
+# meist schon oben aus, weil purge_installation die Konfiguration mitnimmt;
+# postinstall.sh spielt sie aber aus der Zweitschrift zurueck, und ab da ist
+# die Luecke offen. Die Marke schliesst sie fuer JEDEN Startweg.
+#
+# Nur eine Marke, die hoechstens eine Stunde alt ist, zaehlt: eine
+# abgebrochene Installation darf den Dienst nicht fuer immer stilllegen.
+# Aelter, unlesbar oder aus der Zukunft - sie gilt nicht.
+if [ -f "$MARKE" ]; then
+    SEIT=$(cat "$MARKE" 2>/dev/null)
+    case "$SEIT" in
+        ''|*[!0-9]*) SEIT="" ;;
+    esac
+    # Ohne lesbare Uhr faellt die Pruefung GESCHLOSSEN aus: die Marke gilt.
+    # Mit einer leeren Zeichenkette zu rechnen ergaebe ein Alter von 0 und
+    # damit ein "gilt nicht" - genau verkehrt herum.
+    JETZT=$(date +%s 2>/dev/null)
+    case "$JETZT" in
+        ''|*[!0-9]*) JETZT="" ;;
+    esac
+    [ -z "$JETZT" ] && exit 0
+    if [ -n "$SEIT" ]; then
+        ALTER=$(( JETZT - SEIT ))
+        if [ "$ALTER" -ge 0 ] && [ "$ALTER" -lt 3600 ]; then
+            exit 0
+        fi
+    fi
+fi
 
 # Den Ramdisk-Ordner genauso bilden wie bin/us_common.py und us_lib.php: aus
 # dem PLUGIN-Ordnernamen. Steht dort fest "ultraschall", teilen sich eine

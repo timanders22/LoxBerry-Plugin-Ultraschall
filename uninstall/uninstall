@@ -106,6 +106,22 @@ rm -f /tmp/ultraschall.log /tmp/ultraschall.pid /tmp/ultraschall_status.json
 rm -rf "$RAMDIR" 2>/dev/null
 rm -f /run/shm/ultraschall_status.json /run/shm/ultraschall.pid 2>/dev/null
 
+# Die Marke "Aktualisierung laeuft" (seit 1.2.7). preupgrade.sh legt sie
+# NEBEN den Datenordner, postupgrade.sh entfernt sie. Sie ueberlebt damit
+# purge_installation - und bliebe nach einer Deinstallation liegen. Eine
+# spaetere Neuinstallation faende eine Marke aus einem fremden Vorgang vor;
+# sie gilt zwar nach einer Stunde nicht mehr, aber liegenlassen ist keine
+# Bauweise. Nachgezaehlt statt behauptet, wie beim Rest dieser Datei.
+US_MARKE="$BASE/data/plugins/$PDIR.upgrade_laeuft"
+if [ -f "$US_MARKE" ]; then
+    rm -f "$US_MARKE"
+    if [ -f "$US_MARKE" ]; then
+        echo "<WARNING> Die Marke $US_MARKE liess sich nicht entfernen."
+    else
+        echo "<OK> Marke einer laufenden Aktualisierung entfernt."
+    fi
+fi
+
 # Sicherungsordner eines abgebrochenen Upgrades. Der Rueckfallweg von
 # preupgrade.sh legt ihn unter /tmp an; bricht die Installation zwischen
 # preupgrade und postupgrade ab, bleibt er liegen.

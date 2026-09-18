@@ -4,6 +4,106 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.7
+
+Vier Punkte, alle in WSL/Ubuntu gemessen (18.09.2026). **Am Gerät ist nichts
+davon nachgemessen**, und der Messdienst war bei allen Läufen eine Attrappe:
+diese Fassung hat keinen Sensor und kein Netz gesehen. Gemessen wurde der
+Startweg, nicht das Messprogramm.
+
+### `daemon/daemon` startete blind
+
+Das Startskript, das beim Systemstart als root läuft, stellte keine einzige
+Frage. Gemessen (Prozesse nach dem Aufruf, argumentweise über `/proc` gezählt,
+nicht mit einer Teilzeichenkettensuche):
+
+| Fall | 1.2.6 | erwartet | 1.2.7 |
+|---|---|---|---|
+| `enabled = 0` gesetzt, dann `daemon start` | 1 Prozess | 0 | 0 |
+| Konfigurationsdatei fehlt ganz | 1 Prozess | 0 | 0 |
+| ein Dienst läuft, dann erneut `daemon start` | 2 Prozesse | 1 | 1 |
+| derselbe Fall, Dienst unter einem anderen Benutzer | 2 Prozesse | 1 | 1 |
+
+Ein bewusst angehaltenes Plugin lief also nach jedem Neustart wieder an, und
+zwei Dienste schrieben dieselbe Zustandsdatei und dieselben MQTT-Themen.
+`cron/cron.05min` desselben Plugins stellt beide Fragen seit 1.2.0 — nur
+dieser Startweg tat es nicht.
+
+Erkannt wird ein laufender Dienst jetzt **argumentweise**: `argv[0]` ist ein
+Python-Interpreter, `argv[1]` ist Zeichen für Zeichen der volle Pfad *dieser*
+Installation, und mehr als zwei Argumente hat ein Dienst nicht. Ein Editor mit
+offener Datei, ein Einmallauf mit Zusatzargument und das zweite Exemplar
+`ultraschall_01` treffen damit nicht.
+
+Bewusst **ohne** Prüfung des Benutzers, abweichend von der Vorlage
+Chromecast4lox 1.3.11: hier wird niemand beendet, hier wird nur entschieden,
+ob ein *zweiter* Dienst dazukommt. Ein Dienst unter einem anderen Benutzer ist
+trotzdem ein zweiter Dienst, und ein Schutz fällt geschlossen aus. Das ist die
+Zeile „Dienst unter einem anderen Benutzer" in der Tabelle oben.
+
+Die Nachschau nach dem Start las bis 1.2.6 `pgrep -u loxberry -f
+"$pluginbindir/ultraschall.py"` — eine Teilzeichenkettensuche über die ganze
+Befehlszeile, eingeschränkt auf einen Benutzer. Sie hätte einen Editor mit
+offener Datei als gelungenen Start gemeldet. Jetzt sieht sie argumentweise
+nach. Der alte Wortlaut steht hier und nicht im Quelltext: ein Kommentar darf
+nicht die Zeichenfolge enthalten, nach der ein Prüfwerkzeug sucht.
+
+### Die Upgrade-Marke nachgerüstet — überwiegend Vorsorge
+
+Zwischen `preupgrade.sh` und dem letzten Hakenskript liegt eine Lücke, in der
+der Installer `config/plugins/<ordner>/` und `data/plugins/<ordner>/` abräumt
+und die Cron-Datei neu einbaut. `preupgrade.sh` legt jetzt als **Erstes**
+`data/plugins/<ordner>.upgrade_laeuft` mit der Unixzeit an — neben dem
+Datenordner, sonst nähme `purge_installation` sie mit. `postupgrade.sh`, das
+letzte Hakenskript dieser Linie (ein `postroot.sh` gibt es hier nicht),
+entfernt sie **nach** dem Start; `uninstall` räumt sie weg.
+
+Solange die Marke gilt, startet keiner der drei Startwege: `daemon/daemon`,
+`cron/cron.05min` und der Knopf „Dienst neu starten" in der Oberfläche. Sie
+gilt nur, solange sie jünger als 3600 Sekunden ist; älter, unlesbar oder aus
+der Zukunft gilt sie nicht — eine abgebrochene Installation darf den Dienst
+nicht für immer stilllegen. **Ohne lesbare Uhr fällt die Prüfung geschlossen
+aus:** liefert `date` nichts, gilt die Marke. Gemessen als eigener Fall.
+
+**Was hier Vorsorge ist und was nicht — gemessen, nicht behauptet.** In der
+Lücke selbst startet in dieser Linie zunächst nichts: `cron/cron.05min` steigt
+an der fehlenden `config/plugins/<ordner>/ultraschall.cfg` aus. Offen ist die
+Spanne **nach** `postinstall.sh` — das Skript spielt die Konfiguration aus der
+Zweitschrift zurück, und ab da fehlt dem Wächter nichts mehr —, dazu ein
+Systemstart mitten in der Aktualisierung und der Knopf in der Oberfläche.
+Genau diese drei Wege deckt die Marke ab. Eine Wirkung in der Lücke selbst
+wird hier **nicht** behauptet.
+
+Die Oberfläche wird bei liegender Marke **nicht** gesperrt: dafür gibt es in
+dieser Linie keinen gemessenen Schaden. Der Reiter Test zeigt die Marke jetzt
+an (Zeile „Aktualisierung") — zu jeder Regel gehört das Werkzeug, das sie
+findet.
+
+### Die Oberfläche startete einen zweiten Dienst
+
+`us_dienst('start')` startete bedingungslos. Gemessen: lief bereits ein
+Dienst, standen nach dem Aufruf **2 Prozesse** da (erwartet 1). Jetzt wird
+vorher nachgesehen, und der Knopf meldet „nicht gestartet: der Dienst läuft
+bereits (PID …)". Der Weg dorthin führt über „Dienst neu starten", das vorher
+anhält — der Fall trat deshalb nur auf, wenn das Anhalten nicht griff oder ein
+zweiter Dienst ohne PID-Datei lief.
+
+### Was nicht geändert wurde
+
+`postinstall.sh` startet den Dienst weiterhin, während die Marke liegt: das
+ist der Start der Installation selbst, und `postupgrade.sh` räumt die Marke
+erst danach weg. Die umgekehrte Reihenfolge — Marke weg, dann starten — hat an
+der Vorlage Chromecast4lox 1.3.10 in WSL vier Dienste erzeugt, weil ein
+Wächterlauf dazwischen weder Marke noch Dienst sieht.
+
+Die Erkennung in `cron/cron.05min`, `preupgrade.sh` und `uninstall/uninstall`
+vergleicht das Argument weiterhin vollständig (`grep -qxF` über die ersten
+zwei Argumente), prüft aber `argv[0]` nicht auf den Interpreter. Das ist keine
+Teilzeichenkettensuche und damit kein Befund; es bleibt als Vorschlag stehen.
+Ebenso die Anzeige-Zeile in `postinstall.sh`, die nach dem Start mit einer
+Teilzeichenkettensuche nachsieht — sie schickt kein Signal und entscheidet nur
+eine Meldung.
+
 ## Neu in 1.2.6
 
 Sechs Punkte, alle am laufenden Gerät gemessen (13.09.2026, LoxBerry über

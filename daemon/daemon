@@ -15,7 +15,14 @@
 pluginname=REPLACELBPPLUGINDIR
 pluginbindir=REPLACELBPBINDIR
 logdir=REPLACELBPLOGDIR
+configdir=REPLACELBPCONFIGDIR
 log=$logdir/ultraschall.log
+cfgdatei=$configdir/ultraschall.cfg
+dienst=$pluginbindir/ultraschall.py
+# Die Marke liegt NEBEN dem Datenordner, nicht darin: purge_installation
+# loescht data/plugins/<ordner>/ auch im Upgrade-Zweig und nimmt alles mit,
+# was darin liegt (preupgrade.sh dieses Plugins begruendet das ausfuehrlich).
+marke=REPLACELBPDATADIR.upgrade_laeuft
 
 if [ -x /usr/bin/logger ]; then
     /usr/bin/logger "loxberry-plugin-$pluginname - Starte Ultraschall Entfernung"
@@ -30,10 +37,149 @@ fi
 # scheitert dann am fehlenden Schreibrecht. Der Dienst startet beim
 # Systemstart gar nicht erst. postinstall.sh kennt die Eigentumsfrage;
 # hier fehlte sie.
+#
+# Der Ordner entsteht VOR den Pruefungen darunter: auch ein unterbliebener
+# Start soll seinen Grund ins Protokoll schreiben koennen.
 mkdir -p "$logdir" 2>/dev/null
 chown loxberry:loxberry "$logdir" 2>/dev/null
 [ -e "$log" ] || : > "$log" 2>/dev/null
 chown loxberry:loxberry "$log" 2>/dev/null
+
+us_melden() {
+    if [ -x /usr/bin/logger ]; then
+        /usr/bin/logger "loxberry-plugin-$pluginname - $1"
+    fi
+    if [ -d "$logdir" ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') INFO    daemon: $1" >> "$log" 2>/dev/null
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# DREI FRAGEN VOR DEM START (seit 1.2.7)
+#
+# Bis 1.2.6 startete diese Datei bedingungslos. Gemessen in WSL am
+# 18.09.2026 (Bestand-2026-09-18/klasse-G, Faelle D1/D2):
+#   enabled = 0 gesetzt, daemon start  -> 1 Prozess  (erwartet 0)
+#   ein Dienst laeuft, erneut start    -> 2 Prozesse (erwartet 1)
+# cron/cron.05min desselben Plugins stellt beide Fragen seit 1.2.0; nur
+# dieser Startweg tat es nicht.
+# ---------------------------------------------------------------------------
+
+# 1. Ist das Plugin ausgeschaltet, wird nichts gestartet.
+#
+# Der Sollmerker ist "enabled" in der Konfiguration - dieselbe Zeile, die
+# cron/cron.05min und postinstall.sh lesen, und derselbe Ausdruck. Wer den
+# Dienst im Reiter Test anhaelt, ohne das Plugin auszuschalten, bekommt ihn
+# vom Waechter binnen fuenf Minuten zurueck; wer das Plugin ausschaltet,
+# soll ihn NICHT beim naechsten Neustart wiederbekommen.
+#
+# Fehlt die Datei, wird nicht gestartet: das ist der Zustand einer frischen
+# Installation (dort steht enabled=0) und der Zustand mitten in einer
+# Aktualisierung, nachdem purge_installation config/plugins/<ordner>
+# abgeraeumt hat. Ein Start mit der Vorgabe-Konfiguration waere in beiden
+# Faellen falsch. Ein Schutz faellt geschlossen aus (CLAUDE.md, Abschnitt 4).
+if [ ! -r "$cfgdatei" ]; then
+    us_melden "Start uebersprungen: $cfgdatei ist nicht lesbar."
+    exit 0
+fi
+if ! grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*1[[:space:]]*$' "$cfgdatei"; then
+    us_melden "Start uebersprungen: das Plugin ist ausgeschaltet (enabled ist nicht 1)."
+    exit 0
+fi
+
+# 2. Laeuft gerade eine Aktualisierung dieses Plugins?
+#
+# preupgrade.sh legt die Marke als Erstes an, postupgrade.sh - das letzte
+# Hakenskript dieser Linie - entfernt sie nach dem Start. Nur eine Marke,
+# die hoechstens eine Stunde alt ist, zaehlt: eine abgebrochene Installation
+# darf den Dienst nicht fuer immer stilllegen. Aelter, unlesbar oder aus der
+# Zukunft: sie gilt nicht.
+#
+# US_START_TROTZ_MARKE=1 setzt nur ein Hakenskript der eigenen Installation.
+# Dort ist die Marke die eigene, und der Start gehoert zum Vorgang.
+if [ "${US_START_TROTZ_MARKE:-0}" != "1" ] && [ -f "$marke" ]; then
+    seit=$(cat "$marke" 2>/dev/null)
+    case "$seit" in
+        ''|*[!0-9]*) seit="" ;;
+    esac
+    # Die Uhr wird gemessen, nicht angenommen: liefert "date" nichts - unter
+    # Last kann ein fork scheitern -, rechnete die Schale mit einer leeren
+    # Zeichenkette, das Alter wuerde 0 oder negativ, und der Dienst startete
+    # mitten in der Aktualisierung. Ein Schutz faellt geschlossen aus:
+    # ohne lesbare Uhr GILT die Marke.
+    jetzt=$(date +%s 2>/dev/null)
+    case "$jetzt" in
+        ''|*[!0-9]*) jetzt="" ;;
+    esac
+    if [ -z "$jetzt" ]; then
+        us_melden "Start uebersprungen: eine Aktualisierung laeuft (Uhrzeit nicht lesbar)."
+        exit 0
+    fi
+    if [ -n "$seit" ]; then
+        alter=$(( jetzt - seit ))
+        if [ "$alter" -ge 0 ] && [ "$alter" -lt 3600 ]; then
+            us_melden "Start uebersprungen: eine Aktualisierung dieses Plugins laeuft."
+            exit 0
+        fi
+    fi
+fi
+
+# 3. Laeuft schon einer?
+#
+# ARGUMENTWEISE, nicht ueber die PID-Datei: die liegt auf der Ramdisk und
+# ist nach jedem Neustart fort, und preupgrade.sh loescht sie ohnehin.
+# Und nicht ueber eine Teilzeichenkette der ganzen Befehlszeile: die traefe
+# einen Editor mit offener Datei ebenso wie ein zweites Exemplar des
+# Plugins (ultraschall_01). uninstall/uninstall dieses Plugins begruendet
+# das ausfuehrlich.
+#
+# Ein Treffer hat GENAU zwei Argumente: argv[0] ist ein Python-Interpreter
+# (der Dienst startet ueber seinen Shebang "#!/usr/bin/env python3", also
+# steht dort "python3"), argv[1] ist Zeichen fuer Zeichen der volle Pfad
+# DIESER Installation. Ein Einmallauf mit zusaetzlichen Argumenten ist damit
+# kein Dienst, und bin/us_messen.py ebenfalls nicht.
+#
+# ABSICHTLICH OHNE PRUEFUNG DES BENUTZERS - Abweichung von der Vorlage
+# Chromecast4lox 1.3.11 mit Grund: hier wird niemand beendet, hier wird nur
+# entschieden, ob ein ZWEITER Dienst dazukommt. Ein Dienst unter einem
+# anderen Benutzer (die Oberflaeche startet ihn unter dem Webserverbenutzer;
+# ob der auf jeder Anlage loxberry ist, ist nicht gemessen) ist trotzdem ein
+# zweiter Dienst. Der Schutz faellt deshalb geschlossen aus: gefunden ist
+# gefunden. Gemessen in WSL am 18.09.2026, Fall D2f.
+us_ist_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    us_n=0
+    us_argv0=""
+    us_argv1=""
+    while IFS= read -r us_arg; do
+        us_n=$((us_n + 1))
+        [ "$us_n" = 1 ] && us_argv0="$us_arg"
+        [ "$us_n" = 2 ] && us_argv1="$us_arg"
+    done <<US_ARGUMENTE
+$(cat "/proc/$1/cmdline" 2>/dev/null | tr '\0' '\n')
+US_ARGUMENTE
+    [ "$us_n" = 2 ] || return 1
+    [ "$us_argv1" = "$dienst" ] || return 1
+    case "${us_argv0##*/}" in
+        python|python3|python3.*) return 0 ;;
+    esac
+    return 1
+}
+
+us_dienste_finden() {
+    for us_d in /proc/[0-9]*; do
+        grep -qaF "ultraschall.py" "$us_d/cmdline" 2>/dev/null || continue
+        us_p="${us_d#/proc/}"
+        us_ist_dienst "$us_p" && echo "$us_p"
+    done
+}
+
+us_laeuft=$(us_dienste_finden)
+if [ -n "$us_laeuft" ]; then
+    us_erste=$(echo "$us_laeuft" | head -1)
+    us_melden "Start uebersprungen: der Messdienst laeuft bereits (PID $us_erste)."
+    exit 0
+fi
 
 # Der Dienst braucht keine Rootrechte: Lesen vom I2C-Bus erlaubt die Gruppe
 # i2c, die GPIO-Pins die Gruppe gpio. Beide setzt postinstall.sh.
@@ -56,7 +202,7 @@ chown loxberry:loxberry "$log" 2>/dev/null
 # ">" statt ">>": die Datei faengt auf, was VOR dem Protokoll passiert,
 # und wird bei jedem Start geleert, statt zu wachsen.
 startlog="$logdir/ultraschall_start.log"
-su loxberry -s /bin/bash -c "nohup $pluginbindir/ultraschall.py > $startlog 2>&1 &" >/dev/null 2>&1
+su loxberry -s /bin/bash -c "nohup $dienst > $startlog 2>&1 &" >/dev/null 2>&1
 
 # UND NACHSEHEN, OB ES GEHOLFEN HAT (seit 1.2.2).
 #
@@ -66,8 +212,16 @@ su loxberry -s /bin/bash -c "nohup $pluginbindir/ultraschall.py > $startlog 2>&1
 # Fehlstart beim Systemstart blieb bis zum ersten Waechterlauf
 # unsichtbar. postinstall.sh und cron/cron.05min machen die Nachschau;
 # das Startskript nicht.
+#
+# NACHGESEHEN WIRD ARGUMENTWEISE (seit 1.2.7). Bis 1.2.6 stand hier eine
+# Teilzeichenkettensuche ueber die ganze Befehlszeile, eingeschraenkt auf
+# den Benutzer loxberry. Sie haette einen Editor mit offener Datei als
+# gelungenen Start gemeldet, und ein Dienst unter einem anderen Benutzer
+# galt ihr als nicht vorhanden. Der Wortlaut der alten Zeile steht in
+# README.md, nicht hier: ein Kommentar darf nicht die Zeichenfolge
+# enthalten, nach der ein Pruefwerkzeug sucht (CLAUDE.md, Abschnitt 6).
 sleep 2
-if pgrep -u loxberry -f "$pluginbindir/ultraschall.py" >/dev/null 2>&1; then
+if [ -n "$(us_dienste_finden)" ]; then
     [ -x /usr/bin/logger ] && /usr/bin/logger \
         "loxberry-plugin-$pluginname - Messdienst gestartet"
 else

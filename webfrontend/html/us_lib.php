@@ -106,6 +106,11 @@ function us_paths()
     $ramdir = (is_dir('/run/shm') ? '/run/shm/' : '/tmp/') . $dir;
     $status = $ramdir . '/status.json';
     $pid    = $ramdir . '/dienst.pid';
+    /* Die Marke "Aktualisierung laeuft" liegt NEBEN dem Datenordner, nicht
+     * darin: purge_installation entfernt data/plugins/<ordner>/ auch im
+     * Upgrade-Zweig. preupgrade.sh legt sie an, postupgrade.sh entfernt sie
+     * (seit 1.2.7). Ohne LoxBerry-Wurzel gibt es sie nicht - dann bleibt der
+     * Wert leer, und die Pruefung darauf urteilt nicht. */
     if ($home) {
         $p = array(
             'home'   => $home,
@@ -115,6 +120,7 @@ function us_paths()
             'logdir' => $home . '/log/plugins/' . $dir,
             'status' => $status,
             'pid'    => $pid,
+            'marke'  => $home . '/data/plugins/' . $dir . '.upgrade_laeuft',
         );
     } else {
         $base = dirname(dirname(__DIR__));
@@ -126,6 +132,7 @@ function us_paths()
             'logdir' => sys_get_temp_dir(),
             'status' => $status,
             'pid'    => $pid,
+            'marke'  => '',
         );
     }
     return $p;
@@ -912,6 +919,33 @@ function us_dienst_pid()
     return 0;
 }
 
+/**
+ * Laeuft gerade eine Aktualisierung dieses Plugins? (seit 1.2.7)
+ *
+ * Rueckgabe: Alter der Marke in Sekunden, wenn sie GILT; sonst -1.
+ *
+ * Es gilt nur eine Marke, die hoechstens 3600 s alt ist. Aelter, unlesbar,
+ * leer oder aus der Zukunft: sie gilt nicht - eine abgebrochene
+ * Installation darf den Dienst nicht fuer immer stilllegen. Ohne
+ * LoxBerry-Wurzel gibt es keinen Ablageort; dann wird nicht geurteilt.
+ */
+function us_marke_alter()
+{
+    $f = us_paths()['marke'];
+    if ($f === '' || !is_file($f)) {
+        return -1;
+    }
+    $roh = trim((string) @file_get_contents($f));
+    if ($roh === '' || preg_match('/^[0-9]+$/', $roh) !== 1) {
+        return -1;
+    }
+    $alter = time() - (int) $roh;
+    if ($alter < 0 || $alter >= 3600) {
+        return -1;
+    }
+    return $alter;
+}
+
 /** Dienst starten, stoppen, neu starten. */
 function us_dienst($aktion)
 {
@@ -940,6 +974,36 @@ function us_dienst($aktion)
     if (in_array($aktion, array('start', 'restart'), true)) {
         if (!is_file($skript)) {
             return 'Dienst nicht gefunden: ' . $skript;
+        }
+        /* ZWEI FRAGEN VOR DEM START (seit 1.2.7).
+         *
+         * Bis 1.2.6 startete diese Stelle bedingungslos. Gemessen in WSL am
+         * 18.09.2026 (Pruefung-Ultraschall-1.2.7, Faelle P1/P2):
+         *   ein Dienst laeuft, dann us_dienst('start') -> 2 Prozesse
+         *   frische Upgrade-Marke, us_dienst('start')  -> 1 Prozess
+         *
+         * 1. Laeuft gerade eine Aktualisierung? Der Installer raeumt in
+         *    dieser Zeit config/plugins/<ordner>/ und data/plugins/<ordner>/
+         *    ab; ein hier gestarteter Dienst laeuft mit der mitgelieferten
+         *    Vorgabe-Konfiguration weiter, und postupgrade.sh weiss nichts
+         *    von ihm. Die Oberflaeche wird deshalb NICHT gesperrt (dafuer
+         *    gibt es in dieser Linie keinen gemessenen Schaden) - aber
+         *    gestartet wird nicht. */
+        $alter = us_marke_alter();
+        if ($alter >= 0) {
+            $meldungen[] = 'nicht gestartet: es laeuft gerade eine Aktualisierung '
+                . 'dieses Plugins (seit ' . $alter . ' Sekunden). '
+                . 'Nach der Installation startet der Dienst von selbst.';
+            return implode("\n", $meldungen);
+        }
+        /* 2. Laeuft schon einer? us_dienst_pid() sieht argumentweise nach -
+         *    erst in der PID-Datei, dann ueber /proc. Ohne diese Frage legte
+         *    ein zweiter Aufruf einen zweiten Dienst an; beide schrieben
+         *    dieselbe Zustandsdatei und dieselben MQTT-Themen. */
+        $schon = us_dienst_pid();
+        if ($schon > 0) {
+            $meldungen[] = 'nicht gestartet: der Dienst laeuft bereits (PID ' . $schon . ')';
+            return implode("\n", $meldungen);
         }
         /* EIGENE STARTDATEI, NICHT DAS PROTOKOLL (seit 1.2.6).
          *

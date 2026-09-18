@@ -15,6 +15,42 @@ PCONFIG=$LBPCONFIG/$PDIR
 PBIN=$LBPBIN/$PDIR
 
 # ---------------------------------------------------------------------------
+# MARKE "AKTUALISIERUNG LAEUFT" (seit 1.2.7)
+#
+# Als ERSTES, vor jedem anderen Schritt - auch vor dem Sichern. Wer sie
+# hinter eine Bedingung stellt (etwa "nur wenn es etwas zu sichern gibt"),
+# hat sie in genau den Faellen nicht, in denen etwas schiefgeht.
+#
+# Wozu sie dient: zwischen diesem Skript und dem letzten Hakenskript
+# (postupgrade.sh) liegt eine Luecke. Der Installer baut die Cron-Datei in
+# dieser Zeit neu ein; an der Einspeisebremse ist am Geraet fast eine Minute
+# gemessen (Regeln/06). Laeuft cron/cron.05min in dieser Luecke, findet er
+# keine PID-Datei - purge_installation loescht sie mit data/plugins/<ordner>/
+# - und startet den Dienst. Dasselbe gilt fuer einen Systemstart mitten in
+# der Aktualisierung (daemon/daemon) und fuer den Knopf "Dienst neu starten"
+# in der Oberflaeche.
+#
+# Sie liegt NEBEN dem Datenordner, nicht darin: purge_installation entfernt
+# data/plugins/<ordner>/ vollstaendig und naehme sie mit.
+#
+# In dieser Linie ist die Marke ueberwiegend VORSORGE: gemessen (WSL,
+# 18.09.2026) steigt cron/cron.05min in der Luecke schon an der fehlenden
+# Konfiguration aus. Offen bleibt die Zeit NACH postinstall.sh - das Skript
+# holt die Konfiguration aus der Zweitschrift zurueck, und ab da fehlt dem
+# Waechter nichts mehr. Genau diese Spanne und die beiden anderen Startwege
+# deckt die Marke ab.
+US_BASE="${5:-$LBHOMEDIR}"
+US_MARKE="$US_BASE/data/plugins/$PDIR.upgrade_laeuft"
+mkdir -p "$US_BASE/data/plugins" 2>/dev/null
+date +%s > "$US_MARKE" 2>/dev/null
+if [ -s "$US_MARKE" ]; then
+    echo "<OK> Dienststart bis zum Ende der Installation gesperrt."
+else
+    echo "<WARNING> Die Marke $US_MARKE liess sich nicht anlegen - der Waechter"
+    echo "<WARNING> kann den Messdienst waehrend der Installation starten."
+fi
+
+# ---------------------------------------------------------------------------
 # WARUM GESICHERT WIRD
 #
 # BERICHTIGT IN 1.2.2. Hier stand: "LoxBerry loescht

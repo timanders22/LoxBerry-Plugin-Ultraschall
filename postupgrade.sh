@@ -91,5 +91,31 @@ esac
 rm -f /run/shm/ultraschall_status.json /run/shm/ultraschall.pid \
       /tmp/ultraschall_status.json /tmp/ultraschall.pid 2>/dev/null
 
+# ---------------------------------------------------------------------------
+# DIE MARKE AUS preupgrade.sh - ALS LETZTES (seit 1.2.7)
+#
+# Dieses Skript ist das letzte Hakenskript dieser Linie: es gibt kein
+# postroot.sh, und der Installer ruft preroot, preinstall, preupgrade,
+# postinstall, postupgrade, postroot in dieser Reihenfolge (Regeln/06).
+#
+# Erst NACH dem Start. Den Dienst startet postinstall.sh, und das laeuft
+# VOR diesem Skript - die Marke liegt also waehrend des ganzen Starts und
+# weist jeden anderen Starter ab. Die umgekehrte Reihenfolge - Marke weg,
+# dann starten - hat an der Vorlage Chromecast4lox 1.3.10 in WSL gemessen
+# vier Dienste erzeugt: zwischen dem Entfernen und dem Augenblick, in dem
+# der neue Dienst dasteht, sieht ein Waechterlauf weder die Marke noch
+# einen laufenden Dienst.
+#
+# Entfernt wird immer, auch wenn der Start unterblieb (Plugin ausgeschaltet,
+# Sicherung misslungen) - sonst sperrte die Marke den Waechter eine Stunde
+# lang, ohne dass irgendwo stuende, warum.
+US_BASE="${5:-$LBHOMEDIR}"
+US_MARKE="$US_BASE/data/plugins/$PDIR.upgrade_laeuft"
+rm -f "$US_MARKE" 2>/dev/null
+if [ -e "$US_MARKE" ]; then
+    echo "<WARNING> Die Marke $US_MARKE liess sich nicht entfernen."
+    echo "<WARNING> Der Messdienst startet bis zu einer Stunde lang nicht."
+fi
+
 echo "<OK> postupgrade abgeschlossen."
 exit 0

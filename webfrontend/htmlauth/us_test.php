@@ -132,6 +132,15 @@ function us_test_ausfuehren($was)
             $t  = "Dienst:          " . ($pid ? "laeuft (PID $pid)" : 'laeuft nicht') . "\n";
             $t .= "Eingeschaltet:   " . (us_cfg($cfg, 'enabled', '0') === '1' ? 'ja' : 'nein') . "\n";
             $t .= "Zustandsdatei:   " . ($alter < 0 ? 'nicht vorhanden' : $alter . ' Sekunden alt') . "\n";
+            /* Die Upgrade-Marke gehoert in die Selbstpruefung: zu jeder
+             * Regel gehoert das Werkzeug, das sie findet (CLAUDE.md,
+             * Abschnitt 6). Solange sie gilt, startet KEIN Startweg den
+             * Dienst - ohne diese Zeile stuende hier nur "laeuft nicht"
+             * und niemand wuesste, warum. */
+            $marke = us_marke_alter();
+            $t .= "Aktualisierung:  " . ($marke < 0
+                ? 'keine Marke - der Dienst darf starten'
+                : 'Marke liegt, ' . $marke . ' Sekunden alt - der Dienst startet nicht') . "\n";
             $t .= "Sensor:          " . (isset($sensoren[$sensor]) ? $sensoren[$sensor] : $sensor) . "\n";
             if ($sensor === 'hcsr04') {
                 $t .= "GPIO:            Trigger " . us_cfg($cfg, 'gpio_trigger', '23')
