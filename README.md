@@ -4,6 +4,105 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.8
+
+Alle Punkte in WSL/Ubuntu gemessen (24.09.2026), der MQTT-Teil **am
+empfangenen Paket**: der echte Dienst mit echtem paho 1.6.1 gegen einen
+eigenen Broker mit Retain-Speicher und Letztem Willen. **Am Gerät und am
+Broker der Anlage ist nichts davon nachgemessen**, der Sensor war eine
+Attrappe. Prüfstände und Protokolle: `Pruefung-Ultraschall-1.2.8/` im
+Arbeitsordner.
+
+### Die alte Fehlermeldung blieb für immer stehen
+
+`last_error` ging zurückbehalten hinaus, seine Löschung aber nicht: ein leerer
+Wert wird nie retained gesendet, und ein flüchtiges Leer ändert am Broker
+nichts. Gemessen: Sensor erst gestört, dann wieder gut — der Dienst misst
+150 cm, und im Broker steht weiter „Sensor auf Adresse 0x70 antwortet
+nicht". Nach jedem Neustart von Miniserver oder Gateway kam dieser Text
+wieder als aktuell heraus.
+
+Seit 1.2.8 gilt die Entscheidung vom 19.09.2026: **was der Dienst über sich
+selbst sagt, ist nie retained** — `last_error` (sein Fehlertext) und `valid`
+(ob sein eigenes Lesen des Sensors gelang). Beide gehen flüchtig. Der Preis:
+nach einem Neustart fehlen sie bis zum nächsten Messtakt.
+
+### Der Letzte Wille als Paar — und die Deinstallation räumt ab
+
+`online` ist jetzt das **einzige** zurückbehaltene Thema: `1` beim Verbinden
+und in jedem Durchgang, `0` als Letzter Wille, den der **Broker** setzt,
+wenn die Verbindung abbricht (auch bei einem Absturz), und `0` vom Dienst
+selbst beim Anhalten. Loxone sieht damit auch nach einem Neustart, dass der
+Dienst fehlt. Das ist nach Regeln/07 nur erlaubt, wenn beides auf demselben
+Thema retained geht **und** die Deinstallation das Thema abräumt — genau
+das fehlte: am 13.09.2026 stand `ultraschall/online 0` eines längst
+entfernten Dienstes im Broker.
+
+* `uninstall` ruft `ultraschall.py --mqtt-leeren`: alle Themen der Linie
+  unter dem eingestellten Präfix werden am Broker gelöscht und
+  **nachgelesen**; die Meldung sagt, was wirklich geschah. Ein fremdes Thema
+  unter demselben Präfix bleibt stehen.
+* Wird das Präfix im Lauf geändert, räumt der Dienst das alte ab.
+
+### Altlasten aus Vorfassungen: einmal, nachgelesen, mit Merker
+
+1.2.6 und 1.2.7 schickten bei **jeder** Verbindung blind leere Nutzlasten
+auf alle flüchtigen Themen, ohne nachzusehen, ob dort etwas steht, und ohne
+nachzulesen. `valid` und `last_error` aus 1.2.6/1.2.7 räumte das nie ab.
+Jetzt sieht der Dienst beim Verbinden nach, was von seinen flüchtigen
+Themen noch retained im Broker steht, löscht genau das, liest nach und setzt
+**erst dann** den Merker `data/plugins/<ordner>/retain_altlast` (Kennung,
+Präfix und Themenliste — ein Merker einer anderen Fassung zählt nicht).
+Bleibt etwas stehen, gibt es keinen Merker, eine Zeile im Protokoll und
+stündlich einen neuen Versuch.
+
+### Prozesse: argumentweise erkannt, vor jedem Signal geprüft
+
+Ein Prozess gilt nur noch als Messdienst, wenn er **genau** zwei Argumente
+hat: einen Python-Interpreter und den vollen Pfad dieser Installation.
+Bis 1.2.7 genügte in Oberfläche, `uninstall`, `preupgrade.sh` und Wächter,
+dass eines der ersten beiden Argumente der Skriptpfad war. Gemessen:
+
+* `uninstall` (als root), `preupgrade.sh` und der Knopf „Dienst anhalten"
+  beendeten `tail <skript> -f` und einen Prozess mit dem Skriptpfad als
+  Namen;
+* `uninstall` und `preupgrade.sh` schickten nach „kill" ein „kill -9" auf
+  dieselbe Nummer, nur weil es sie noch gab — auch wenn sie inzwischen einem
+  anderen Prozess gehörte; jetzt wird vor dem harten Signal neu gesucht;
+* `preupgrade.sh` und der Knopf „Dienst anhalten" hielten nur **einen**
+  Dienst an; ein zweiter lief weiter;
+* `postinstall.sh` meldete mit `pgrep -f` einen Köder als gestarteten
+  Dienst und startete einen zweiten neben einem laufenden;
+* der Wächter (`cron.05min`) hielt `tail <skript> -f` für den Dienst und
+  startete den echten nicht.
+
+### Keine Wurzel, kein Pfad ab „/"
+
+Wurzel ist jetzt überall nur, was `config/plugins`, `data/plugins` **und**
+`config/system/general.json` trägt — in `us_common.py`, `us_lib.php` und
+allen vier Hakenskripten samt `uninstall`, für `$5`, `LBHOMEDIR` und die
+Suche aufwärts. Ohne Wurzel wird gewarnt statt vollzogen. Gemessen in einem
+fremden Baum ohne `general.json`: `uninstall` löschte dort Zweitschrift,
+Marke und Cron-Eintrag, `preupgrade.sh` legte die Marke an (ohne `$5` sogar
+unter `/data/plugins`), `postinstall.sh` spielte eine Zweitschrift zurück,
+`postupgrade.sh` löschte eine Marke; `us_common.py` rechnete ohne Wurzel
+`/config/plugins/…`, `us_t()` griff nach einem fest eingetragenen
+Heimverzeichnis des Benutzers `loxberry` und nach `/templates/…`. Außerdem:
+
+* der bloße Import von `us_common.py` legte `/run/shm/ultraschall` an — den
+  Ordner einer laufenden Installation, auch aus einem ausgepackten Archiv;
+  jetzt erst, wenn der Dienst schreibt;
+* „Dienst starten/anhalten" läuft nur noch aus der Installation; aus einem
+  Archiv startete der Knopf den Archivcode mit der PID-Datei der Anlage.
+
+### Was nicht geändert wurde
+
+* Der Test-Reiter reiht keine Aufträge ein: seine Knöpfe messen direkt
+  (`us_messen.py`) oder zeigen an; kein Befund.
+* `daemon/daemon` erkannte den Dienst schon seit 1.2.7 argumentweise.
+* paho 2.x ist hier nicht gemessen (in WSL keines); der Anmelderückruf ist
+  seit 1.2.6 für beide Reihen gebaut.
+
 ## Neu in 1.2.7
 
 Vier Punkte, alle in WSL/Ubuntu gemessen (18.09.2026). **Am Gerät ist nichts
@@ -882,7 +981,11 @@ Nachgeprüft in dieser Reihenfolge:
 | `<Präfix>/zaehler` | zählt je Durchgang 0…999 und beginnt von vorn; **-1 = noch kein Durchgang** |
 | `<Präfix>/last_error` | letzte Fehlermeldung, sonst leer |
 
-Voreingestelltes Präfix: `ultraschall`. Alle Themen sind **retained**.
+Voreingestelltes Präfix: `ultraschall`. **Retained ist seit 1.2.8 nur
+`online`** — 1 beim Verbinden, 0 als Letzter Wille, den der Broker selbst
+setzt, wenn der Dienst ausfällt; die Deinstallation räumt es ab. Alle anderen
+Themen gehen flüchtig hinaus (hier stand bis 1.2.7 „Alle Themen sind
+retained" — das war seit 1.2.6 falsch).
 
 `ts`, `zaehler` und `online` gehen in **jedem** Durchgang hinaus, auch wenn sich
 der Messwert nicht geändert hat — sonst ließe sich ein stehengebliebener Dienst

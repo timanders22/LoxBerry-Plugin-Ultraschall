@@ -41,11 +41,16 @@ if (!function_exists('us_e')) {
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins UND data/plugins UND config/system/general.json traegt
+ * (Regeln/06). Das trifft die uebliche Installation genauso wie eine an
+ * einem anderen Ort - und es trifft auch den Fall, dass das Plugin noch als
+ * entpacktes Archiv daliegt (dann findet es nichts und gibt einen
+ * Leerstring zurueck, was der Aufrufer ohnehin abfangen muss).
+ *
+ * GENERAL.JSON GEHOERT DAZU (seit 1.2.8). Bis 1.2.7 genuegten
+ * config/plugins und webfrontend; ein Rest aus Pruefstaenden (so lag es am
+ * 05.09.2026 unter C:\) galt damit als Wurzel, und die Oberflaeche las und
+ * schrieb dort. Gemessen in WSL, Pruefung-Ultraschall-1.2.8, Fall H2.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -55,7 +60,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -862,12 +868,24 @@ function us_status_alter()
 }
 
 /**
- * Gehoert die PID unserem Messdienst?
+ * Gehoert die PID unserem Messdienst? - ARGUMENTWEISE (seit 1.2.8).
  *
- * /proc/<pid>/cmdline trennt die Argumente mit Nullbytes. Geprueft wird das
- * ERSTE Argument gegen den vollen Pfad des Skripts - der Dienst wird immer
- * als "<pfad>/ultraschall.py" gestartet (Shebang), bei einem Aufruf ueber
- * den Interpreter steht er an zweiter Stelle. Beide Faelle sind abgedeckt.
+ * /proc/<pid>/cmdline trennt die Argumente mit Nullbytes. Ein Treffer hat
+ * GENAU zwei Argumente: argv[0] ist ein Python-Interpreter (der Dienst
+ * startet ueber seinen Shebang "#!/usr/bin/env python3", der Kernel setzt
+ * dann "python3" an die erste Stelle), argv[1] ist Zeichen fuer Zeichen der
+ * volle Pfad des Skripts dieser Installation. Dieselbe Bauart wie
+ * daemon/daemon (us_ist_dienst dort) und Regeln/06.
+ *
+ * Bis 1.2.7 genuegte "argv[0] ODER argv[1] ist der Skriptpfad". Damit galt
+ * "tail <skript> -f" oder ein Prozess, der sich mit exec -a den Skriptpfad
+ * als Namen gibt, als Dienst - und der Knopf "Dienst anhalten" beendete
+ * ihn (gemessen in WSL, Pruefung-Ultraschall-1.2.8, Faelle H1a/H1b). Ein
+ * Einmallauf mit Schalter ("--mqtt-leeren") ist ebenfalls kein Dienst.
+ *
+ * Der Benutzer wird nicht geprueft: die Oberflaeche laeuft als loxberry und
+ * kann ohnehin nur eigene Prozesse beenden; fuer "laeuft schon einer?" ist
+ * ein Dienst unter anderem Benutzer trotzdem ein Dienst (wie daemon/daemon).
  */
 function us_ist_dienst($pid, $skript)
 {
@@ -876,25 +894,31 @@ function us_ist_dienst($pid, $skript)
     if ($roh === false || $roh === '') {
         return false;
     }
-    $args = explode("\0", $roh);
-    return (isset($args[0]) && $args[0] === $skript)
-        || (isset($args[1]) && $args[1] === $skript);
+    $args = explode("\0", rtrim($roh, "\0"));
+    if (count($args) !== 2 || $args[1] !== $skript) {
+        return false;
+    }
+    return preg_match('#(^|/)python(3(\.[0-9]+)?)?$#', $args[0]) === 1;
 }
 
 /**
- * PID des laufenden Dienstes, 0 wenn keiner laeuft.
+ * ALLE laufenden Dienste dieser Installation, aufsteigend (seit 1.2.8).
+ *
+ * Zwei Quellen: die PID-Datei, die der Dienst selbst schreibt, und /proc
+ * argumentweise - die zweite findet auch einen Dienst OHNE PID-Datei (ein
+ * zweiter Start ueberschreibt sie). Bis 1.2.7 kam hier nur der ERSTE
+ * Treffer zurueck, und "Dienst anhalten" liess einen zweiten laufen
+ * (gemessen: zwei Dienste, danach einer - Fall H5).
  *
  * Bis 1.1.0 stand hier "pgrep -o -f ultraschall.py". Das durchsucht die
  * ganze Befehlszeile jedes Prozesses und trifft damit auch einen Editor,
  * in dem die Datei offen ist, oder ein zweites Exemplar des Plugins.
- * Massgeblich ist jetzt die PID-Datei, die der Dienst selbst schreibt;
- * findet sich dort nichts Brauchbares, wird /proc argumentweise
- * durchgesehen - ohne Teilstringsuche.
  */
-function us_dienst_pid()
+function us_dienst_pids()
 {
     $p = us_paths();
     $skript = $p['bindir'] . '/ultraschall.py';
+    $gefunden = array();
 
     // Erst fragen, dann oeffnen. Das @ unterdrueckt die Anzeige, nicht
     // einen mit set_error_handler() eingehaengten Aufnehmer - und genau
@@ -902,21 +926,35 @@ function us_dienst_pid()
     // die PID-Datei nicht; das ist der Normalfall und keine Meldung wert.
     $pid = is_file($p['pid']) ? (int) @file_get_contents($p['pid']) : 0;
     if ($pid > 0 && us_ist_dienst($pid, $skript)) {
-        return $pid;
+        $gefunden[$pid] = true;
     }
 
     // /proc gibt es nur auf Linux. Auf einem Pruefstand unter Windows
     // stuenden hier sonst drei Warnungen je Seitenaufruf.
-    if (!is_dir('/proc')) {
-        return 0;
-    }
-    foreach ((array) @scandir('/proc') as $eintrag) {
-        if (preg_match('/^[0-9]+$/', (string) $eintrag) === 1
-            && us_ist_dienst((int) $eintrag, $skript)) {
-            return (int) $eintrag;
+    if (is_dir('/proc')) {
+        foreach ((array) @scandir('/proc') as $eintrag) {
+            if (preg_match('/^[0-9]+$/', (string) $eintrag) === 1
+                && us_ist_dienst((int) $eintrag, $skript)) {
+                $gefunden[(int) $eintrag] = true;
+            }
         }
     }
-    return 0;
+    $aus = array_keys($gefunden);
+    sort($aus);
+    return $aus;
+}
+
+/** PID eines laufenden Dienstes, 0 wenn keiner laeuft. Fuer die Frage
+ * "laeuft einer?" genuegt die PID-Datei, wenn sie stimmt; sonst /proc. */
+function us_dienst_pid()
+{
+    $p = us_paths();
+    $pid = is_file($p['pid']) ? (int) @file_get_contents($p['pid']) : 0;
+    if ($pid > 0 && us_ist_dienst($pid, $p['bindir'] . '/ultraschall.py')) {
+        return $pid;
+    }
+    $alle = us_dienst_pids();
+    return $alle ? (int) $alle[0] : 0;
 }
 
 /**
@@ -952,20 +990,48 @@ function us_dienst($aktion)
     $p = us_paths();
     $skript = $p['bindir'] . '/ultraschall.py';
     $meldungen = array();
+    /* NUR AUS DER INSTALLATION (seit 1.2.8).
+     *
+     * Ohne LoxBerry-Wurzel ist das hier ein ausgepacktes Archiv oder eine
+     * Kopie. Bis 1.2.7 startete der Knopf dann den ARCHIVcode - mit
+     * unersetzten REPLACE-Marken, also mit dem Ramdisk-Ordner
+     * /run/shm/ultraschall einer laufenden Installation und ihrer
+     * PID-Datei, die "stop" obendrein loeschte (gemessen in WSL,
+     * Pruefung-Ultraschall-1.2.8, Fall H4). Was Prozesse startet oder
+     * Signale schickt, laeuft nur aus der Installation. */
+    if ($p['home'] === '') {
+        return 'nicht ausgefuehrt: keine LoxBerry-Wurzel gefunden (ausgepacktes '
+            . 'Archiv oder Kopie). Den Dienst startet und haelt nur die '
+            . 'installierte Oberflaeche an.';
+    }
     if (in_array($aktion, array('stop', 'restart'), true)) {
-        // Gezielt die eigene PID beenden statt "pkill -f ultraschall.py" -
+        // Gezielt die eigenen PIDs beenden statt "pkill -f ultraschall.py" -
         // das haette bei zwei Exemplaren des Plugins beide erwischt.
-        $pid = us_dienst_pid();
-        if ($pid > 0) {
-            @exec('kill ' . (int) $pid . ' 2>&1', $meldungen);
-            for ($i = 0; $i < 10 && us_dienst_pid() === $pid; $i++) {
+        //
+        // ALLE eigenen Dienste, nicht nur den ersten (seit 1.2.8), und vor
+        // dem harten Signal NEU gesucht: zwischen den beiden Signalen kann
+        // ein Prozess enden und seine Nummer neu vergeben werden.
+        $ziel = us_dienst_pids();
+        if ($ziel) {
+            foreach ($ziel as $pid) {
+                @exec('kill ' . (int) $pid . ' 2>&1', $meldungen);
+            }
+            for ($i = 0; $i < 10 && array_intersect($ziel, us_dienst_pids()); $i++) {
                 sleep(1);
             }
-            if (us_dienst_pid() === $pid) {
+            $rest = array_intersect($ziel, us_dienst_pids());
+            foreach ($rest as $pid) {
                 @exec('kill -9 ' . (int) $pid . ' 2>&1', $meldungen);
+            }
+            if ($rest) {
                 sleep(1);
             }
-            $meldungen[] = 'angehalten (PID ' . $pid . ')';
+            $meldungen[] = 'angehalten (PID ' . implode(', ', $ziel) . ')';
+            $uebrig = us_dienst_pids();
+            if ($uebrig) {
+                $meldungen[] = 'FEHLER: der Dienst laeuft weiter (PID '
+                    . implode(', ', $uebrig) . ')';
+            }
         } else {
             $meldungen[] = 'lief nicht';
         }
@@ -1456,15 +1522,16 @@ function us_t($schluessel)
         // Installiert liegen die Dateien unter
         // <home>/templates/plugins/<ordner>/lang/ - der Ordnername ergibt
         // sich aus dem Ablageort dieser Datei.
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) { $home = $k; break; }
-            }
-        }
+        //
+        // DIE WURZEL KOMMT AUS us_paths() (seit 1.2.8). Bis 1.2.7 stand hier
+        // eine eigene Suche mit einem festen Rueckfall im Heimverzeichnis
+        // HINTER der Suche, und ohne Wurzel wurde "/templates/plugins/..."
+        // ab "/" versucht (gemessen in WSL, Pruefung-Ultraschall-1.2.8,
+        // Fall H3). Ohne Wurzel gilt nur der Entwicklungsbaum daneben.
+        $home = us_paths()['home'];
         $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        $pfad = ($home !== '') ? $home . '/templates/plugins/' . $ordner . '/lang' : '';
+        if ($pfad === '' || !is_dir($pfad)) {
             // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }

@@ -19,7 +19,7 @@
   "min": "MinVal der Vorlage. NICHT pauschal +-2147483647 - Loxone zieht daraus die Reglergrenzen",
   "max": "MaxVal der Vorlage",
   "zeile": "1 = steht in der Statuszeile des Endpunkts. Textfelder gehoeren dort NICHT hinein: ein ; oder = darin zerlegt die Zeile, die Loxone liest",
-  "retain": "true = das Thema wird zurueckbehalten (Zustand). false = fluechtig (Messwert mit Zeitbezug, Lebenszeichen). Hausstandard seit 03.09.2026. Ein LEERER Wert geht nie retained hinaus - eine leere Nutzlast loescht das Thema im Broker."
+  "retain": "true = das Thema wird zurueckbehalten. false = fluechtig. Hausstandard seit 03.09.2026, entschieden 18./19.09.2026 (Regeln/07): Messwerte mit Zeitbezug, das Lebenszeichen und jede Aussage des Dienstes ueber sich selbst (valid, last_error) sind fluechtig. Einzige Ausnahme ist online: 1 beim Verbinden und 0 als Letzter Wille auf DEMSELBEN Thema, beide retained, und uninstall raeumt es ab. Ein LEERER Wert geht nie retained hinaus - eine leere Nutzlast loescht das Thema im Broker."
  },
  "vorgaben": {
   "enabled": "0",
@@ -76,7 +76,7 @@
    "min": 0,
    "max": 1,
    "zeile": 1,
-   "retain": true
+   "retain": false
   },
   "online": {
    "art": "digital",
@@ -84,7 +84,7 @@
    "min": 0,
    "max": 1,
    "zeile": 1,
-   "retain": false
+   "retain": true
   },
   "ts": {
    "art": "analog",
@@ -108,7 +108,7 @@
    "min": 0,
    "max": 0,
    "zeile": 0,
-   "retain": true
+   "retain": false
   }
  }
 }

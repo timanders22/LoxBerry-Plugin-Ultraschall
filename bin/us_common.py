@@ -27,13 +27,22 @@ def lb_wurzel_ermitteln():
     """Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
 
     Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
-    config/plugins UND webfrontend enthaelt. Trifft die uebliche
-    Installation genauso wie eine an einem anderen Ort.
+    config/plugins UND data/plugins UND config/system/general.json traegt
+    (Regeln/06). Trifft die uebliche Installation genauso wie eine an einem
+    anderen Ort.
+
+    GENERAL.JSON GEHOERT DAZU (seit 1.2.8). Bis 1.2.7 genuegten
+    config/plugins und webfrontend. Auf einem Pruefrechner liegen solche
+    Verzeichnisse als Reste von Pruefstaenden herum; die Suche nahm dann
+    einen fremden Baum als Wurzel und las und schrieb dort. Gemessen in WSL
+    (Pruefung-Ultraschall-1.2.8, Fall Y1). Ein LoxBerry hat die Datei
+    immer, ein solcher Rest nie.
     """
     d = os.path.dirname(os.path.abspath(__file__))
     for _ in range(8):
         if os.path.isdir(os.path.join(d, "config", "plugins")) \
-                and os.path.isdir(os.path.join(d, "webfrontend")):
+                and os.path.isdir(os.path.join(d, "data", "plugins")) \
+                and os.path.isfile(os.path.join(d, "config", "system", "general.json")):
             return d
         eltern = os.path.dirname(d)
         if eltern == d:
@@ -45,6 +54,19 @@ def lb_wurzel_ermitteln():
 # ---------------------------------------------------------------------------
 # Pfade - LoxBerry ersetzt die REPLACE-Marken bei der Installation
 # ---------------------------------------------------------------------------
+#
+# OHNE WURZEL KEIN PFAD AB "/" (seit 1.2.8). Bis 1.2.7 stand hier
+# lb_wurzel_ermitteln() + "/config/plugins/..." - fand die Suche nichts,
+# ergab das "/config/plugins/ultraschall" (Fall Y2). Jetzt bleibt der Wert
+# leer, und jede Stelle, die ihn benutzt, fragt vorher, ob es ihn gibt.
+# Installiert greift das nie: dort sind die REPLACE-Marken ersetzt.
+
+_WURZEL = lb_wurzel_ermitteln()
+
+
+def _unter_wurzel(teil):
+    return os.path.join(_WURZEL, teil, "plugins", PLUGIN_NAME) if _WURZEL else ""
+
 
 PLUGIN_NAME = "REPLACELBPPLUGINDIR"
 if PLUGIN_NAME.startswith("REPLACE"):
@@ -52,14 +74,23 @@ if PLUGIN_NAME.startswith("REPLACE"):
 
 CONFIG_DIR = "REPLACELBPCONFIGDIR"
 if CONFIG_DIR.startswith("REPLACE"):
-    CONFIG_DIR = lb_wurzel_ermitteln() + "/config/plugins/" + PLUGIN_NAME
+    CONFIG_DIR = _unter_wurzel("config")
 
 LOG_DIR = "REPLACELBPLOGDIR"
 if LOG_DIR.startswith("REPLACE"):
-    LOG_DIR = lb_wurzel_ermitteln() + "/log/plugins/" + PLUGIN_NAME
+    LOG_DIR = _unter_wurzel("log")
 
-HOME_DIR = os.environ.get("LBHOMEDIR") or lb_wurzel_ermitteln()
-CONFIG_FILE = os.path.join(CONFIG_DIR, "ultraschall.cfg")
+DATA_DIR = "REPLACELBPDATADIR"
+if DATA_DIR.startswith("REPLACE"):
+    DATA_DIR = _unter_wurzel("data")
+
+HOME_DIR = os.environ.get("LBHOMEDIR") or _WURZEL
+CONFIG_FILE = os.path.join(CONFIG_DIR, "ultraschall.cfg") if CONFIG_DIR else ""
+# Merker "Altlasten im Broker abgeraeumt und nachgelesen" (seit 1.2.8),
+# siehe Mqtt.altlast_abraeumen() in ultraschall.py. Liegt im Datenordner:
+# purge_installation raeumt ihn bei jedem Upgrade ab, und danach wird einmal
+# neu nachgesehen - das ist gewollt und kostet ein paar Sekunden.
+ALTLAST_MERKER = os.path.join(DATA_DIR, "retain_altlast") if DATA_DIR else ""
 # Eigener Unterordner auf der Ramdisk statt Dateien im Wurzelverzeichnis.
 # /run/shm gehoert allen: liegen dort "ultraschall.pid" und
 # "ultraschall_status.json" frei herum, kollidieren sie mit jedem anderen
@@ -79,12 +110,23 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "ultraschall.cfg")
 # Bei einer einzelnen Installation aendert sich nichts: PLUGIN_NAME ist dann
 # genau "ultraschall", der Pfad bleibt derselbe wie bisher.
 RAM_DIR = ("/run/shm/" if os.path.isdir("/run/shm") else "/tmp/") + PLUGIN_NAME
-try:
-    os.makedirs(RAM_DIR, exist_ok=True)
-except OSError:
-    pass
 STATUS_FILE = os.path.join(RAM_DIR, "status.json")
 PID_FILE = os.path.join(RAM_DIR, "dienst.pid")
+
+
+def ram_ordner_anlegen():
+    """Den Ramdisk-Ordner anlegen - erst, wenn der DIENST schreibt.
+
+    Bis 1.2.7 stand das auf Modulebene: jeder Import legte den Ordner an,
+    auch der Einmalabruf, die Deinstallation und ein Import aus einem
+    ausgepackten Archiv. Dort sind die REPLACE-Marken nicht ersetzt, der
+    Name ist "ultraschall" - und damit der Ordner einer laufenden
+    Installation (gemessen in WSL, Pruefung-Ultraschall-1.2.8, Fall Y3).
+    """
+    try:
+        os.makedirs(RAM_DIR, exist_ok=True)
+    except OSError:
+        pass
 
 # Bis 1.1.1 lagen beide Dateien eine Ebene hoeher. Alte Reste wegraeumen,
 # damit nicht zwei Staende nebeneinander liegen und die Oberflaeche den
@@ -143,12 +185,17 @@ for _alt in ("/run/shm/ultraschall_status.json", "/run/shm/ultraschall.pid",
 
 def fassung_ermitteln():
     """Die eigene Fassungsnummer, aus der Datenbank oder aus plugin.cfg."""
-    pfad = os.path.join(HOME_DIR or "", "data", "system", "plugindatabase.json")
-    try:
-        with open(pfad, "r", encoding="utf-8", errors="replace") as fh:
-            daten = json.load(fh)
-    except (OSError, ValueError):
-        daten = None
+    # Ohne Wurzel kein relativer Pfad (seit 1.2.8): os.path.join("", ...)
+    # ergaebe "data/system/..." relativ zum Arbeitsverzeichnis - beim Cron
+    # ist das "/".
+    daten = None
+    if HOME_DIR:
+        pfad = os.path.join(HOME_DIR, "data", "system", "plugindatabase.json")
+        try:
+            with open(pfad, "r", encoding="utf-8", errors="replace") as fh:
+                daten = json.load(fh)
+        except (OSError, ValueError):
+            daten = None
     eintraege = []
     if isinstance(daten, dict):
         innen = daten.get("plugins")
@@ -244,6 +291,10 @@ def konfiguration_lesen(pfad=None):
     pfad = pfad or CONFIG_FILE
     werte = dict(VORGABEN)
     alt = False
+    if not pfad:
+        # Keine Wurzel, keine Datei - die Vorgaben, und NICHT open(""),
+        # das je nach Lage einen relativen Pfad trifft (seit 1.2.8).
+        return werte, alt
     try:
         with open(pfad, "r", encoding="utf-8", errors="replace") as fh:
             zeilen = fh.read().splitlines()
@@ -286,6 +337,10 @@ def konfiguration_schreiben(werte, pfad=None):
     if not VORGABEN:
         return False
     pfad = pfad or CONFIG_FILE
+    if not pfad:
+        # Ohne Wurzel wird NICHTS geschrieben - sonst entstuende die Datei
+        # relativ zum Arbeitsverzeichnis (seit 1.2.8).
+        return False
     try:
         os.makedirs(os.path.dirname(pfad), exist_ok=True)
     except OSError:
@@ -367,6 +422,8 @@ def miniserver_liste():
     seit LoxBerry 2 nicht mehr - der Aufruf endete in einem NoSectionError,
     und damit lief das Plugin auf LoxBerry 3 und 4 gar nicht.
     """
+    if not HOME_DIR:
+        return {}
     pfad = os.path.join(HOME_DIR, "config", "system", "general.json")
     try:
         with open(pfad, "r", encoding="utf-8") as fh:
@@ -385,6 +442,10 @@ def miniserver_liste():
 
 
 def mqtt_zugangsdaten():
+    # Ohne Wurzel kein relativer Pfad, der ein fremdes general.json trifft
+    # (seit 1.2.8).
+    if not HOME_DIR:
+        return None
     pfad = os.path.join(HOME_DIR, "config", "system", "general.json")
     try:
         with open(pfad, "r", encoding="utf-8") as fh:

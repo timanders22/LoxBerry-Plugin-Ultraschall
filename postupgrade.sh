@@ -29,8 +29,44 @@ PVERSION=$4
 #LBHOMEDIR=$5 # Comes from /etc/environment now.
 PWORKDIR=$6   # Arbeitsordner des Installers (absolut)
 
-PCONFIG=$LBPCONFIG/$PDIR
-PBIN=$LBPBIN/$PDIR
+US_PDIR="${3:-ultraschall}"
+
+# ---------------------------------------------------------------------------
+# DIE WURZEL - NUR EINE, DIE NACHWEISLICH EINE IST (seit 1.2.8)
+#
+# Wie in preupgrade.sh und postinstall.sh: config/plugins UND data/plugins
+# UND config/system/general.json (Regeln/06), fuer $5, LBHOMEDIR und die
+# Suche aufwaerts. Bis 1.2.7 stand unten US_BASE="${5:-$LBHOMEDIR}"
+# ungeprueft - zeigte $5 auf einen fremden Baum, loeschte dieses Skript dort
+# eine Marke (gemessen in WSL, Pruefung-Ultraschall-1.2.8, Fall G1), und
+# PCONFIG kam aus $LBPCONFIG; ohne die Variable legte "mkdir -p" einen
+# Ordner ab "/" an. Ohne brauchbare Wurzel wird gewarnt statt vollzogen.
+# ---------------------------------------------------------------------------
+us_ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] \
+        && [ -f "$1/config/system/general.json" ]
+}
+us_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if us_ist_wurzel "$v"; then echo "$v"; return 0; fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
+US_BASE=""
+for us_k in "${5:-}" "${LBHOMEDIR:-}"; do
+    if us_ist_wurzel "$us_k"; then US_BASE="$us_k"; break; fi
+done
+[ -n "$US_BASE" ] || US_BASE=$(us_wurzel_suchen)
+if [ -z "$US_BASE" ]; then
+    echo "<WARNING> Keine LoxBerry-Wurzel gefunden (Argument 5: '${5:-}', LBHOMEDIR: '${LBHOMEDIR:-}')."
+    echo "<WARNING> Verlangt sind config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wird nichts zurueckgespielt und keine Marke entfernt."
+    exit 0
+fi
+PCONFIG="$US_BASE/config/plugins/$US_PDIR"
 # Der Sicherungsort wird aus DEMSELBEN Argument gerechnet wie in
 # preupgrade.sh - siehe die ausfuehrliche Begruendung dort. Ein Merker
 # .upgrade_pfad im Konfigurationsordner stand hier bis 02.09.2026 an erster
@@ -108,9 +144,8 @@ rm -f /run/shm/ultraschall_status.json /run/shm/ultraschall.pid \
 #
 # Entfernt wird immer, auch wenn der Start unterblieb (Plugin ausgeschaltet,
 # Sicherung misslungen) - sonst sperrte die Marke den Waechter eine Stunde
-# lang, ohne dass irgendwo stuende, warum.
-US_BASE="${5:-$LBHOMEDIR}"
-US_MARKE="$US_BASE/data/plugins/$PDIR.upgrade_laeuft"
+# lang, ohne dass irgendwo stuende, warum. US_BASE ist oben geprueft.
+US_MARKE="$US_BASE/data/plugins/$US_PDIR.upgrade_laeuft"
 rm -f "$US_MARKE" 2>/dev/null
 if [ -e "$US_MARKE" ]; then
     echo "<WARNING> Die Marke $US_MARKE liess sich nicht entfernen."

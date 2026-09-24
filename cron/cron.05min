@@ -92,11 +92,33 @@ if [ -d /run/shm ]; then RAMDIR="/run/shm/$PDIR"; else RAMDIR="/tmp/$PDIR"; fi
 
 # Argumentweise erkennen, nicht per Teilstringsuche ueber die Befehlszeile:
 # "pgrep -f ultraschall.py" traefe auch einen Editor mit offener Datei und ein
-# zweites Exemplar des Plugins. Geprueft werden die ersten beiden Argumente
-# gegen den VOLLEN Pfad.
+# zweites Exemplar des Plugins.
+#
+# GENAU ZWEI ARGUMENTE, argv[0] EIN PYTHON-INTERPRETER (seit 1.2.8) -
+# dieselbe Bauart wie daemon/daemon. Bis 1.2.7 genuegte "eines der ersten
+# beiden Argumente ist SKRIPT"; ein "tail <skript> -f" galt damit als
+# laufender Dienst, und der Waechter startete den echten nicht (gemessen in
+# WSL, Pruefung-Ultraschall-1.2.8, Fall C1).
 ist_unser() {
     [ -r "/proc/$1/cmdline" ] || return 1
-    tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | head -2 | grep -qxF "$SKRIPT"
+    # Vorfilter: nur wer den Pfad ueberhaupt traegt, wird zerlegt.
+    grep -qaF "$SKRIPT" "/proc/$1/cmdline" 2>/dev/null || return 1
+    us_n=0
+    us_a0=""
+    us_a1=""
+    while IFS= read -r us_arg; do
+        us_n=$((us_n + 1))
+        [ "$us_n" = 1 ] && us_a0="$us_arg"
+        [ "$us_n" = 2 ] && us_a1="$us_arg"
+    done <<US_ARGUMENTE
+$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null)
+US_ARGUMENTE
+    [ "$us_n" = 2 ] || return 1
+    [ "$us_a1" = "$SKRIPT" ] || return 1
+    case "${us_a0##*/}" in
+        python|python3|python3.*) return 0 ;;
+    esac
+    return 1
 }
 
 LAEUFT=0

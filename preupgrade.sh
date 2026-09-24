@@ -11,8 +11,47 @@ PVERSION=$4   # Forth argument is Plugin version
 #LBHOMEDIR=$5 # Comes from /etc/environment now.
 PWORKDIR=$6   # Arbeitsordner des Installers (absolut), neuere Fassungen
 
-PCONFIG=$LBPCONFIG/$PDIR
-PBIN=$LBPBIN/$PDIR
+US_PDIR="${3:-ultraschall}"
+
+# ---------------------------------------------------------------------------
+# DIE WURZEL - NUR EINE, DIE NACHWEISLICH EINE IST (seit 1.2.8)
+#
+# Wurzel ist, was config/plugins UND data/plugins UND
+# config/system/general.json traegt (Regeln/06) - fuer $5, fuer LBHOMEDIR
+# und fuer die Suche aufwaerts vom eigenen Ablageort (der Installer ruft
+# dieses Skript aus seinem Arbeitsordner unter data/system/tmp auf).
+#
+# Bis 1.2.7 stand hier US_BASE="${5:-$LBHOMEDIR}" ohne Pruefung. War beides
+# leer, legte das Skript "/data/plugins" an und schrieb die Marke dorthin;
+# zeigte $5 auf einen fremden Baum, landete sie dort (gemessen in WSL,
+# Pruefung-Ultraschall-1.2.8, Faelle P1a/P1b). Ohne brauchbare Wurzel wird
+# jetzt gewarnt statt vollzogen.
+# ---------------------------------------------------------------------------
+us_ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] \
+        && [ -f "$1/config/system/general.json" ]
+}
+us_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if us_ist_wurzel "$v"; then echo "$v"; return 0; fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
+US_BASE=""
+for us_k in "${5:-}" "${LBHOMEDIR:-}"; do
+    if us_ist_wurzel "$us_k"; then US_BASE="$us_k"; break; fi
+done
+[ -n "$US_BASE" ] || US_BASE=$(us_wurzel_suchen)
+if [ -z "$US_BASE" ]; then
+    echo "<WARNING> Keine LoxBerry-Wurzel gefunden (Argument 5: '${5:-}', LBHOMEDIR: '${LBHOMEDIR:-}')."
+    echo "<WARNING> Verlangt sind config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wird nichts gesichert, keine Marke angelegt und kein Dienst angehalten."
+    exit 0
+fi
+PCONFIG="$US_BASE/config/plugins/$US_PDIR"
 
 # ---------------------------------------------------------------------------
 # MARKE "AKTUALISIERUNG LAEUFT" (seit 1.2.7)
@@ -39,9 +78,10 @@ PBIN=$LBPBIN/$PDIR
 # holt die Konfiguration aus der Zweitschrift zurueck, und ab da fehlt dem
 # Waechter nichts mehr. Genau diese Spanne und die beiden anderen Startwege
 # deckt die Marke ab.
-US_BASE="${5:-$LBHOMEDIR}"
-US_MARKE="$US_BASE/data/plugins/$PDIR.upgrade_laeuft"
-mkdir -p "$US_BASE/data/plugins" 2>/dev/null
+#
+# US_BASE ist oben gegen general.json geprueft (seit 1.2.8); data/plugins
+# gibt es dort also, und angelegt wird nichts mehr.
+US_MARKE="$US_BASE/data/plugins/$US_PDIR.upgrade_laeuft"
 date +%s > "$US_MARKE" 2>/dev/null
 if [ -s "$US_MARKE" ]; then
     echo "<OK> Dienststart bis zum Ende der Installation gesperrt."
@@ -142,31 +182,94 @@ fi
 # ---------------------------------------------------------------------------
 # Laufenden Dienst anhalten, damit er nicht in die neue Fassung hineinlaeuft.
 #
-# Ueber die PID-Datei, nicht ueber "pkill -f ultraschall.py": das traefe auch
-# einen Editor mit offener Datei oder ein zweites Exemplar des Plugins.
-# Geprueft wird das ZWEITE Argument der Befehlszeile gegen den vollen Pfad.
+# Nicht ueber "pkill -f ultraschall.py": das traefe auch einen Editor mit
+# offener Datei oder ein zweites Exemplar des Plugins.
+#
+# ARGUMENTWEISE, ALLE, UND VOR JEDEM SIGNAL GEPRUEFT (seit 1.2.8).
+# Bis 1.2.7 galt ein Prozess als Dienst, wenn eines der ersten beiden
+# Argumente der Skriptpfad war; gesucht wurde nur ueber die PID-Datei; und
+# nach "kill" folgte "sleep 2; kill -9" auf dieselbe Nummer, ohne zu fragen,
+# ob sie noch dem Dienst gehoert. Gemessen in WSL
+# (Pruefung-Ultraschall-1.2.8): ein zweiter Dienst ohne PID-Datei lief
+# weiter (P2), "tail <skript> -f" und ein Prozess mit dem Skriptpfad als
+# Namen wurden beendet (P3/P3b), und ein Prozess, der sich nach SIGTERM per
+# exec ersetzt, bekam das harte Signal (P4).
+#
+# Ein Treffer hat GENAU zwei Argumente: argv[0] ist ein Python-Interpreter,
+# argv[1] ist Zeichen fuer Zeichen SKRIPT - dieselbe Bauart wie
+# daemon/daemon. Gesucht wird ueber /proc (Prozesse des Dienstbenutzers)
+# und ueber die PID-Dateien. Dieses Skript laeuft als loxberry und kann
+# ohnehin nur dessen Prozesse beenden.
 # ---------------------------------------------------------------------------
 # Der Ramdisk-Ordner traegt seit 1.1.2 den PLUGIN-Ordnernamen, nicht mehr fest
 # "ultraschall" - sonst teilten sich eine Zweitinstallation (ultraschall_01)
 # und die erste dieselbe PID-Datei, und dieses Upgrade beendete den Dienst der
 # FALSCHEN Installation. Bei einer einzelnen Installation ist $PDIR genau
 # "ultraschall", der Pfad bleibt also derselbe.
-if [ -d /run/shm ]; then RAMDIR="/run/shm/$PDIR"; else RAMDIR="/tmp/$PDIR"; fi
-SKRIPT="$LBHOMEDIR/bin/plugins/$PDIR/ultraschall.py"
+if [ -d /run/shm ]; then RAMDIR="/run/shm/$US_PDIR"; else RAMDIR="/tmp/$US_PDIR"; fi
+SKRIPT="$US_BASE/bin/plugins/$US_PDIR/ultraschall.py"
+US_UID=$(id -u loxberry 2>/dev/null || id -u)
+us_ist_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    us_n=0
+    us_a0=""
+    us_a1=""
+    while IFS= read -r us_arg; do
+        us_n=$((us_n + 1))
+        [ "$us_n" = 1 ] && us_a0="$us_arg"
+        [ "$us_n" = 2 ] && us_a1="$us_arg"
+    done <<US_ARGUMENTE
+$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null)
+US_ARGUMENTE
+    [ "$us_n" = 2 ] || return 1
+    [ "$us_a1" = "$SKRIPT" ] || return 1
+    case "${us_a0##*/}" in
+        python|python3|python3.*) return 0 ;;
+    esac
+    return 1
+}
 # Seit 1.1.2 liegt die PID-Datei in einem eigenen Unterordner; der alte Ort
 # wird mitgeprueft, damit auch ein Upgrade von 1.1.1 den Dienst findet.
-for PIDDATEI in "$RAMDIR/dienst.pid" /run/shm/ultraschall.pid /tmp/ultraschall.pid; do
-    [ -f "$PIDDATEI" ] || continue
-    P=$(cat "$PIDDATEI" 2>/dev/null)
-    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null \
-       && tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null | head -2 | grep -qxF "$SKRIPT"; then
-        kill "$P" 2>/dev/null
-        sleep 2
-        kill -9 "$P" 2>/dev/null
-        echo "<INFO> Laufenden Messdienst angehalten (PID $P)."
+us_dienste() {
+    {
+        for us_d in /proc/[0-9]*; do
+            grep -qaF "$SKRIPT" "$us_d/cmdline" 2>/dev/null || continue
+            us_p=${us_d#/proc/}
+            us_ist_dienst "$us_p" || continue
+            [ "$(stat -c %u "$us_d" 2>/dev/null)" = "$US_UID" ] || continue
+            echo "$us_p"
+        done
+        for us_pd in "$RAMDIR/dienst.pid" /run/shm/ultraschall.pid /tmp/ultraschall.pid; do
+            [ -f "$us_pd" ] || continue
+            us_p=$(cat "$us_pd" 2>/dev/null)
+            case "$us_p" in
+                ''|*[!0-9]*) ;;
+                *) us_ist_dienst "$us_p" && echo "$us_p" ;;
+            esac
+        done
+    } | sort -un
+}
+US_ZIEL=$(us_dienste)
+if [ -n "$US_ZIEL" ]; then
+    kill $US_ZIEL 2>/dev/null
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        [ -n "$(us_dienste)" ] || break
+        sleep 1
+    done
+    # Vor dem harten Signal NEU gesucht, nicht die Liste von eben.
+    US_REST=$(us_dienste)
+    if [ -n "$US_REST" ]; then
+        kill -9 $US_REST 2>/dev/null
+        sleep 1
     fi
-    rm -f "$PIDDATEI"
-done
+    US_UEBRIG=$(us_dienste)
+    if [ -n "$US_UEBRIG" ]; then
+        echo "<WARNING> Der Messdienst laeuft weiter (PID $(echo $US_UEBRIG))."
+    else
+        echo "<INFO> Laufenden Messdienst angehalten (PID $(echo $US_ZIEL))."
+    fi
+fi
+rm -f "$RAMDIR/dienst.pid" /run/shm/ultraschall.pid /tmp/ultraschall.pid 2>/dev/null
 
 
 # ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
@@ -177,8 +280,10 @@ done
 # an postupgrade.sh. Laeuft das aus irgendeinem Grund nicht durch, greift
 # jetzt postinstall.sh auf diese Zweitschrift zu - sie liegt ausserhalb des
 # ueberschriebenen Ordners und wird vom Installer nicht angefasst.
-NETZ_BASE="${5:-$LBHOMEDIR}"
-NETZ_PDIR="${3:-ultraschall}"
+# Dieselbe gepruefte Wurzel wie oben (seit 1.2.8; vorher "${5:-$LBHOMEDIR}"
+# ungeprueft - ohne beides zeigte die Zweitschrift nach /config/plugins).
+NETZ_BASE="$US_BASE"
+NETZ_PDIR="$US_PDIR"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 # Die Meldung stand bis 1.2.1 AUSSERHALB dieses if und hinter zwei
 # Befehlen mit 2>/dev/null - sie erschien also auch dann, wenn gar keine

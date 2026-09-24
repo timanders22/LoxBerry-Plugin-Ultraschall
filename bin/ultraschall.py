@@ -4,9 +4,9 @@
 Ultraschall Entfernung - Messdienst
 
 Misst in einstellbarem Abstand die Entfernung zur Oberflaeche, rechnet sie
-auf Wunsch in Fuellstand und Liter um und meldet das Ergebnis per MQTT
-retained an den Broker. Der UDP-Weg der Originalfassung bleibt abschaltbar
-erhalten.
+auf Wunsch in Fuellstand und Liter um und meldet das Ergebnis per MQTT an
+den Broker - fluechtig, bis auf online (Letzter Wille als Paar, siehe
+Mqtt.start). Der UDP-Weg der Originalfassung bleibt abschaltbar erhalten.
 
 Grundlage ist das Plugin von Dietmar Wimmer. Neu geschrieben fuer LoxBerry 4:
 
@@ -34,7 +34,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import us_common as gem   # noqa: E402
 
-LOGDATEI = os.path.join(gem.LOG_DIR, "ultraschall.log")
+# Ohne LoxBerry-Wurzel gibt es keinen Protokollordner (seit 1.2.8): dann
+# kein relativer Dateiname, sondern stdout (siehe unten).
+LOGDATEI = os.path.join(gem.LOG_DIR, "ultraschall.log") if gem.LOG_DIR else ""
 LOG_GRENZE = 512000      # ab 500 kB wird gekappt
 LOG_REST = 200           # so viele Zeilen bleiben stehen
 
@@ -53,6 +55,8 @@ def log_kappen(pfad=None):
     weiterschreiben - der Platz bliebe belegt, ohne dass ihn jemand sieht.
     """
     pfad = pfad or LOGDATEI
+    if not pfad:
+        return False
     try:
         if not os.path.isfile(pfad) or os.path.getsize(pfad) <= LOG_GRENZE:
             return False
@@ -67,6 +71,8 @@ def log_kappen(pfad=None):
 
 _handlers = []
 try:
+    if not LOGDATEI:
+        raise OSError("keine LoxBerry-Wurzel, kein Protokollordner")
     os.makedirs(gem.LOG_DIR, exist_ok=True)
     log_kappen()
     # WatchedFileHandler, NICHT FileHandler.
@@ -177,6 +183,116 @@ def mqtt_angemeldet(client, userdata, flags, rc, properties=None):
             pass
 
 
+# ---------------------------------------------------------------------------
+# Zurueckbehaltene Themen am Broker loeschen - UND NACHLESEN (seit 1.2.8)
+# ---------------------------------------------------------------------------
+#
+# Drei Aufrufer: der Dienst raeumt einmal die Altlasten aus Vorfassungen ab
+# (Mqtt.altlast_abraeumen), er raeumt bei einem Praefixwechsel das alte
+# Praefix ab, und uninstall/uninstall ruft "ultraschall.py --mqtt-leeren".
+#
+# Die Loeschung ist eine leere Nutzlast mit Retain (MQTT 3.1.1, Kapitel
+# PUBLISH, Retain-Kennzeichen).
+# Sie geht mit QoS 1 hinaus, und hinterher wird NACHGELESEN: ein neues
+# Abonnement bekommt vom Broker alles zugestellt, was noch zurueckbehalten
+# ist. Erst wenn dabei nichts mehr kommt, gilt die Sache als erledigt - der
+# Rueckgabewert von publish() sagt nur, dass etwas abging (Regeln/07,
+# Beschattungswaechter 0.9.19 und BatterieBMS 0.9.22: Merker nach dem
+# Senden, Altwert stand weiter im Broker). Vorbild: VolkswagenID 0.9.24,
+# mqtt_altlast_abraeumen().
+#
+# Abonniert wird nur, was diese Linie selbst sendet - <praefix>/<thema> je
+# Name aus der Feldtabelle, kein "#". Ein fremdes Thema unter demselben
+# Praefix bleibt stehen.
+#
+# Rueckgabe (code, geleert, rest, grund):
+#   code 0 = nichts mehr zurueckbehalten, 1 = es steht noch etwas,
+#   2 = nicht moeglich (keine Bibliothek, kein Broker, Anmeldung abgewiesen).
+ALTLAST_KENNUNG = "ultraschall-altlast-2"
+
+
+def broker_leeren(praefix, namen, warten=2.0):
+    praefix = str(praefix or "").strip("/")
+    if not praefix or "#" in praefix or "+" in praefix:
+        return 2, [], [], "Themenpraefix '{0}' ist nicht brauchbar".format(praefix)
+    soll = set(praefix + "/" + n for n in namen)
+    if not soll:
+        return 0, [], [], ""
+    try:
+        import paho.mqtt.client as mqtt
+    except ImportError:
+        return 2, [], [], "paho-mqtt fehlt"
+    zugang = gem.mqtt_zugangsdaten()
+    if not zugang:
+        return 2, [], [], "kein MQTT-Broker in general.json"
+
+    gesehen = set()
+    antwort = {"code": None}
+
+    def bei_verbindung(_k, _d, _f, rc, *_rest):
+        try:
+            antwort["code"] = int(rc)
+        except (TypeError, ValueError):
+            antwort["code"] = int(getattr(rc, "value", -1))
+
+    def bei_nachricht(_k, _d, n):
+        if n.retain and n.payload and n.topic in soll:
+            gesehen.add(n.topic)
+
+    try:
+        k = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    except AttributeError:
+        k = mqtt.Client()                       # paho-mqtt 1.x
+    except (TypeError, ValueError):
+        k = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+    if zugang["user"]:
+        k.username_pw_set(zugang["user"], zugang["pass"] or "")
+    k.on_connect = bei_verbindung
+    k.on_message = bei_nachricht
+    try:
+        k.connect(zugang["host"], zugang["port"], keepalive=30)
+    except OSError as fehler:
+        return 2, [], [], "Broker {0}:{1} nicht erreichbar ({2})".format(
+            zugang["host"], zugang["port"], fehler)
+    k.loop_start()
+    zu_leeren = []
+    try:
+        for _ in range(50):
+            if antwort["code"] is not None:
+                break
+            time.sleep(0.1)
+        if antwort["code"] != 0:
+            grund = ("keine Antwort auf die Anmeldung" if antwort["code"] is None
+                     else MQTT_GRUENDE.get(antwort["code"], "Anmeldung abgelehnt"))
+            return 2, [], [], "Broker {0}:{1}: {2}".format(
+                zugang["host"], zugang["port"], grund)
+        filter_ = [(t, 0) for t in sorted(soll)]
+        k.subscribe(filter_)
+        time.sleep(warten)
+        k.unsubscribe(sorted(soll))
+        zu_leeren = sorted(gesehen)
+        for thema in zu_leeren:
+            info = k.publish(thema, b"", qos=1, retain=True)
+            try:
+                info.wait_for_publish(5)
+            except TypeError:                   # paho 1.x vor 1.6: ohne Frist
+                info.wait_for_publish()
+        # NACHLESEN - ein neues Abonnement bekommt alles, was noch steht.
+        gesehen.clear()
+        k.subscribe(filter_)
+        time.sleep(warten)
+        rest = sorted(gesehen)
+    except Exception as fehler:  # noqa: BLE001
+        return 2, zu_leeren, [], "Abraeumen scheiterte: {0}".format(fehler)
+    finally:
+        k.loop_stop()
+        try:
+            k.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+    return (1 if rest else 0), zu_leeren, rest, ""
+
+
 class Mqtt:
     """Duenne Huelle um paho-mqtt. Faellt still aus, wenn Bibliothek oder
     Gateway fehlen - der UDP-Weg funktioniert dann weiter."""
@@ -188,6 +304,11 @@ class Mqtt:
         # "noch keine Antwort" - siehe start().
         self.connack = None
         self.abgelehnt = ""
+        # Stand des einmaligen Abraeumens (altlast_abraeumen): None = noch
+        # nicht versucht, 0 = erledigt, 1/2 = offen. Der Dienst versucht es
+        # bei offenem Stand stuendlich erneut (Dienst.altlast_nachfassen).
+        self.altlast_stand = None
+        self.altlast_zeit = 0.0
 
     def start(self):
         try:
@@ -235,15 +356,29 @@ class Mqtt:
         except Exception:  # noqa: BLE001
             pass
         self.client.on_connect = mqtt_angemeldet
-        # DAS LETZTE WORT IST NICHT RETAINED (seit 1.2.6).
+        # DER LETZTE WILLE IST RETAINED - ALS PAAR (seit 1.2.8).
         #
-        # "online" ist das Lebenszeichen, und der Hausstandard vom 03.09.2026
-        # (Regeln/07) sagt: das Lebenszeichen nie retained - sonst steht dort
-        # fuer immer ein Zustand, den niemand mehr auffrischt. Am Geraet
-        # gemessen am 13.09.2026 lag genau dieses Thema als EINZIGES
-        # zurueckbehalten im Broker: "ultraschall/online 0", vom Last-Will
-        # eines Dienstes, der lange vorher beendet worden war.
-        self.client.will_set(self.praefix + "/online", "0", retain=False)
+        # Entschieden am 18.09.2026 (Regeln/07, Abschnitt 3): der Letzte
+        # Wille darf retained sein, wenn (a) online=1 beim Verbinden und
+        # online=0 als Letzter Wille auf DEMSELBEN Thema stehen, (b) beide
+        # retained gehen und (c) die Deinstallation das Thema abraeumt. Er
+        # ist der eine Fall, in dem retained die Wahrheit sagt: die 0 setzt
+        # der BROKER selbst, wenn die Verbindung abbricht, auch bei einem
+        # Absturz. Loxone liest damit nach einem Neustart von Miniserver oder
+        # Gateway "aus", wenn der Dienst tot ist - fluechtig stuende dort nur
+        # der letzte Wert des virtuellen Eingangs.
+        #
+        # (a): will_set hier und senden("online", "1") in start() - dasselbe
+        # Thema. (b): hier retain=True, und in bin/us_vorgaben.json steht
+        # online auf retain true. (c): uninstall/uninstall ruft
+        # "ultraschall.py --mqtt-leeren".
+        #
+        # Bis 1.2.7 stand hier retain=False. Am Geraet lag am 13.09.2026
+        # "ultraschall/online 0" als EINZIGES zurueckbehaltenes Thema im
+        # Broker, von einem Dienst, der lange vorher beendet worden war - das
+        # war ein Fehler der fehlenden Deinstallation, nicht des Retain
+        # (so berichtigt in Regeln/07 am 18.09.2026).
+        self.client.will_set(self.praefix + "/online", "0", retain=True)
         try:
             self.client.connect(zugang["host"], zugang["port"], keepalive=60)
         except OSError as fehler:
@@ -292,8 +427,8 @@ class Mqtt:
 
         log.info("MQTT verbunden mit %s:%s, Themenpräfix %s",
                  zugang["host"], zugang["port"], self.praefix)
-        self.retained_aufraeumen()
         self.senden("online", "1")
+        self.altlast_abraeumen()
         return True
 
     def _abraeumen(self):
@@ -308,36 +443,66 @@ class Mqtt:
                 pass
         self.client = None
 
-    def retained_aufraeumen(self):
-        """Einmal je Verbindung: die Themen raeumen, die es nicht mehr
-        zurueckbehalten gibt (seit 1.2.6).
+    def altlast_abraeumen(self):
+        """Altlasten aus Vorfassungen EINMAL abraeumen - mit Nachlesen und
+        Merker (seit 1.2.8; ersetzt retained_aufraeumen() aus 1.2.6).
 
-        Bis 1.2.5 ging JEDES Thema retained hinaus. Ohne diesen Schritt
-        blieben die alten Werte im Broker liegen und wuerden nach einem
-        Neustart des Miniservers als frisch ausgeliefert - genau das, was
-        der Hausstandard verhindern soll. Eine LEERE Nutzlast loescht ein
-        zurueckbehaltenes Thema; dasselbe beschreibt mqttgateway.pl fuer den
-        UDP-Weg ("Delete ... because of empty message").
+        Bis 1.2.5 ging jedes Thema retained hinaus, bis 1.2.7 noch valid und
+        last_error. Seit 1.2.8 ist nur online retained (Letzter Wille, siehe
+        start()). Alles andere, was aus einer Vorfassung noch im Broker
+        steht, kaeme nach einem Neustart des Miniservers als frisch heraus -
+        am schlimmsten last_error: der Fehlertext blieb stehen, waehrend der
+        Dienst laengst wieder mass, weil die Loeschung (leerer Wert) nie
+        retained hinausging (Pruefung-Ultraschall-1.2.8, Fall R5).
 
-        Der virtuelle Eingang in Loxone behaelt dabei seinen letzten Wert -
-        wie alt er ist, beantwortet das Lebenszeichen.
+        1.2.6 raeumte bei JEDER Verbindung blind ab - ohne nachzusehen, ob
+        etwas da ist, und ohne nachzulesen, ob es weg ist. Jetzt:
+          * nur, was wirklich retained im Broker steht (broker_leeren liest
+            es vorher und hinterher);
+          * der Merker entsteht ERST nach dem Nachlesen, nie nach dem
+            Senden;
+          * er traegt Kennung, Praefix und Themenliste. Ein Merker einer
+            anderen Fassung, eines anderen Praefixes oder mit anderer Liste
+            zaehlt nicht - dann wird neu nachgesehen.
+        Rueckgabe wie broker_leeren: 0 erledigt, 1 Reste, 2 nicht moeglich.
         """
-        if not self.client:
-            return 0
-        anzahl = 0
-        for name, feld in gem.FELDER.items():
-            if feld.get("retain"):
-                continue
+        namen = sorted(n for n, f in gem.FELDER.items() if not f.get("retain"))
+        soll = "{0}|{1}|{2}".format(ALTLAST_KENNUNG, self.praefix, ",".join(namen))
+        merker = gem.ALTLAST_MERKER
+        if merker:
             try:
-                self.client.publish(self.praefix + "/" + name, "",
-                                    qos=0, retain=True)
-                anzahl += 1
-            except Exception as fehler:  # noqa: BLE001
-                log.error("Aufraeumen von %s misslang: %s", name, fehler)
-        if anzahl:
-            log.info("%d fluechtige Themen im Broker zurueckgesetzt "
-                     "(Umstieg auf den Retain-Hausstandard)", anzahl)
-        return anzahl
+                with open(merker, "r", encoding="utf-8") as fh:
+                    if fh.read().strip() == soll:
+                        self.altlast_stand = 0
+                        return 0
+            except OSError:
+                pass
+        code, geleert, rest, grund = broker_leeren(self.praefix, namen)
+        self.altlast_stand = code
+        self.altlast_zeit = time.time()
+        if code == 2:
+            log.warning("MQTT: Altlasten im Broker nicht geprueft (%s) - "
+                        "neuer Versuch spaeter.", grund)
+            return 2
+        if rest:
+            log.warning("MQTT: %d von %d zurueckbehaltenen Altwerten stehen "
+                        "noch im Broker (%s) - neuer Versuch spaeter.",
+                        len(rest), len(geleert), ", ".join(rest))
+            return 1
+        if merker:
+            try:
+                os.makedirs(os.path.dirname(merker), exist_ok=True)
+                with open(merker, "w", encoding="utf-8") as fh:
+                    fh.write(soll + "\n")
+            except OSError as fehler:
+                log.warning("MQTT: Merker %s nicht schreibbar (%s) - beim "
+                            "naechsten Start wird erneut nachgesehen.",
+                            merker, fehler)
+        if geleert:
+            log.info("MQTT: %d zurueckbehaltene Altwerte aus frueheren "
+                     "Fassungen geloescht und nachgelesen (%s).",
+                     len(geleert), ", ".join(geleert))
+        return 0
 
     def senden(self, unterthema, wert):
         """Ein Thema veroeffentlichen - Retain aus der TABELLE (seit 1.2.6).
@@ -382,6 +547,10 @@ class Mqtt:
         if not self.client:
             return
         try:
+            # Geht retained hinaus (us_vorgaben.json) - bei einem sauberen
+            # Ende sendet der Broker den Letzten Willen NICHT, also sagt es
+            # der Dienst selbst. Sonst stuende nach einem Anhalten die 1 von
+            # vorhin im Broker (Pruefung-Ultraschall-1.2.8, Fall R9).
             self.senden("online", "0")
             self.client.loop_stop()
             self.client.disconnect()
@@ -511,6 +680,16 @@ class Dienst:
         self.mqtt_wartezeit = min(300.0, self.mqtt_wartezeit * 2.0)
         return False
 
+    def altlast_nachfassen(self):
+        """Ist das einmalige Abraeumen offen geblieben (Broker verweigerte,
+        Loeschung kam nicht an), wird es stuendlich erneut versucht - nicht
+        in jedem Takt: ein Versuch kostet rund vier Sekunden (seit 1.2.8)."""
+        m = self.mqtt
+        if m.client is None or m.altlast_stand in (None, 0):
+            return
+        if time.time() - m.altlast_zeit >= 3600:
+            m.altlast_abraeumen()
+
     def _senden(self, thema, wert, erzwingen=False):
         wert = "" if wert is None else str(wert)
         if not erzwingen and self.letzter_stand.get(thema) == wert:
@@ -528,6 +707,7 @@ class Dienst:
             # ausschliesst, siehe pid_schreiben() -, dann ueberschreibt einer
             # die Nebendatei des anderen, und os.replace zieht eine Mischung
             # an ihren Platz.
+            gem.ram_ordner_anlegen()
             temp = "{0}.tmp.{1}".format(gem.STATUS_FILE, os.getpid())
             with open(temp, "w", encoding="utf-8") as fh:
                 json.dump(daten, fh, ensure_ascii=False)
@@ -602,8 +782,8 @@ class Dienst:
         # der aelteste Wert im Broker.
         #
         # Ohne ihn ist ein toter Dienst von einem ruhigen Behaelter nicht zu
-        # unterscheiden: die letzten Werte stehen retained im Broker, der
-        # virtuelle Eingang behaelt seinen Stand, und in der App sieht alles
+        # unterscheiden: der virtuelle Eingang behaelt seinen letzten
+        # Stand, und in der App sieht alles
         # normal aus. Das Last-Will traegt nur, wenn der Prozess STIRBT -
         # haengt er, bleibt die Verbindung stehen und online auf 1.
         #
@@ -706,6 +886,7 @@ class Dienst:
             # Und einmal je Takt nachfassen, falls MQTT beim Start nicht
             # zustande kam. Kostet nichts, solange die Verbindung steht.
             self.mqtt_nachfassen()
+            self.altlast_nachfassen()
 
             if self._mtime() != self.config_mtime:
                 log.info("Konfiguration geändert - wird neu eingelesen")
@@ -748,6 +929,29 @@ class Dienst:
                     log.info("MQTT wird neu aufgebaut (Praefix %s -> %s, MQTT %s)",
                              self.praefix, mqtt_neu, "ein" if mqtt_an else "aus")
                     self.mqtt.stop()
+                    # DAS ALTE PRAEFIX WIRD ABGERAEUMT (seit 1.2.8).
+                    #
+                    # online ist jetzt retained (Letzter Wille als Paar).
+                    # stop() hat eben "online 0" unter dem ALTEN Praefix
+                    # abgelegt; ohne diesen Schritt stuende es dort fuer
+                    # immer - uninstall kennt nur das Praefix, das zuletzt
+                    # in der Konfiguration stand. Genau so lag am 13.09.2026
+                    # "ultraschall/online 0" im Broker (Regeln/07). Nur wenn
+                    # MQTT an war: wer es ausgeschaltet hatte, will nicht,
+                    # dass der Dienst den Broker anspricht.
+                    if mqtt_neu != self.praefix and self.mqtt_soll:
+                        code, geleert, rest, grund = broker_leeren(
+                            self.praefix, sorted(gem.FELDER))
+                        if code == 2:
+                            log.warning("MQTT: altes Praefix %s nicht abgeraeumt (%s)",
+                                        self.praefix, grund)
+                        elif rest:
+                            log.warning("MQTT: unter dem alten Praefix %s stehen noch "
+                                        "%s", self.praefix, ", ".join(rest))
+                        else:
+                            log.info("MQTT: altes Praefix %s abgeraeumt und "
+                                     "nachgelesen (%d Themen).", self.praefix,
+                                     len(geleert))
                     self.praefix = mqtt_neu
                     self.mqtt = Mqtt(self.praefix)
                     self.mqtt_soll = mqtt_an
@@ -792,6 +996,7 @@ class Dienst:
 def pid_schreiben():
     """Eigene PID hinterlegen, damit Oberflaeche und uninstall den Dienst
     finden, ohne die Befehlszeile durchsuchen zu muessen."""
+    gem.ram_ordner_anlegen()
     try:
         with open(gem.PID_FILE, "w", encoding="utf-8") as fh:
             fh.write(str(os.getpid()))
@@ -809,6 +1014,47 @@ def pid_entfernen():
         os.unlink(gem.PID_FILE)
     except OSError:
         pass
+
+
+def mqtt_leeren():
+    """Fuer uninstall/uninstall: die zurueckbehaltenen Themen dieser Linie
+    am Broker abraeumen und nachlesen (seit 1.2.8).
+
+    Entschieden am 18.09.2026 (Regeln/07): ein retained Letzter Wille ist
+    nur erlaubt, wenn die Deinstallation das Thema abraeumt - sonst bliebe
+    die 0 eines entfernten Plugins fuer immer stehen (so gemessen an
+    "ultraschall/online 0", 13.09.2026). Geraeumt werden ALLE Namen der
+    Feldtabelle unter dem Praefix aus der Konfiguration, also auch Altlasten
+    aus Vorfassungen (valid, last_error). Ein fremdes Thema unter demselben
+    Praefix bleibt stehen.
+
+    Ausgabe in der Form der Installationsmeldungen; Rueckgabe 0 erledigt,
+    1 Reste, 2 nicht moeglich.
+    """
+    if not gem.FELDER:
+        print("<INFO> MQTT: bin/us_vorgaben.json fehlt - zurueckbehaltene "
+              "Themen wurden nicht geleert.")
+        return 2
+    cfg, _ = gem.konfiguration_lesen()
+    praefix = (cfg.get("themenpraefix") or "ultraschall").strip("/") or "ultraschall"
+    code, geleert, rest, grund = broker_leeren(praefix, sorted(gem.FELDER))
+    if code == 2:
+        print("<INFO> MQTT: zurueckbehaltene Themen unter {0}/ nicht geleert "
+              "- {1}. Sie sind von Hand zu loeschen (System -> MQTT "
+              "Gateway).".format(praefix, grund))
+        return 2
+    if rest:
+        print("<WARNING> MQTT: {0} zurueckbehaltene Themen stehen nach dem "
+              "Loeschen noch im Broker: {1}".format(len(rest), ", ".join(rest)))
+        return 1
+    if geleert:
+        print("<OK> MQTT: {0} zurueckbehaltene Themen unter {1}/ geloescht "
+              "und nachgelesen ({2}).".format(len(geleert), praefix,
+                                              ", ".join(geleert)))
+    else:
+        print("<OK> MQTT: unter {0}/ stand nichts zurueckbehalten "
+              "(nachgelesen).".format(praefix))
+    return 0
 
 
 def main():
@@ -832,6 +1078,15 @@ def main():
     # und weist dabei ausdruecklich aus, ob wirklich gemessen wurde oder ob
     # der Stand des laufenden Dienstes gezeigt wird. Ein zweiter Weg zum
     # selben Zweck waere die zweite Wahrheit.
+    #
+    # GENAU EIN SCHALTER (seit 1.2.8): "--mqtt-leeren" fuer die
+    # Deinstallation. Er startet keinen Dienst - er raeumt die
+    # zurueckbehaltenen Themen dieser Linie am Broker ab und liest nach. Mit
+    # drei Argumenten gilt der Aufruf fuer jede Diensterkennung dieses
+    # Plugins als Einmallauf, nicht als Dienst (argv[1] ist das Skript,
+    # argv[2] der Schalter).
+    if sys.argv[1:] == ["--mqtt-leeren"]:
+        sys.exit(mqtt_leeren())
     for a in sys.argv[1:]:
         sys.stderr.write("Unbekannter Schalter: {0}\n".format(a))
         sys.stderr.write("Dieses Skript kennt keine Schalter - es ist der "

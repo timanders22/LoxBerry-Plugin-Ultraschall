@@ -18,41 +18,58 @@
 # "ps -C" und "killall" waeren auch nichts: die vergleichen den comm-Namen,
 # der bei einem Skript mit Shebang "python3" lautet - die finden gar nichts.
 #
-# Massgeblich ist deshalb die PID-Datei, die der Dienst selbst schreibt.
-# Zusaetzlich wird /proc argumentweise durchgesehen und der volle Pfad
-# verglichen, falls die Datei fehlt.
+# Massgeblich ist /proc, argumentweise (seit 1.2.8 in der Bauart von
+# Regeln/06), dazu die PID-Datei, die der Dienst selbst schreibt.
 
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="ultraschall"
-BASE="${5:-$LBHOMEDIR}"
-# Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
-# Systempfad - LoxBerry laesst sich anderswohin installieren, und der
-# Plugin-Pruefer sucht die Zeichenkette, ohne den Zusammenhang zu sehen.
-# Dieses Skript liegt unter <home>/data/plugins/<ordner>/uninstall/
-# AUFWAERTS SUCHEN, NICHT ZAEHLEN (seit 1.2.2).
+
+# ---------------------------------------------------------------------------
+# DIE WURZEL - NUR EINE, DIE NACHWEISLICH EINE IST (seit 1.2.8)
 #
-# Hier stand eine feste Zahl von ".." - vier Ebenen. Das ist fuer
-# <home>/data/plugins/<ordner>/uninstall/ rechnerisch richtig und
-# bleibt trotzdem eine Wette: je nachdem, wohin LoxBerry eine Datei
-# legt, sind es drei oder vier, und wo ein Skript liegt, entscheidet
-# nicht dieses Plugin. Gesucht wird deshalb aufwaerts, bis ein
-# Verzeichnis gefunden ist, das nachweislich eine LoxBerry-Wurzel IST -
-# es traegt config/plugins UND data/plugins -, mit harter Obergrenze.
-# us_lib.php und us_common.py machen es im selben Plugin seit jeher so;
-# dieses Skript war der letzte Ausreisser.
+# Wurzel ist, was config/plugins UND data/plugins UND
+# config/system/general.json traegt (Regeln/06). Das gilt fuer $5, fuer
+# LBHOMEDIR und fuer die Suche aufwaerts vom eigenen Ablageort.
+#
+# Bis 1.2.7 wurde $5 ungeprueft genommen, und die Suche verlangte nur
+# config/plugins und data/plugins. Ein Rest aus Pruefstaenden (so lag es am
+# 05.09.2026 unter C:\) galt damit als Wurzel - und dieses Skript loeschte
+# dort als root Zweitschrift, Marke und Cron-Eintrag (gemessen in WSL,
+# Pruefung-Ultraschall-1.2.8, Faelle U3a/U3b). Ohne brauchbare Wurzel wird
+# jetzt gewarnt statt vollzogen.
+#
+# AUFWAERTS SUCHEN, NICHT ZAEHLEN (seit 1.2.2): eine feste Zahl von ".."
+# ist eine Wette - je nachdem, wohin LoxBerry das Skript legt
+# (data/system/uninstall/<ordner>, Regeln/06), sind es drei oder vier.
+# ---------------------------------------------------------------------------
+us_ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] \
+        && [ -f "$1/config/system/general.json" ]
+}
 lb_wurzel_suchen() {
     v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
     i=0
     while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
-        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ]; then
+        if us_ist_wurzel "$v"; then
             echo "$v"; return 0
         fi
         v=$(dirname "$v"); i=$((i + 1))
     done
     return 1
 }
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(lb_wurzel_suchen)
+BASE=""
+for US_K in "${5:-}" "${LBHOMEDIR:-}"; do
+    if us_ist_wurzel "$US_K"; then BASE="$US_K"; break; fi
+done
+[ -n "$BASE" ] || BASE=$(lb_wurzel_suchen)
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Keine LoxBerry-Wurzel gefunden (Argument 5: '${5:-}', LBHOMEDIR: '${LBHOMEDIR:-}',"
+    echo "<WARNING> aufwaerts ab $(dirname "$(readlink -f "$0")")) - verlangt sind config/plugins,"
+    echo "<WARNING> data/plugins und config/system/general.json. Es wird NICHTS beendet und"
+    echo "<WARNING> NICHTS geloescht. Von Hand nachsehen: der Messdienst ($PDIR), die"
+    echo "<WARNING> Zweitschrift config/plugins/$PDIR.backup.ultraschall.cfg und die Marke"
+    echo "<WARNING> data/plugins/$PDIR.upgrade_laeuft unter der LoxBerry-Wurzel."
+    exit 1
 fi
 
 SKRIPT="$BASE/bin/plugins/$PDIR/ultraschall.py"
@@ -62,38 +79,126 @@ SKRIPT="$BASE/bin/plugins/$PDIR/ultraschall.py"
 if [ -d /run/shm ]; then RAMDIR="/run/shm/$PDIR"; else RAMDIR="/tmp/$PDIR"; fi
 PIDDATEI="$RAMDIR/dienst.pid"
 STATUS="$RAMDIR/status.json"
+US_UID=$(id -u loxberry 2>/dev/null || id -u)
 
+# ---------------------------------------------------------------------------
+# DEN DIENST ERKENNEN - ARGUMENTWEISE (seit 1.2.8)
+#
+# Ein Treffer hat GENAU zwei Argumente: argv[0] ist ein Python-Interpreter
+# (der Dienst startet ueber seinen Shebang), argv[1] ist Zeichen fuer Zeichen
+# SKRIPT. Dieselbe Bauart wie daemon/daemon dieses Plugins.
+#
+# Bis 1.2.7 genuegte "eines der ersten beiden Argumente ist SKRIPT". Als
+# root beendete dieses Skript damit auch "tail <skript> -f" und jeden
+# Prozess, der sich mit exec -a den Skriptpfad als Namen gibt (Faelle
+# U4b/U4c). Ein Einmallauf mit Schalter - "ultraschall.py --mqtt-leeren",
+# den dieses Skript weiter unten selbst startet - ist kein Dienst.
+#
+# Beim Durchsuchen von /proc zaehlt nur ein Prozess des Dienstbenutzers;
+# die PID-Datei findet auch einen, der von Hand unter einem anderen
+# Benutzer gestartet wurde (Vorlage AnkerSolix dienst.sh).
+#
+# Geschrieben fuer /bin/sh, nicht nur fuer bash: der Installer ruft die
+# Datei ueber ihren Kopf (bash) auf, der Pruefstand der Vorfassung aber mit
+# "sh" - und so darf es jeder von Hand tun, ohne dass die Erkennung bricht.
+# ---------------------------------------------------------------------------
 ist_unser_dienst() {
     [ -r "/proc/$1/cmdline" ] || return 1
-    tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | head -2 | grep -qxF "$SKRIPT"
+    grep -qaF "$SKRIPT" "/proc/$1/cmdline" 2>/dev/null || return 1
+    us_n=0
+    us_a0=""
+    us_a1=""
+    while IFS= read -r us_arg; do
+        us_n=$((us_n + 1))
+        [ "$us_n" = 1 ] && us_a0="$us_arg"
+        [ "$us_n" = 2 ] && us_a1="$us_arg"
+    done <<US_ARGUMENTE
+$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null)
+US_ARGUMENTE
+    [ "$us_n" = 2 ] || return 1
+    [ "$us_a1" = "$SKRIPT" ] || return 1
+    case "${us_a0##*/}" in
+        python|python3|python3.*) return 0 ;;
+    esac
+    return 1
+}
+dienste() {
+    {
+        for D in /proc/[0-9]*; do
+            P=${D#/proc/}
+            ist_unser_dienst "$P" || continue
+            [ "$(stat -c %u "$D" 2>/dev/null)" = "$US_UID" ] || continue
+            echo "$P"
+        done
+        if [ -f "$PIDDATEI" ]; then
+            P=$(cat "$PIDDATEI" 2>/dev/null)
+            case "$P" in
+                ''|*[!0-9]*) ;;
+                *) ist_unser_dienst "$P" && echo "$P" ;;
+            esac
+        fi
+    } | sort -un
 }
 
-beenden() {
-    kill "$1" 2>/dev/null
+# ALLE eigenen Dienste, und VOR JEDEM SIGNAL NEU GESUCHT (seit 1.2.8).
+#
+# Bis 1.2.7 fragte die Warteschleife nach "kill" nur noch "kill -0" - also
+# "gibt es die Nummer noch?", nicht "ist es noch unser Dienst?" - und
+# schickte nach zehn Sekunden "kill -9" auf die Nummer. Endet der Prozess
+# in der Zeit und wird die Nummer neu vergeben, oder ersetzt er sich per
+# exec, traf das Signal einen fremden Prozess (gemessen, Fall U5).
+ZIEL=$(dienste)
+if [ -z "$ZIEL" ]; then
+    echo "<INFO> Es lief kein Messdienst."
+else
+    kill $ZIEL 2>/dev/null
     for i in 1 2 3 4 5 6 7 8 9 10; do
-        kill -0 "$1" 2>/dev/null || return 0
+        [ -n "$(dienste)" ] || break
         sleep 1
     done
-    kill -9 "$1" 2>/dev/null
-    sleep 1
-}
-
-GEFUNDEN=0
-if [ -f "$PIDDATEI" ]; then
-    P=$(cat "$PIDDATEI" 2>/dev/null)
-    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null && ist_unser_dienst "$P"; then
-        beenden "$P"; GEFUNDEN=1
-        echo "<OK> Messdienst beendet (PID $P)."
+    REST=$(dienste)
+    if [ -n "$REST" ]; then
+        kill -9 $REST 2>/dev/null
+        sleep 1
+    fi
+    UEBRIG=$(dienste)
+    if [ -n "$UEBRIG" ]; then
+        echo "<WARNING> Der Messdienst laeuft weiter (PID $(echo $UEBRIG))."
+    else
+        echo "<OK> Messdienst beendet (PID $(echo $ZIEL))."
     fi
 fi
-for D in /proc/[0-9]*; do
-    P=$(basename "$D")
-    if ist_unser_dienst "$P" && kill -0 "$P" 2>/dev/null; then
-        beenden "$P"; GEFUNDEN=1
-        echo "<OK> Weiterer Messdienst beendet (PID $P)."
+
+# ---------------------------------------------------------------------------
+# ZURUECKBEHALTENE MQTT-THEMEN ABRAEUMEN (seit 1.2.8)
+#
+# Entschieden am 18.09.2026 (Regeln/07, Abschnitt 3): der Letzte Wille
+# (online) darf retained sein - aber nur, wenn die Deinstallation das Thema
+# abraeumt. Sonst bliebe die 0 eines entfernten Plugins fuer immer im
+# Broker; so stand am 13.09.2026 "ultraschall/online 0" dort.
+#
+# NACH dem Anhalten - sonst schriebe der Dienst gleich wieder hinein. Der
+# Dienst selbst raeumt direkt am Broker ab (paho) und LIEST NACH; die
+# Meldung sagt, was wirklich geschah. bin/plugins/<ordner> und die
+# Konfiguration mit dem Praefix sind hier noch da: der Installer loescht
+# sie erst nach diesem Skript (Regeln/06).
+#
+# Als loxberry, nicht als root: gebraucht werden nur die Konfiguration und
+# general.json. Hier stand bis 1.2.7 der Satz, die Themen seien von Hand zu
+# loeschen.
+# ---------------------------------------------------------------------------
+if [ -f "$SKRIPT" ] && command -v python3 >/dev/null 2>&1; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        # Pfad in einfache Anfuehrungszeichen, ein darin enthaltenes ' als
+        # '\'' - printf %q kennt /bin/sh nicht.
+        US_Q=$(printf '%s' "$SKRIPT" | sed "s/'/'\\\\''/g")
+        su -s /bin/bash loxberry -c "PYTHONDONTWRITEBYTECODE=1 timeout 60 python3 '$US_Q' --mqtt-leeren" 2>&1
+    else
+        PYTHONDONTWRITEBYTECODE=1 timeout 60 python3 "$SKRIPT" --mqtt-leeren 2>&1
     fi
-done
-[ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Messdienst."
+else
+    echo "<INFO> MQTT: $SKRIPT oder python3 fehlt - zurueckbehaltene Themen wurden nicht geleert."
+fi
 
 rm -f "$PIDDATEI" "$STATUS"
 # Rueckstaende der Originalfassung: sie schrieb Protokoll und PID nach /tmp.
@@ -178,7 +283,4 @@ for TAKT in 01 05 10 15 30 60; do
     fi
 done
 
-echo "<INFO> Der Dienst sendet MQTT mit gesetztem Retain-Merker."
-echo "<INFO> Die Themen unter <praefix>/ bleiben deshalb im Broker stehen und"
-echo "<INFO> sind dort von Hand zu loeschen (System -> MQTT Gateway)."
 exit 0

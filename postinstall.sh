@@ -9,15 +9,46 @@ PVERSION=$4   # Forth argument is Plugin version
 #LBHOMEDIR=$5 # Comes from /etc/environment now. Fifth argument is
               # Base folder of LoxBerry
 
-# Combine them with /etc/environment
-PCGI=$LBPCGI/$PDIR
-PHTML=$LBPHTML/$PDIR
-PTEMPL=$LBPTEMPL/$PDIR
-PDATA=$LBPDATA/$PDIR
-PLOG=$LBPLOG/$PDIR # Note! This is stored on a Ramdisk now!
-PCONFIG=$LBPCONFIG/$PDIR
-PSBIN=$LBPSBIN/$PDIR
-PBIN=$LBPBIN/$PDIR
+US_PDIR="${3:-ultraschall}"
+
+# ---------------------------------------------------------------------------
+# DIE WURZEL - NUR EINE, DIE NACHWEISLICH EINE IST (seit 1.2.8)
+#
+# Wurzel ist, was config/plugins UND data/plugins UND
+# config/system/general.json traegt (Regeln/06) - fuer $5, fuer LBHOMEDIR
+# und fuer die Suche aufwaerts vom eigenen Ablageort. Bis 1.2.7 wurde
+# "${5:-$LBHOMEDIR}" ungeprueft genommen: zeigte $5 auf einen fremden Baum,
+# spielte dieses Skript dort eine Zweitschrift zurueck (gemessen in WSL,
+# Pruefung-Ultraschall-1.2.8, Fall I3); ohne beides entstanden Pfade ab "/".
+# Ohne brauchbare Wurzel wird gewarnt; die Systemschritte (I2C, Module,
+# Gruppen) laufen trotzdem, alles unter der Wurzel nicht.
+# ---------------------------------------------------------------------------
+us_ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] \
+        && [ -f "$1/config/system/general.json" ]
+}
+us_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if us_ist_wurzel "$v"; then echo "$v"; return 0; fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
+US_BASE=""
+for us_k in "${5:-}" "${LBHOMEDIR:-}"; do
+    if us_ist_wurzel "$us_k"; then US_BASE="$us_k"; break; fi
+done
+[ -n "$US_BASE" ] || US_BASE=$(us_wurzel_suchen)
+if [ -z "$US_BASE" ]; then
+    echo "<WARNING> Keine LoxBerry-Wurzel gefunden (Argument 5: '${5:-}', LBHOMEDIR: '${LBHOMEDIR:-}')."
+    echo "<WARNING> Verlangt sind config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Konfiguration, Rechte und Dienststart werden uebersprungen."
+fi
+
+PLOG=""
+[ -n "$US_BASE" ] && PLOG="$US_BASE/log/plugins/$US_PDIR"   # Ramdisk
 
 # Protokolldatei anlegen.
 #
@@ -30,8 +61,10 @@ PBIN=$LBPBIN/$PDIR
 # loxberry (plugininstall.pl ruft es ueber "sudo -n -u loxberry"), und
 # ein Eigentuemerwechsel braucht root. Die Datei gehoert ohnehin
 # loxberry, weil loxberry sie anlegt.
-mkdir -p "$PLOG"
-touch "$PLOG/$PSHNAME.log"
+if [ -n "$PLOG" ]; then
+    mkdir -p "$PLOG"
+    touch "$PLOG/$PSHNAME.log"
+fi
 
 # --- Ultraschall Entfernung ----------------------------------------------
 # Rechte.
@@ -45,8 +78,11 @@ touch "$PLOG/$PSHNAME.log"
 # "jeder darf schreiben", sondern "jeder darf lesen und ausfuehren" - das ist
 # fuer ein Programm im bin-Ordner richtig und entspricht dem, was LoxBerry
 # fuer die eigenen Skripte setzt.
-chmod 755 "$LBPBIN/$PDIR/ultraschall.py" "$LBPBIN/$PDIR/us_messen.py" 2>/dev/null
-chmod 644 "$LBPBIN/$PDIR/us_common.py" 2>/dev/null
+if [ -n "$US_BASE" ]; then
+    US_BIN="$US_BASE/bin/plugins/$US_PDIR"
+    chmod 755 "$US_BIN/ultraschall.py" "$US_BIN/us_messen.py" 2>/dev/null
+    chmod 644 "$US_BIN/us_common.py" 2>/dev/null
+fi
 
 # I2C einschalten. Der SRF02 haengt am I2C-Bus; ohne dtparam gibt es kein
 # /dev/i2c-1. Seit Bookworm liegt die Datei unter /boot/firmware/config.txt -
@@ -195,8 +231,12 @@ echo "<INFO> Wurde I2C gerade erst eingeschaltet, ist ein Neustart noetig."
 #
 # Eine gueltige Konfiguration wird NIE ueberschrieben. Eine Sicherung, die
 # echte Einstellungen ersetzt, waere schlimmer als gar keine.
-NETZ_BASE="${5:-$LBHOMEDIR}"
-NETZ_PDIR="${3:-ultraschall}"
+#
+# Ohne gepruefte Wurzel endet das Skript hier (seit 1.2.8) - die Warnung
+# steht oben. Vorher: NETZ_BASE="${5:-$LBHOMEDIR}" ungeprueft.
+[ -n "$US_BASE" ] || exit 0
+NETZ_BASE="$US_BASE"
+NETZ_PDIR="$US_PDIR"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 # DIE MITGELIEFERTE DATEI IST DER VERGLEICHSSTAND, KEINE PRUEFSUMME
 # (seit 1.2.2).
@@ -281,8 +321,49 @@ fi
 # eingetragen werden.
 # ---------------------------------------------------------------------------
 US_CFG="$NETZ_CFG/ultraschall.cfg"
-US_SKRIPT="$LBPBIN/$PDIR/ultraschall.py"
-if [ -r "$US_CFG" ] \
+US_SKRIPT="$US_BASE/bin/plugins/$US_PDIR/ultraschall.py"
+
+# DIENST ARGUMENTWEISE ERKENNEN (seit 1.2.8) - dieselbe Bauart wie
+# daemon/daemon: GENAU zwei Argumente, argv[0] ein Python-Interpreter,
+# argv[1] Zeichen fuer Zeichen US_SKRIPT. Hier stand "pgrep -u loxberry -f":
+# eine Teilstringsuche ueber die ganze Befehlszeile, die "tail <skript> -f"
+# als gelungenen Start meldete (gemessen in WSL, Pruefung-Ultraschall-1.2.8,
+# Fall I1b). Ohne Benutzerfilter: ein Dienst unter anderem Benutzer ist
+# trotzdem ein laufender Dienst.
+us_ist_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    us_n=0
+    us_a0=""
+    us_a1=""
+    while IFS= read -r us_arg; do
+        us_n=$((us_n + 1))
+        [ "$us_n" = 1 ] && us_a0="$us_arg"
+        [ "$us_n" = 2 ] && us_a1="$us_arg"
+    done <<US_ARGUMENTE
+$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null)
+US_ARGUMENTE
+    [ "$us_n" = 2 ] || return 1
+    [ "$us_a1" = "$US_SKRIPT" ] || return 1
+    case "${us_a0##*/}" in
+        python|python3|python3.*) return 0 ;;
+    esac
+    return 1
+}
+us_dienste() {
+    for us_d in /proc/[0-9]*; do
+        grep -qaF "$US_SKRIPT" "$us_d/cmdline" 2>/dev/null || continue
+        us_ist_dienst "${us_d#/proc/}" && echo "${us_d#/proc/}"
+    done
+}
+
+US_LAEUFT=$(us_dienste)
+if [ -n "$US_LAEUFT" ]; then
+    # KEIN ZWEITER DIENST (seit 1.2.8). Bis 1.2.7 startete dieses Skript
+    # ohne zu fragen - lief schon einer (erneutes Einspielen, ein Dienst,
+    # den preupgrade.sh nicht fand), liefen danach zwei am selben Sensor
+    # (Fall I2).
+    echo "<OK> Der Messdienst laeuft bereits (PID $(echo $US_LAEUFT)) - kein zweiter Start."
+elif [ -r "$US_CFG" ] \
    && grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*1[[:space:]]*$' "$US_CFG" \
    && [ -x "$US_SKRIPT" ]; then
     # OHNE "su" (seit 1.2.2).
@@ -318,7 +399,7 @@ if [ -r "$US_CFG" ] \
     nohup "$US_SKRIPT" > "$PLOG/ultraschall_start.log" 2>&1 &
     sleep 2
     # Die Wirkung pruefen, nicht den Rueckgabewert des Starts.
-    if pgrep -u loxberry -f "$US_SKRIPT" >/dev/null 2>&1; then
+    if [ -n "$(us_dienste)" ]; then
         echo "<OK> Messdienst wieder gestartet."
     else
         echo "<INFO> Messdienst noch nicht gestartet - der Waechter"

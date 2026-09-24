@@ -376,15 +376,24 @@ function us_test_ausfuehren($was)
                     . "LoxBerry 3 Bestandteil des Systems - einzurichten unter\n"
                     . "System -> MQTT Gateway.\n\n";
             }
-            $t .= "Themen, die der Dienst setzt (alle retained):\n\n";
+            /* Die Spalte "retained" kommt aus der Feldtabelle
+             * (bin/us_vorgaben.json), aus der auch der Dienst liest. Hier
+             * stand bis 1.2.7 "(alle retained)" und die Behauptung, die
+             * Entfernung stehe nach einem Neustart sofort wieder da - das
+             * war seit 1.2.6 falsch. */
+            $t .= "Themen, die der Dienst setzt:\n\n";
             $praefix = us_cfg($cfg, 'themenpraefix', 'ultraschall');
             foreach (us_status_themen() as $k => $info) {
-                $t .= sprintf("  %-28s %s\n", $praefix . '/' . $k,
+                $t .= sprintf("  %-28s %-12s %s\n", $praefix . '/' . $k,
+                    !empty($info[2]) ? 'retained' : 'fluechtig',
                     strip_tags(html_entity_decode($info[0], ENT_QUOTES, 'UTF-8')));
             }
-            $t .= "\nRetained heisst: der Broker merkt sich den letzten Wert. Nach einem\n"
-                . "Neustart des Miniservers steht die Entfernung sofort wieder da,\n"
-                . "ohne auf die naechste Messung zu warten.\n";
+            $t .= "\nRetained ist nur 'online': 1 beim Verbinden, 0 als Letzter Wille,\n"
+                . "den der Broker selbst setzt, wenn die Verbindung abbricht. Alles\n"
+                . "andere geht fluechtig hinaus - nach einem Neustart des Miniservers\n"
+                . "steht die Entfernung erst mit der naechsten Messung wieder da, dafuer\n"
+                . "nie ein alter Wert, der wie ein frischer aussieht. Die Deinstallation\n"
+                . "raeumt die Themen im Broker ab.\n";
             return array('MQTT-Gateway', $t);
 
         case 'udpinfo':
