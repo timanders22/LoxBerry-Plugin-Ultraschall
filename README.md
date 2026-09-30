@@ -4,6 +4,14 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.9
+
+Sammelnachzug vom 30.09.2026, sonst keine Änderung: `curl_close()` wird nur
+noch unter PHP 7 aufgerufen. Ab PHP 8.0 wirkt der Aufruf nicht mehr, und
+PHP 8.5 meldet ihn zur Laufzeit als veraltet. Bei eingeschalteter
+Fehleranzeige konnte diese Meldung vor einer Antwort an Loxone landen. Am
+LoxBerry mit PHP 7.4 ändert sich nichts.
+
 ## Neu in 1.2.8
 
 Alle Punkte in WSL/Ubuntu gemessen (24.09.2026), der MQTT-Teil **am

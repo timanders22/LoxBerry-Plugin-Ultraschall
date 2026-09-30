@@ -1811,7 +1811,7 @@ function us_endpunkt_probe($token, $frisch = false)
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
         $rumpf = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
     } elseif (ini_get('allow_url_fopen')) {
         /* Wo ein Fehlschlag ein VORGESEHENER Ausgang ist, wird der
          * Fehlerbehandler fuer die Dauer des Aufrufs ausgetauscht. Das @
