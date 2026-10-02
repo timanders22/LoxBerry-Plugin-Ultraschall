@@ -18,6 +18,7 @@ LoxBerry 4 neu geschrieben:
 """
 
 import json
+import math
 import os
 import re
 import time
@@ -112,6 +113,79 @@ ALTLAST_MERKER = os.path.join(DATA_DIR, "retain_altlast") if DATA_DIR else ""
 RAM_DIR = ("/run/shm/" if os.path.isdir("/run/shm") else "/tmp/") + PLUGIN_NAME
 STATUS_FILE = os.path.join(RAM_DIR, "status.json")
 PID_FILE = os.path.join(RAM_DIR, "dienst.pid")
+# EINZELINSTANZ-SPERRE DES DIENSTES (Durchgang 02.10.2026, I3).
+#
+# Gemessen in WSL (Installer-Pruefer, Faelle D1/D2): zwei Waechterlaeufe in
+# derselben Sekunde oder daemon und Waechter zugleich ergaben in 10 von 10
+# Runden ZWEI Dienste. Die Startwege sperren seither gemeinsam (flock auf
+# ultraschall.py); diese Datei ist die zweite Linie: der Dienst selbst nimmt
+# eine Sperre, die das Betriebssystem beim Prozessende freigibt.
+DIENST_SPERRE = os.path.join(RAM_DIR, "dienst.lock")
+# FRUEHERE THEMENPRAEFIXE (Durchgang 02.10.2026, M3, Entscheidung Nr. 26).
+#
+# Steht unter einem frueheren Praefix noch etwas zurueckbehalten im Broker
+# (online=0 aus dem Anhalten), und liess es sich nicht sofort abraeumen -
+# Broker nicht erreichbar, MQTT war aus, der Dienst lief nicht -, wird das
+# Praefix hier vorgemerkt. Der Dienst versucht es bei jeder Verbindung und
+# stuendlich erneut, die Deinstallation leert alle. Die Liste liegt im
+# KONFIGURATIONSordner, nicht in data/: purge_installation leert den
+# Datenordner bei jedem Upgrade, den Konfigurationsordner sichert
+# preupgrade.sh und spielt postupgrade.sh zurueck.
+PRAEFIXE_DATEI = os.path.join(CONFIG_DIR, "mqtt_praefixe_alt.json") if CONFIG_DIR else ""
+PRAEFIX_MUSTER = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def praefixe_vorgemerkt():
+    """Die vorgemerkten frueheren Praefixe - nur brauchbare, ohne Doppel."""
+    if not PRAEFIXE_DATEI:
+        return []
+    try:
+        with open(PRAEFIXE_DATEI, "r", encoding="utf-8") as fh:
+            daten = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    aus = []
+    for p in daten if isinstance(daten, list) else []:
+        if isinstance(p, str) and PRAEFIX_MUSTER.match(p) and p not in aus:
+            aus.append(p)
+    return aus
+
+
+def _praefixe_schreiben(liste):
+    if not PRAEFIXE_DATEI:
+        return False
+    tmp = "{0}.tmp.{1}".format(PRAEFIXE_DATEI, os.getpid())
+    try:
+        os.makedirs(os.path.dirname(PRAEFIXE_DATEI), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(liste, fh)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, PRAEFIXE_DATEI)
+        return True
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def praefix_vormerken(praefix):
+    """Ein frueheres Praefix vormerken (Rueckgabe: steht jetzt in der Liste)."""
+    p = str(praefix or "").strip("/")
+    if not PRAEFIX_MUSTER.match(p):
+        return False
+    liste = praefixe_vorgemerkt()
+    if p in liste:
+        return True
+    return _praefixe_schreiben(liste + [p])
+
+
+def praefix_entfernen(praefix):
+    liste = praefixe_vorgemerkt()
+    if praefix not in liste:
+        return True
+    return _praefixe_schreiben([p for p in liste if p != praefix])
 
 
 def ram_ordner_anlegen():
@@ -407,11 +481,24 @@ def zahl(werte, schluessel, vorgabe, typ=float, unlesbar=None):
         wert = werte.get(schluessel, "")
         if wert is None or str(wert).strip() == "":
             return typ(vorgabe)
-        return typ(str(wert).strip())
+        ergebnis = typ(str(wert).strip())
     except (TypeError, ValueError):
         if unlesbar is not None:
             unlesbar.append((schluessel, str(wert)))
         return typ(vorgabe)
+    # NUR ENDLICHE WERTE (Durchgang 02.10.2026, C7).
+    #
+    # float("nan") und float("inf") sind fuer Python Zahlen. Jeder Vergleich
+    # mit NaN ist aber falsch: mit max_cm=nan griff der Plausibilitaetsbereich
+    # nicht mehr, mit offset_cm=nan ging valid=1 mit dem Wert "nan" hinaus
+    # (gemessen, Code-Pruefer C9). Die Oberflaeche erzeugt solche Werte nie
+    # (is_numeric), eine von Hand bearbeitete Datei schon - also wird es
+    # gemeldet wie "keine Zahl", und es gilt die Vorgabe.
+    if isinstance(ergebnis, float) and not math.isfinite(ergebnis):
+        if unlesbar is not None:
+            unlesbar.append((schluessel, str(wert)))
+        return typ(vorgabe)
+    return ergebnis
 
 
 def miniserver_liste():
@@ -703,6 +790,10 @@ def messen(cfg, sensor=None):
         hinweise.append("Der Wert fuer '{0}' ist keine Zahl: '{1}'. "
                         "Gerechnet wurde mit der Vorgabe."
                         .format(k, str(w)[:40]))
+    # Die Kalibrierwerte werden hier nur GEMELDET (C7): fuellstand() rechnet
+    # mit einem unbrauchbaren Wert keinen Fuellstand bzw. keine Liter. Ohne
+    # diese Zeilen fiele das still aus.
+    hinweise.extend(kalibrierung_hinweise(cfg))
 
     roh = []
     verworfen = []
@@ -715,26 +806,56 @@ def messen(cfg, sensor=None):
     # Gegenwert. Bis 1.2.1 waren beide Faelle im Feld "fehler" nicht zu
     # unterscheiden, und der Dienst hat den Sensor deshalb NIE neu geoeffnet.
     sensorfehler = False
+    # JEDE EINZELMESSUNG FUER SICH (Durchgang 02.10.2026, C2).
+    #
+    # Bis 1.2.10 brach der erste SensorFehler die ganze Schleife ab, und der
+    # Median aus den Werten DAVOR galt als gueltig: zwei gute Werte, dann
+    # "Messwert nicht lesbar" ergab valid=1, distance=50 und ein LEERES
+    # last_error (gemessen, Code-Pruefer C2). Jetzt wird weitergemessen, und
+    # ein Durchgang mit Sensorfehlern gilt nur, wenn MEHR ALS DIE HAELFTE der
+    # eingestellten Messungen gueltig war. Der Fehler steht dann in "fehler"
+    # und geht als last_error hinaus.
+    gescheitert = 0
     try:
         for i in range(anzahl):
-            wert = sensor.messen()
-            if wert is None:
-                verworfen.append(None)
-            elif wert < min_cm or wert > max_cm:
-                # Ausserhalb des Plausibilitaetsbereichs - nicht weiterreichen.
-                verworfen.append(round(wert, 1))
+            try:
+                wert = sensor.messen()
+            except SensorFehler as f:
+                fehler = str(f)
+                sensorfehler = True
+                gescheitert += 1
             else:
-                roh.append(wert)
+                if wert is None:
+                    verworfen.append(None)
+                elif not math.isfinite(wert) or wert <= 0:
+                    # EIN ROHWERT 0 IST NIE EINE MESSUNG (C3), unabhaengig von
+                    # min_cm. Beim SRF02 heisst 0 "nichts im Messbereich"; der
+                    # HC-SR04-Zweig fing sie bis 1.2.10 nicht ab, und mit
+                    # min_cm=0 ging "0 cm" als gueltig hinaus - mit
+                    # Kalibrierung "randvoll". Nicht endliche Werte ebenso.
+                    verworfen.append(round(wert, 1) if math.isfinite(wert) else None)
+                elif wert < min_cm or wert > max_cm:
+                    # Ausserhalb des Plausibilitaetsbereichs - nicht weiterreichen.
+                    verworfen.append(round(wert, 1))
+                else:
+                    roh.append(wert)
             if i < anzahl - 1:
                 time.sleep(abstand)
-    except SensorFehler as f:
-        fehler = str(f)
-        sensorfehler = True
     finally:
         if eigener:
             sensor.schliessen()
 
     mitte = median(roh)
+    if sensorfehler:
+        if len(roh) * 2 <= anzahl:
+            fehler = ("Sensorfehler bei {0} von {1} Messungen, nur {2} gueltig - "
+                      "verlangt sind mehr als die Haelfte: {3}"
+                      .format(gescheitert, anzahl, len(roh), fehler))
+            mitte = None
+        else:
+            fehler = ("Sensorfehler bei {0} von {1} Messungen; der Wert stammt "
+                      "aus den {2} gueltigen: {3}"
+                      .format(gescheitert, anzahl, len(roh), fehler))
     entfernung = round(mitte + offset, 1) if mitte is not None else None
     # EIN NEGATIVES ERGEBNIS IST KEIN MESSWERT (seit 1.2.2).
     #
@@ -795,6 +916,10 @@ def fuellstand(cfg, entfernung):
         voll = float(voll)
     except ValueError:
         return None, None
+    # Nur endliche Grenzen (C7): mit leer_cm=nan oder inf ergab sich bis
+    # 1.2.10 "100 %" und der volle Inhalt (gemessen, Code-Pruefer C9).
+    if not (math.isfinite(leer) and math.isfinite(voll)):
+        return None, None
     # VERTAUSCHT IST KEIN FUELLSTAND (seit 1.2.2).
     #
     # Bis 1.2.1 wurde nur "leer == voll" abgefangen. Gemessen mit
@@ -819,7 +944,37 @@ def fuellstand(cfg, entfernung):
     volumen = cfg.get("volumen_liter", "")
     if str(volumen).strip() != "":
         try:
-            liter = round(float(volumen) * prozent / 100.0, 1)
+            v = float(volumen)
         except ValueError:
-            liter = None
+            v = None
+        # Das Gesamtvolumen muss groesser als 0 und endlich sein (C7):
+        # volumen_liter=-1000 ergab bis 1.2.10 "-500 l".
+        if v is not None and math.isfinite(v) and v > 0:
+            liter = round(v * prozent / 100.0, 1)
     return round(prozent, 1), liter
+
+
+def kalibrierung_hinweise(cfg):
+    """Was an leer_cm, voll_cm und volumen_liter nicht brauchbar ist (C7).
+
+    Gemeldet wird nur, was eingetragen ist: ein leeres Feld heisst "keine
+    Umrechnung" und ist kein Fehler.
+    """
+    aus = []
+    for k in ("leer_cm", "voll_cm", "volumen_liter"):
+        w = str(cfg.get(k, "") or "").strip()
+        if w == "":
+            continue
+        try:
+            f = float(w)
+        except ValueError:
+            aus.append("Der Wert fuer '{0}' ist keine Zahl: '{1}'. Ein Fuellstand "
+                       "bzw. Inhalt wird nicht berechnet.".format(k, w[:40]))
+            continue
+        if not math.isfinite(f):
+            aus.append("Der Wert fuer '{0}' ist keine endliche Zahl: '{1}'. Ein "
+                       "Fuellstand bzw. Inhalt wird nicht berechnet.".format(k, w[:40]))
+        elif k == "volumen_liter" and f <= 0:
+            aus.append("Das Gesamtvolumen muss groesser als 0 sein, eingetragen ist "
+                       "'{0}'. Liter werden nicht berechnet.".format(w[:40]))
+    return aus

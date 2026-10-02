@@ -8,6 +8,11 @@
  *     /plugins/<Ordner>/index.php?token=<TOKEN>&aktion=status
  *     -> ULTRA;OK=1;DISTANCE=123.4;LEVEL=42.1;LITER=2105;VALID=1;ONLINE=1;TS=…;ZAEHLER=418;ALTER=7
  *
+ *     Ohne Zustandsdatei oder ohne je eine gueltige Messung (seit dem
+ *     Durchgang 02.10.2026):
+ *     -> HTTP 503  ULTRA;OK=0;GRUND=KEINE_ZUSTANDSDATEI
+ *     -> HTTP 503  ULTRA;OK=0;GRUND=KEINE_GUELTIGE_MESSUNG
+ *
  *     /plugins/<Ordner>/index.php?selftest=1&token=<TOKEN>
  *     -> SELFTEST;OK=1;TOKEN=OK
  *
@@ -121,21 +126,57 @@ if (!in_array($us_aktion, array('status', 'json'), true)) {
 $us_st = us_status();
 $us_alter = us_status_alter();
 
+/* OHNE ZUSTANDSDATEI KEINE ZEILE MIT LEEREN FELDERN (Durchgang 02.10.2026,
+ * M5). Bis 1.2.10 kam vor der ersten Messung HTTP 200 mit
+ * "DISTANCE=;LEVEL=;LITER=" - Loxone liest ein leeres Feld als 0, also
+ * "Behaelter leer" (gemessen, MQTT-Pruefer M4/M5). Regeln/07, Abschnitt 6:
+ * gibt es noch gar keine Daten, antwortet der Endpunkt mit 503 und nennt
+ * den Grund; Loxone behaelt dann seine letzten Werte. */
+if (!is_array($us_st)) {
+    us_ende(503, 'ULTRA;OK=0;GRUND=KEINE_ZUSTANDSDATEI');
+}
+
+/* DER LETZTE GUELTIGE WERT MIT VALID=0 (Durchgang 02.10.2026, C1/M4).
+ *
+ * Faellt der Sensor aus, schreibt der Dienst seit diesem Durchgang in
+ * JEDEM Takt eine ehrliche Zustandsdatei: entfernung=null und daneben den
+ * letzten gueltigen Stand (*_letzte). Geliefert wird dieser mit VALID=0 -
+ * wie ueber MQTT, wo der Altwert im virtuellen Eingang stehen bleibt. Bis
+ * 1.2.10 kamen hier entweder leere Felder (Ausfall im Durchgang) oder der
+ * Altwert mit VALID=1 (Sensor liess sich nicht oeffnen, die Datei blieb
+ * stehen) - gemessen, Code-Pruefer C1, MQTT-Pruefer M4. Gab es nie einen
+ * gueltigen Wert, gilt wie oben 503. */
+$us_gueltig = isset($us_st['entfernung']) && is_numeric($us_st['entfernung']);
+$us_zahl = function ($k) use ($us_st, $us_gueltig) {
+    $w = $us_gueltig ? (isset($us_st[$k]) ? $us_st[$k] : null)
+                     : (isset($us_st[$k . '_letzte']) ? $us_st[$k . '_letzte'] : null);
+    return is_numeric($w) ? $w : null;
+};
+if ($us_zahl('entfernung') === null) {
+    us_ende(503, 'ULTRA;OK=0;GRUND=KEINE_GUELTIGE_MESSUNG');
+}
+
 /* Das Alter wird zur LESEZEIT gerechnet, nicht beim Schreiben eingefroren -
  * sonst kann ein toter Dienst nicht von einer frischen Messung unterschieden
- * werden. Und ONLINE beantwortet die Frage, die der Anwender stellt ("ist
- * dieser Wert aktuell?"), nicht die, die der Dienst beim Schreiben beantworten
- * konnte. Die Grenze liegt deutlich ueber dem Takt, damit ein einzelner
- * langsamer Durchlauf nichts ausloest. */
-$us_takt = (int) us_cfg($us_cfg, 'intervall', '60');
-$us_grenze = max(180, 3 * $us_takt);
-$us_frisch = ($us_alter >= 0 && $us_alter <= $us_grenze);
+ * werden. ONLINE beantwortet die Frage, die der Anwender stellt ("ist dieser
+ * Wert aktuell?").
+ *
+ * DIE GRENZE IST 3 x (TAKT + MESSDAUER) (Durchgang 02.10.2026, C5,
+ * Entscheidung Nr. 4) - us_ok_grenze(). Bis 1.2.10 max(180, 3 x Takt): bei
+ * Takt 5 s blieb ein Ausfall zweieinhalb Minuten lang OK=1. Und ein
+ * Zeitstempel, der mehr als 5 s in der Zukunft liegt (Uhr nach dem Schreiben
+ * zurueckgesprungen), ist kein frischer Wert: OK=0. ALTER bleibt daneben,
+ * wie es war. */
+$us_grenze = us_ok_grenze($us_cfg);
+$us_roh_alter = us_status_alter_roh();
+$us_frisch = ($us_roh_alter !== null && $us_roh_alter >= -5 && $us_alter >= 0
+              && $us_alter <= $us_grenze);
 
 $us_werte = array(
-    'distance' => ($us_st && isset($us_st['entfernung'])) ? $us_st['entfernung'] : null,
-    'level'    => ($us_st && isset($us_st['prozent'])) ? $us_st['prozent'] : null,
-    'liter'    => ($us_st && isset($us_st['liter'])) ? $us_st['liter'] : null,
-    'valid'    => ($us_st && isset($us_st['entfernung']) && $us_st['entfernung'] !== null) ? 1 : 0,
+    'distance' => $us_zahl('entfernung'),
+    'level'    => $us_zahl('prozent'),
+    'liter'    => $us_zahl('liter'),
+    'valid'    => $us_gueltig ? 1 : 0,
     'online'   => $us_frisch ? 1 : 0,
     'ts'       => ($us_st && isset($us_st['zeit'])) ? (int) $us_st['zeit'] : 0,
     // -1 heisst "noch nie gelaufen". 0 waere ein gueltiger Stand des

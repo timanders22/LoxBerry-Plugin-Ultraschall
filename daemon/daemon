@@ -174,6 +174,19 @@ us_dienste_finden() {
     done
 }
 
+# EINE STARTSPERRE FUER ALLE STARTWEGE (Durchgang 02.10.2026, I3).
+# Gemessen bis 1.2.10 (Installer-Pruefer D2): daemon und ein nachgeholter
+# Waechterlauf zugleich ergaben in 10 von 10 Runden zwei Dienste. Dieselbe
+# Sperre wie im Waechter, in postinstall.sh und in us_dienst('start'): flock
+# auf den Dienst selbst, Deskriptor 9, bis 15 s. Der Dienst erbt sie nicht.
+if command -v flock >/dev/null 2>&1 && [ -r "$dienst" ]; then
+    exec 9<"$dienst"
+    if ! flock -w 15 9; then
+        us_melden "Start uebersprungen: ein anderer Startweg haelt die Startsperre."
+        exit 0
+    fi
+fi
+
 us_laeuft=$(us_dienste_finden)
 if [ -n "$us_laeuft" ]; then
     us_erste=$(echo "$us_laeuft" | head -1)
@@ -202,7 +215,8 @@ fi
 # ">" statt ">>": die Datei faengt auf, was VOR dem Protokoll passiert,
 # und wird bei jedem Start geleert, statt zu wachsen.
 startlog="$logdir/ultraschall_start.log"
-su loxberry -s /bin/bash -c "nohup $dienst > $startlog 2>&1 &" >/dev/null 2>&1
+# 9<&-: weder su noch der Dienst erben die Startsperre (I3).
+su loxberry -s /bin/bash -c "nohup $dienst > $startlog 2>&1 &" 9<&- >/dev/null 2>&1
 
 # UND NACHSEHEN, OB ES GEHOLFEN HAT (seit 1.2.2).
 #

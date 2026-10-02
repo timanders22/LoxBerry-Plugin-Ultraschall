@@ -4,6 +4,37 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.10
+
+Durchgang mit vier Prüfern (Befunde: `Pruefung-Durchgang-2026-09-29/Ultraschall_BEFUNDE_UND_VERBESSERUNGEN.md`, Entscheidungen 1, 4, 8, 16, 19, 26).
+Gemessen mit Sensor-Attrappen (SRF02, HC-SR04), eigenem Broker mit Retain und Letztem Willen und echtem paho 1.6.1 unter PHP 7.4, 8.3 und 8.5 sowie im Installer-Prüfstand; nicht am Gerät, nicht an einem echten Sensor.
+
+* **Ehrlicher Messwert:**
+  * Lässt sich der Sensor nicht öffnen, meldet der Endpunkt den letzten gültigen Wert mit `VALID=0`. Bisher kam der Altwert mit `VALID=1`.
+  * Das Lebenszeichen läuft weiter, und der Sensor wird im Takt neu geöffnet.
+  * Ein Durchgang mit Sensorfehlern gilt nur mit mehr als der Hälfte gültiger Messungen.
+  * Ein Rohwert 0 ist nie gültig; `min_cm` ist mindestens 1.
+  * Nur endliche Werte; Gesamtvolumen größer 0.
+* **Ausfall erkennen:**
+  * `OK=0` ab 3 × (Takt + Messdauer) und bei einem Zeitstempel aus der Zukunft.
+  * Die Messung läuft mit Zeitgrenze; der Wächter startet einen hängenden Dienst neu.
+  * Ohne Daten antwortet der Endpunkt mit 503 und Grund.
+* **MQTT:**
+  * `online=1` gleich nach jeder Wiederverbindung, danach alle Werte. Bisher stand `online` nach einem Abriss bis zum nächsten Durchgang auf 0.
+  * Eine abgewiesene Anmeldung baut mit neu gelesenen Zugangsdaten neu auf.
+  * „MQTT aus“ räumt ab; frühere Präfixe werden vorgemerkt und bei der Deinstallation geleert.
+* **Nie zwei Dienste:** eine gemeinsame Startsperre für Wächter, Systemstart, Installer und Knopf, dazu eine Sperre im Dienst. Bisher liefen bei gleichzeitigem Start zwei Messdienste am selben Sensor.
+* **Speichern:**
+  * PRG; bei einer Beanstandung wird nichts gespeichert, auch nicht über den Kalibrierknopf.
+  * Nichts wird still berichtigt; die Eingaben kommen markiert zurück.
+  * Die eigene Sicherung lässt sich zurückspielen; „Sichern“ warnt; ein leeres Token behält das geltende.
+  * Wer aus 1.2.10 Werte mitbringt, die jetzt beanstandet werden, berichtigt sie einmal; ein Kasten nennt die Felder.
+* **Oberfläche:**
+  * Die englische Oberfläche ist vollständig englisch.
+  * Neue Prüfzeilen für den MQTT-Schalter und die Anmeldung am Broker.
+  * „Dienst anhalten“ meldet ehrlich.
+* **Installer:** Eine Neuinstallation spielt keine alte Zweitschrift ein (`.alt` und Warnung, `preinstall.sh`), ein Update keine aus einem früheren Vorgang.
+
 ## Neu in 1.2.9
 
 Sammelnachzug vom 30.09.2026, sonst keine Änderung: `curl_close()` wird nur
@@ -580,8 +611,12 @@ zwar an der Doppelmeldungssperre vorbei:
 * `online` — 1, solange der Dienst läuft.
 
 Der Endpunkt rechnet daraus `ALTER` in Sekunden und setzt `OK=0`, sobald die
-Werte älter sind als `max(180, 3 × Takt)`. In Loxone genügt damit ein Blick auf
-`ONLINE`, um zwischen "steht still" und "misst denselben Wert" zu unterscheiden.
+Werte älter sind als `3 × (Takt + Messdauer)` mit Messdauer
+`(Werte je Durchgang − 1) × Abstand` (bis 1.2.10: `max(180, 3 × Takt)`), oder
+wenn der Zeitstempel mehr als 5 s in der Zukunft liegt. Die Schwelle mit den
+gespeicherten Einstellungen steht im Reiter *Einbindung in Loxone*. In Loxone
+genügt damit ein Blick auf `ONLINE`, um zwischen "steht still" und "misst
+denselben Wert" zu unterscheiden.
 
 ### Ein Wachposten vor jedem Formular
 

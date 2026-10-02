@@ -43,35 +43,31 @@ function us_sh($cmd)
     return implode("\n", $out);
 }
 
+/** Eine Zeile "Bezeichnung   Wert" - die Bezeichnung aus der Sprachdatei. */
+function us_tz($schluessel, $wert)
+{
+    return str_pad(us_t($schluessel), 17) . $wert . "\n";
+}
+
 /** So lange darf eine Messung aus dem Webfrontend hoechstens dauern. */
 define('US_MESSEN_GRENZE', 12);
 
 /**
  * Einen Messwert fuer den Reiter Test besorgen.
  *
- * ZWEI WEGE, UND DER ERSTE IST WICHTIG:
- *
- * Laeuft der Dienst, wird NICHT selbst gemessen, sondern der zuletzt vom
- * Dienst geschriebene Stand gelesen. Sonst greifen zwei Prozesse gleichzeitig
- * auf dieselbe Hardware zu, und das geht je nach Sensor unterschiedlich
- * schief:
- *   - I2C (SRF02, VL53L0X): der Kern serialisiert einzelne Uebertragungen,
- *     aber nicht die Folge aus Schreiben, Warten und Lesen. Dazwischen kann
- *     der andere Prozess seine eigene Messung anstossen - herauskommt ein
- *     Wert, der zu keiner der beiden Anfragen gehoert. Still und falsch.
- *   - GPIO (HC-SR04): lgpio belegt die Leitung ausschliesslich. Der zweite
- *     Zugriff scheitert mit einer Fehlermeldung.
- * Der stille Fall ist der schlimmere.
- *
- * Die Zeitgrenze fuer den zweiten Weg lag bei 40 Sekunden. Ein Webserver
- * bricht die Anfrage lange vorher ab (Lighttpd und FastCGI ueblicherweise
- * nach 30 s) - der Benutzer saehe einen 504 statt einer Auskunft. Jetzt
- * zwoelf Sekunden; ein Sensor, der so lange nicht antwortet, antwortet auch
- * nach vierzig nicht.
+ * ZWEI WEGE, UND DER ERSTE IST WICHTIG: laeuft der Dienst, wird NICHT selbst
+ * gemessen, sondern der zuletzt vom Dienst geschriebene Stand gelesen - zwei
+ * Prozesse am selben Sensor vertragen sich nicht (I2C: ein Wert, der zu
+ * keiner Anfrage gehoert; GPIO: der zweite Zugriff scheitert). Die
+ * Zeitgrenze fuer den zweiten Weg ist zwoelf Sekunden; ein Webserver bricht
+ * nach etwa 30 s ab.
  *
  * Rueckgabe zusaetzlich: 'quelle' = 'dienst' oder 'direkt', und bei 'dienst'
- * das Alter in Sekunden - sonst haelt jemand einen zehn Minuten alten Wert
- * fuer eine frische Messung.
+ * das Alter in Sekunden.
+ *
+ * Alle Texte kommen seit dem Durchgang 02.10.2026 aus den Sprachdateien
+ * (O10): bis 1.2.10 waren saemtliche Ausgaben dieses Reiters deutsch, auch
+ * in der englischen Oberflaeche, und mit Umschriften ("laeuft").
  */
 function us_einmal_messen()
 {
@@ -88,14 +84,13 @@ function us_einmal_messen()
         return array(
             'entfernung' => null, 'roh' => array(), 'verworfen' => array(),
             'quelle' => 'dienst', 'alter' => null,
-            'fehler' => 'Der Dienst laeuft (PID ' . $pid . '), hat aber noch keinen '
-                      . 'Stand geschrieben. Beim naechsten Messtakt steht hier ein Wert.',
+            'fehler' => sprintf(us_t('TEST.DIENST_OHNE_STAND'), $pid),
         );
     }
 
     $skript = $p['bindir'] . '/us_messen.py';
     if (!is_file($skript)) {
-        return array('fehler' => 'us_messen.py nicht gefunden: ' . $skript);
+        return array('fehler' => sprintf(us_t('TEST.MESSEN_FEHLT'), $skript));
     }
     $out = array();
     @exec('timeout ' . US_MESSEN_GRENZE . ' python3 ' . escapeshellarg($skript) . ' 2>&1', $out, $rc);
@@ -104,17 +99,26 @@ function us_einmal_messen()
     if (!is_array($j)) {
         // 124 ist der Rueckgabewert, mit dem timeout einen Abbruch meldet.
         if ((int) $rc === 124) {
-            return array('fehler' => sprintf(
-                "Die Messung wurde nach %d Sekunden abgebrochen.\n\n"
-                . "Der Sensor antwortet nicht. Verkabelung, Adresse und "
-                . "Spannungsversorgung pruefen - der Knopf \"Sensor pruefen\" "
-                . "sagt mehr.", US_MESSEN_GRENZE));
+            return array('fehler' => sprintf(us_t('TEST.ABGEBROCHEN'), US_MESSEN_GRENZE));
         }
-        return array('fehler' => "Der Messlauf lieferte keine verwertbare Antwort:\n\n"
-            . substr($roh, 0, 800));
+        return array('fehler' => us_t('TEST.KEINE_ANTWORT') . "\n\n" . substr($roh, 0, 800));
     }
     $j['quelle'] = 'direkt';
     return $j;
+}
+
+/** Einzelwerte und Verworfene als Text - fuer "Letzter Messwert" und "Jetzt messen". */
+function us_test_werte($j)
+{
+    $t = us_tz('TEST.L_EINZEL', empty($j['roh']) ? '-' : implode('  ', (array) $j['roh']));
+    if (!empty($j['verworfen'])) {
+        $liste = array();
+        foreach ((array) $j['verworfen'] as $v) {
+            $liste[] = $v === null ? us_t('TEST.KEIN_ECHO') : $v;
+        }
+        $t .= us_tz('TEST.L_VERWORFEN', implode('  ', $liste));
+    }
+    return $t;
 }
 
 function us_test_ausfuehren($was)
@@ -123,353 +127,340 @@ function us_test_ausfuehren($was)
     list($cfg, $alt) = us_config_read();
     $sensoren = us_sensoren();
     $sensor = us_cfg($cfg, 'sensor', 'srf02');
+    $ja = us_t('TEST.JA');
+    $nein = us_t('TEST.NEIN');
+    $ein = us_t('TEST.EIN');
+    $aus = us_t('TEST.AUS');
 
     switch ($was) {
 
         case 'status':
             $pid = us_dienst_pid();
-            $alter = us_status_alter();
-            $t  = "Dienst:          " . ($pid ? "laeuft (PID $pid)" : 'laeuft nicht') . "\n";
-            $t .= "Eingeschaltet:   " . (us_cfg($cfg, 'enabled', '0') === '1' ? 'ja' : 'nein') . "\n";
-            $t .= "Zustandsdatei:   " . ($alter < 0 ? 'nicht vorhanden' : $alter . ' Sekunden alt') . "\n";
-            /* Die Upgrade-Marke gehoert in die Selbstpruefung: zu jeder
-             * Regel gehoert das Werkzeug, das sie findet (CLAUDE.md,
-             * Abschnitt 6). Solange sie gilt, startet KEIN Startweg den
-             * Dienst - ohne diese Zeile stuende hier nur "laeuft nicht"
-             * und niemand wuesste, warum. */
+            $herz = us_herzschlag_alter();
+            $mess = us_status_alter_roh();
+            $grenze = us_ok_grenze($cfg);
+            $s = us_status();
+            $t  = us_tz('TEST.L_DIENST', $pid ? sprintf(us_t('TEST.LAEUFT_PID'), $pid) : us_t('TEST.LAEUFT_NICHT'));
+            $t .= us_tz('TEST.L_EIN', us_cfg($cfg, 'enabled', '0') === '1' ? $ja : $nein);
+            $t .= us_tz('TEST.L_ZUSTAND', $herz === null ? us_t('TEST.DATEI_FEHLT')
+                : sprintf(us_t('TEST.DATEI_ALTER'), max(0, $herz),
+                          $mess === null || !is_array($s) || (int) $s['zeit'] <= 0
+                              ? us_t('TEST.NIE') : sprintf(us_t('TEST.SEKUNDEN'), max(0, $mess)),
+                          $grenze));
+            /* Die Upgrade-Marke gehoert in die Selbstpruefung: solange sie
+             * gilt, startet KEIN Startweg den Dienst. */
             $marke = us_marke_alter();
-            $t .= "Aktualisierung:  " . ($marke < 0
-                ? 'keine Marke - der Dienst darf starten'
-                : 'Marke liegt, ' . $marke . ' Sekunden alt - der Dienst startet nicht') . "\n";
-            $t .= "Sensor:          " . (isset($sensoren[$sensor]) ? $sensoren[$sensor] : $sensor) . "\n";
+            $t .= us_tz('TEST.L_AKT', $marke < 0 ? us_t('TEST.MARKE_KEINE')
+                : sprintf(us_t('TEST.MARKE_LIEGT'), $marke));
+            $t .= us_tz('TEST.L_SENSOR', isset($sensoren[$sensor]) ? $sensoren[$sensor] : $sensor);
             if ($sensor === 'hcsr04') {
-                $t .= "GPIO:            Trigger " . us_cfg($cfg, 'gpio_trigger', '23')
-                    . ", Echo " . us_cfg($cfg, 'gpio_echo', '24') . "\n";
+                $t .= us_tz('TEST.L_GPIO', sprintf(us_t('TEST.GPIO_TEXT'),
+                    us_cfg($cfg, 'gpio_trigger', '23'), us_cfg($cfg, 'gpio_echo', '24')));
             } else {
-                $t .= "I2C:             Bus " . us_cfg($cfg, 'i2c_bus', '1')
-                    . ", Adresse " . us_cfg($cfg, 'i2c_adresse', '0x70') . "\n";
+                $t .= us_tz('TEST.L_I2C', sprintf(us_t('TEST.I2C_TEXT'),
+                    us_cfg($cfg, 'i2c_bus', '1'), us_cfg($cfg, 'i2c_adresse', '0x70')));
             }
-            $t .= "Messung:         " . us_cfg($cfg, 'messungen', '5') . " Werte, Median, "
-                . "gueltig von " . us_cfg($cfg, 'min_cm', '3') . " bis "
-                . us_cfg($cfg, 'max_cm', '400') . " cm\n";
-            $t .= "Takt:            alle " . us_cfg($cfg, 'intervall', '60') . " Sekunden\n";
-            $t .= "MQTT:            " . (us_cfg($cfg, 'mqtt', '1') === '1' ? 'ein' : 'aus') . "\n";
-            $t .= "UDP:             " . (us_cfg($cfg, 'udp', '0') === '1' ? 'ein' : 'aus') . "\n\n";
+            $t .= us_tz('TEST.L_MESSUNG', sprintf(us_t('TEST.MESSUNG_TEXT'), us_cfg($cfg, 'messungen', '5'),
+                us_cfg($cfg, 'min_cm', '3'), us_cfg($cfg, 'max_cm', '400')));
+            $t .= us_tz('TEST.L_TAKT', sprintf(us_t('TEST.TAKT_TEXT'), us_cfg($cfg, 'intervall', '60')));
+            $t .= us_tz('TEST.L_MQTT', us_cfg($cfg, 'mqtt', '1') === '1' ? $ein : $aus);
+            $t .= us_tz('TEST.L_MQTT_ZUSTAND', us_test_mqtt_zustand($cfg, $s, $pid));
+            $t .= us_tz('TEST.L_UDP', us_cfg($cfg, 'udp', '0') === '1' ? $ein : $aus) . "\n";
             if ($alt) {
-                $t .= "Die Konfiguration liegt noch im Format der Originalfassung.\n"
-                    . "Sie wird gelesen und beim naechsten Speichern umgeschrieben.\n\n";
+                $t .= us_t('TEST.ALTFORMAT') . "\n\n";
             }
             if (us_cfg($cfg, 'enabled', '0') !== '1') {
-                $t .= "Das Plugin ist ausgeschaltet - der Dienst misst nicht. Im Reiter\n"
-                    . "Einstellungen einschalten und speichern.\n\n";
+                $t .= us_t('TEST.AUSGESCHALTET') . "\n\n";
             } elseif (!$pid) {
-                $t .= "Der Dienst laeuft nicht. Die Ursache steht meistens im Protokoll\n"
-                    . "(Reiter Logdateien). Mit \"Dienst neu starten\" erneut versuchen.\n\n";
-            } elseif ($alter > 3 * (int) us_cfg($cfg, 'intervall', '60')) {
-                $t .= "Der Dienst laeuft, hat aber seit $alter Sekunden nichts mehr\n"
-                    . "geschrieben - laenger als drei Messtakte. \"Sensor pruefen\"\n"
-                    . "gibt Aufschluss.\n\n";
+                $t .= us_t('TEST.NICHT_GESTARTET') . "\n\n";
+            } elseif ($herz !== null && $herz > $grenze) {
+                $t .= sprintf(us_t('TEST.STEHT'), $herz, $grenze) . "\n\n";
+            } elseif (is_array($s) && array_key_exists('entfernung', $s) && $s['entfernung'] === null
+                      && !empty($s['fehler'])) {
+                // C1: "laeuft, misst aber nicht" - das zeigt jetzt der Zustand.
+                $t .= sprintf(us_t('TEST.MISST_NICHT'), (string) $s['fehler']) . "\n\n";
             }
             $t .= us_sh('ps -o pid,etime,rss,args -C python3 2>/dev/null | grep -iE "ultraschall|PID"');
-            return array('Zustand des Dienstes', trim($t) !== '' ? $t : 'Keine Angaben.');
+            return array(us_t('TEXT.ZUSTAND_DES_DIENSTES'), trim($t) !== '' ? $t : us_t('TEST.KEINE_ANGABEN'));
 
         case 'messwert':
             $s = us_status();
             if (!$s) {
-                return array('Letzter Messwert',
-                    "Es gibt noch keine Zustandsdatei.\n\n"
-                    . "Sie entsteht, sobald der Dienst den ersten Durchgang beendet hat.\n"
-                    . "Laeuft der Dienst? Siehe \"Zustand des Dienstes\".");
+                return array(us_t('TEXT.LETZTER_MESSWERT'), us_t('TEST.KEINE_ZUSTANDSDATEI'));
             }
-            $t = "Stand: vor " . us_status_alter() . " Sekunden\n\n";
+            $t = sprintf(us_t('TEST.STAND_VOR'), us_status_alter()) . "\n\n";
             if (!isset($s['entfernung']) || $s['entfernung'] === null) {
-                $t .= "Entfernung:   keine brauchbare Messung\n";
+                $t .= us_tz('TEST.L_ENTFERNUNG', us_t('TEST.KEINE_MESSUNG'));
+                if (isset($s['entfernung_letzte']) && is_numeric($s['entfernung_letzte'])) {
+                    $t .= us_tz('TEST.L_LETZTE', sprintf('%.1f cm', $s['entfernung_letzte']));
+                }
             } else {
-                $t .= sprintf("Entfernung:   %.1f cm\n", $s['entfernung']);
+                $t .= us_tz('TEST.L_ENTFERNUNG', sprintf('%.1f cm', $s['entfernung']));
             }
             if (isset($s['prozent']) && $s['prozent'] !== null) {
-                $t .= sprintf("Fuellstand:   %.1f %%\n", $s['prozent']);
+                $t .= us_tz('TEST.L_FUELL', sprintf('%.1f %%', $s['prozent']));
             } else {
-                $t .= "Fuellstand:   nicht berechnet (Kalibrierung fehlt)\n";
+                $t .= us_tz('TEST.L_FUELL', us_t('TEST.FUELL_NICHT'));
             }
             if (isset($s['liter']) && $s['liter'] !== null) {
-                $t .= sprintf("Inhalt:       %.1f l\n", $s['liter']);
+                $t .= us_tz('TEST.L_INHALT', sprintf('%.1f l', $s['liter']));
             } else {
-                $t .= "Inhalt:       nicht berechnet (Gesamtvolumen fehlt)\n";
+                $t .= us_tz('TEST.L_INHALT', us_t('TEST.INHALT_NICHT'));
             }
-            $t .= "\nEinzelwerte:  " . (empty($s['roh']) ? '-' : implode('  ', $s['roh'])) . "\n";
-            if (!empty($s['verworfen'])) {
-                $liste = array();
-                foreach ($s['verworfen'] as $v) {
-                    $liste[] = $v === null ? 'kein Echo' : $v;
-                }
-                $t .= "Verworfen:    " . implode('  ', $liste) . "\n";
-            }
+            $t .= "\n" . us_test_werte($s);
             if (!empty($s['fehler'])) {
-                $t .= "\nFehler:       " . $s['fehler'] . "\n";
+                $t .= "\n" . us_tz('TEST.L_FEHLER', (string) $s['fehler']);
             }
-            return array('Letzter Messwert', $t);
+            return array(us_t('TEXT.LETZTER_MESSWERT'), $t);
 
         case 'messen':
             $j = us_einmal_messen();
-            if (isset($j['fehler']) && !isset($j['entfernung'])) {
-                return array('Jetzt messen', $j['fehler']
+            if (isset($j['fehler']) && !array_key_exists('entfernung', $j)) {
+                return array(us_t('TEXT.JETZT_MESSEN'), $j['fehler']
                     . (isset($j['hinweis']) ? "\n\n" . $j['hinweis'] : ''));
             }
-            $t = "Sensor: " . (isset($sensoren[$sensor]) ? $sensoren[$sensor] : $sensor) . "\n";
+            $t = us_tz('TEST.L_SENSOR', isset($sensoren[$sensor]) ? $sensoren[$sensor] : $sensor);
             if (isset($j['quelle']) && $j['quelle'] === 'dienst') {
-                $t .= "Herkunft: letzter Stand des laufenden Dienstes"
+                $t .= us_tz('TEST.L_HERKUNFT', us_t('TEST.HERKUNFT_DIENST')
                     . (isset($j['alter']) && $j['alter'] !== null
-                        ? ", " . (int) $j['alter'] . " s alt" : "")
-                    . "\n          (Waehrend der Dienst laeuft, wird nicht zusaetzlich"
-                    . " gemessen - zwei\n           Zugriffe auf denselben Sensor"
-                    . " vertragen sich nicht. Fuer eine\n           Messung von Hand"
-                    . " den Dienst weiter unten in DIESEM Reiter anhalten -\n"
-                    . "           der Waechter holt ihn binnen fuenf Minuten zurueck,\n"
-                    . "           solange das Plugin eingeschaltet ist.)\n";
+                        ? sprintf(us_t('TEST.HERKUNFT_ALT'), (int) $j['alter']) : ''));
+                $t .= us_t('TEST.HERKUNFT_ERKL') . "\n";
             }
-            $t .= "\n";
-            $t .= "Einzelwerte:  " . (empty($j['roh']) ? '-' : implode('  ', $j['roh'])) . "\n";
-            if (!empty($j['verworfen'])) {
-                $liste = array();
-                foreach ($j['verworfen'] as $v) {
-                    $liste[] = $v === null ? 'kein Echo' : $v;
-                }
-                $t .= "Verworfen:    " . implode('  ', $liste) . "\n";
-            }
-            // Was der Messlauf ueber die KONFIGURATION zu sagen hat (seit
-            // 1.2.2). Ohne diese Zeilen stuende der Hinweis im JSON und
-            // wuerde nirgends angezeigt - der stille Rueckfall auf eine
-            // Vorgabe waere weiterhin still, nur eine Ebene hoeher.
-            if (isset($j['hinweise']) && is_array($j['hinweise'])
-                && count($j['hinweise']) > 0) {
-                $t .= "Zur Konfiguration:\n";
+            $t .= "\n" . us_test_werte($j);
+            // Was der Messlauf ueber die KONFIGURATION zu sagen hat (seit 1.2.2).
+            if (isset($j['hinweise']) && is_array($j['hinweise']) && count($j['hinweise']) > 0) {
+                $t .= us_t('TEST.ZUR_KONFIG') . "\n";
                 foreach ($j['hinweise'] as $us_hw) {
-                    $t .= "- " . (string) $us_hw . "\n";
+                    $t .= '- ' . (string) $us_hw . "\n";
                 }
-                $t .= "\n";
             }
             $t .= "\n";
-            if ($j['entfernung'] === null) {
-                $t .= "Ergebnis:     keine brauchbare Messung\n";
+            if (!isset($j['entfernung']) || $j['entfernung'] === null) {
+                $t .= us_tz('TEST.L_ERGEBNIS', us_t('TEST.KEINE_MESSUNG'));
                 if (!empty($j['fehler'])) {
                     $t .= "\n" . $j['fehler'] . "\n";
                 }
-                $t .= "\nWas man pruefen kann:\n"
-                    . "- Zeigt der Sensor tatsaechlich auf eine Flaeche?\n"
-                    . "  Ultraschall braucht eine ebene, moeglichst harte Oberflaeche.\n"
-                    . "  Schaum, Textilien und schraege Waende schlucken das Echo.\n"
-                    . "- Liegt der Abstand im Plausibilitaetsbereich? Der SRF02 misst\n"
-                    . "  ab etwa 16 cm, der HC-SR04 ab etwa 2 cm.\n"
-                    . "- Stimmt die Verkabelung? \"Sensor pruefen\" sagt, ob der Bus\n"
-                    . "  ueberhaupt antwortet.\n";
+                $t .= "\n" . us_t('TEST.PRUEFEN_KOPF') . "\n" . us_t('TEST.PRUEFEN_1') . "\n"
+                    . us_t('TEST.PRUEFEN_2') . "\n" . us_t('TEST.PRUEFEN_3') . "\n";
             } else {
-                $t .= sprintf("Ergebnis:     %.1f cm  (Median von %d Werten)\n",
-                    $j['entfernung'], count($j['roh']));
+                $t .= us_tz('TEST.L_ERGEBNIS', sprintf(us_t('TEST.ERGEBNIS_WERT'),
+                    $j['entfernung'], count((array) $j['roh'])));
+                if (!empty($j['fehler'])) {
+                    // C2: ein gueltiger Durchgang mit Sensorfehlern sagt es.
+                    $t .= us_tz('TEST.L_FEHLER', (string) $j['fehler']);
+                }
                 list($proz, $liter) = us_fuellstand($cfg, $j['entfernung']);
                 if ($proz !== null) {
-                    $t .= sprintf("Fuellstand:   %.1f %%\n", $proz);
+                    $t .= us_tz('TEST.L_FUELL', sprintf('%.1f %%', $proz));
                     if ($liter !== null) {
-                        $t .= sprintf("Inhalt:       %.1f l\n", $liter);
+                        $t .= us_tz('TEST.L_INHALT', sprintf('%.1f l', $liter));
                     }
                 } else {
-                    $t .= "\nFuellstand:   nicht berechnet. Dafuer muessen im Reiter\n"
-                        . "              Einstellungen \"leer\" und \"voll\" eingetragen sein.\n"
-                        . "              Diesen Wert kann man dafuer verwenden.\n";
+                    /* C4: bei vertauschten oder gleichen Grenzen gibt es
+                     * keinen Wert UND einen Hinweis - bis 1.2.10 lief der
+                     * Fuellstand hier rueckwaerts. */
+                    $us_fh = us_fuellstand_hinweis($cfg);
+                    $t .= "\n" . ($us_fh !== '' ? $us_fh : us_t('TEST.FUELL_NICHT_LANG')) . "\n";
                 }
             }
-            return array('Jetzt messen', $t);
+            return array(us_t('TEXT.JETZT_MESSEN'), $t);
 
         case 'sensor':
             $t = '';
             if ($sensor === 'hcsr04') {
-                $t .= "Sensor: HC-SR04 an GPIO " . us_cfg($cfg, 'gpio_trigger', '23')
-                    . " (Trigger) und " . us_cfg($cfg, 'gpio_echo', '24') . " (Echo)\n\n";
-                $t .= "gpiozero:  " . (trim(us_sh('python3 -c "import gpiozero; print(gpiozero.__version__)"')) ?: 'nicht vorhanden') . "\n";
-                $t .= "lgpio:     " . (trim(us_sh('python3 -c "import lgpio; print(\"vorhanden\")"')) ?: 'nicht vorhanden') . "\n\n";
-                $t .= "Gruppen des Benutzers loxberry:\n" . us_sh('id loxberry') . "\n\n";
-                $t .= "GPIO-Geraete:\n" . (us_sh('ls -l /dev/gpiochip* 2>&1') ?: 'keine') . "\n\n";
-                $t .= "Achtung Spannung: der HC-SR04 arbeitet mit 5 V. Der Echo-Pin muss\n"
-                    . "ueber einen Spannungsteiler auf 3,3 V gebracht werden, sonst nimmt\n"
-                    . "der Raspberry Pi mit der Zeit Schaden.\n";
+                $t .= sprintf(us_t('TEST.SENSOR_HC'), us_cfg($cfg, 'gpio_trigger', '23'),
+                              us_cfg($cfg, 'gpio_echo', '24')) . "\n\n";
+                $us_gz = trim(us_sh('python3 -c "import gpiozero; print(gpiozero.__version__)"'));
+                $us_lg = trim(us_sh('python3 -c "import lgpio" >/dev/null 2>&1 && echo ok'));
+                $t .= us_tz('TEST.L_GPIOZERO', $us_gz !== '' ? $us_gz : us_t('TEST.NICHT_VORHANDEN'));
+                $t .= us_tz('TEST.L_LGPIO', $us_lg === 'ok' ? us_t('TEST.VORHANDEN') : us_t('TEST.NICHT_VORHANDEN')) . "\n";
+                $t .= us_t('TEST.GRUPPEN') . "\n" . us_sh('id loxberry') . "\n\n";
+                $t .= us_t('TEST.GPIO_GERAETE') . "\n" . (us_sh('ls -l /dev/gpiochip* 2>&1') ?: us_t('TEST.KEINE')) . "\n\n";
+                $t .= us_t('TEST.SPANNUNG') . "\n";
             } else {
                 $bus = us_cfg($cfg, 'i2c_bus', '1');
-                $t .= "Sensor: SRF02 am I2C-Bus $bus, Adresse " . us_cfg($cfg, 'i2c_adresse', '0x70') . "\n\n";
-                $t .= "Geraetedatei /dev/i2c-$bus: "
-                    . (file_exists("/dev/i2c-$bus") ? 'vorhanden' : 'FEHLT - ist I2C eingeschaltet?') . "\n\n";
-                $t .= "Gruppen des Benutzers loxberry:\n" . us_sh('id loxberry') . "\n\n";
-                $t .= "Belegte Adressen am Bus (i2cdetect):\n";
+                $t .= sprintf(us_t('TEST.SENSOR_SRF'), $bus, us_cfg($cfg, 'i2c_adresse', '0x70')) . "\n\n";
+                $t .= sprintf(us_t('TEST.GERAETEDATEI'), $bus) . ' '
+                    . (file_exists("/dev/i2c-$bus") ? us_t('TEST.VORHANDEN') : us_t('TEST.GD_FEHLT')) . "\n\n";
+                $t .= us_t('TEST.GRUPPEN') . "\n" . us_sh('id loxberry') . "\n\n";
+                $t .= us_t('TEST.BELEGT') . "\n";
                 $scan = us_sh('i2cdetect -y ' . (int) $bus);
-                $t .= ($scan !== '' ? $scan : 'i2cdetect nicht vorhanden oder kein Zugriff') . "\n\n";
-                $t .= "Der SRF02 meldet sich ab Werk auf 0x70. Steht dort nichts, ist\n"
-                    . "entweder die Verkabelung falsch oder die Adresse wurde geaendert.\n"
-                    . "Erscheint statt der Adresse \"UU\", benutzt sie schon ein Treiber.\n";
+                $t .= ($scan !== '' ? $scan : us_t('TEST.I2CDETECT_FEHLT')) . "\n\n";
+                $t .= us_t('TEST.SRF_HINWEIS') . "\n";
             }
-            return array('Sensor pruefen', $t);
+            return array(us_t('TEXT.SENSOR_PRUEFEN'), $t);
 
         case 'konfig':
-            $t = "Datei: " . $p['config'] . "\n\n";
+            $t = us_tz('TEST.L_DATEI', $p['config']) . "\n";
             if (is_file($p['config'])) {
                 $t .= (string) @file_get_contents($p['config']);
             } else {
-                $t .= "Die Datei gibt es noch nicht. Sie entsteht beim ersten Speichern.\n\n"
-                    . "Bis dahin gelten die Voreinstellungen:\n\n";
+                $t .= us_t('TEST.KONFIG_FEHLT') . "\n\n";
                 foreach (us_defaults() as $k => $v) {
-                    $t .= sprintf("  %-16s %s\n", $k, $v === '' ? '(leer)' : $v);
+                    $t .= sprintf("  %-16s %s\n", $k, $v === '' ? us_t('TEST.LEER_WERT') : $v);
                 }
             }
-            return array('Konfiguration anzeigen', $t);
+            return array(us_t('TEXT.KONFIGURATION_ANZEIGEN'), $t);
 
         case 'umgebung':
-            $t  = "Python:      " . trim(us_sh('python3 --version')) . "\n";
-            $t .= "System:      " . trim(us_sh('. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME"')) . "\n";
-            $t .= "Modell:      " . trim((string) @file_get_contents('/proc/device-tree/model')) . "\n";
-            $t .= "LoxBerry:    " . ($p['home'] !== '' ? $p['home'] : 'nicht gefunden') . "\n";
-            $t .= "Plugin:      " . $p['plugin'] . "\n";
-            $t .= "Programme:   " . $p['bindir'] . "\n";
-            $t .= "Protokolle:  " . $p['logdir'] . "\n\n";
-            $t .= "Python-Module:\n";
+            $t  = us_tz('TEST.L_PYTHON', trim(us_sh('python3 --version')));
+            $t .= us_tz('TEST.L_SYSTEM', trim(us_sh('. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME"')));
+            $t .= us_tz('TEST.L_MODELL', trim((string) @file_get_contents('/proc/device-tree/model')));
+            $t .= us_tz('TEST.L_LOXBERRY', $p['home'] !== '' ? $p['home'] : us_t('TEST.NICHT_GEFUNDEN'));
+            $t .= us_tz('TEST.L_PLUGIN', $p['plugin']);
+            $t .= us_tz('TEST.L_PROGRAMME', $p['bindir']);
+            $t .= us_tz('TEST.L_PROTOKOLLE', $p['logdir']) . "\n";
+            $t .= us_t('TEST.MODULE') . "\n";
             foreach (array('smbus', 'smbus2', 'gpiozero', 'lgpio', 'paho.mqtt.client') as $m) {
-                $da = trim(us_sh('python3 -c "import ' . $m . '" >/dev/null 2>&1 && echo ja || echo nein'));
-                $t .= sprintf("  %-18s %s\n", $m, $da);
+                $da = trim(us_sh('python3 -c "import ' . $m . '" >/dev/null 2>&1 && echo 1 || echo 0'));
+                $t .= sprintf("  %-18s %s\n", $m, $da === '1' ? $ja : $nein);
             }
-            $t .= "\nHilfsprogramme:\n";
-            // pgrep und pkill standen hier, solange der Dienst darueber gesucht
-            // wurde. Seit 1.1.1 laeuft das ueber die PID-Datei - die beiden
-            // Programme werden nicht mehr gebraucht.
+            $t .= "\n" . us_t('TEST.HILFS') . "\n";
+            // pgrep und pkill werden seit 1.1.1 nicht mehr gebraucht (PID-Datei).
             foreach (array('i2cdetect') as $c) {
-                $t .= sprintf("  %-18s %s\n", $c, trim(us_sh('command -v ' . $c)) ?: 'fehlt');
+                $t .= sprintf("  %-18s %s\n", $c, trim(us_sh('command -v ' . $c)) ?: us_t('TEST.FEHLT'));
             }
-            $t .= "\nGeladene I2C-Module:\n" . (us_sh('lsmod | grep -i i2c') ?: 'keine');
-            return array('Umgebung und Module', $t);
+            $t .= "\n" . us_t('TEST.I2C_MODULE') . "\n" . (us_sh('lsmod | grep -i i2c') ?: us_t('TEST.KEINE'));
+            return array(us_t('TEXT.UMGEBUNG_UND_MODULE'), $t);
 
         case 'mqttinfo':
             $broker = us_mqtt_broker();
-            $t = "Broker: " . ($broker !== '' ? $broker : 'kein MQTT-Gateway in general.json gefunden') . "\n";
-            $t .= "Themenpraefix: " . us_cfg($cfg, 'themenpraefix', 'ultraschall') . "\n";
+            $t = us_tz('TEST.L_BROKER', $broker !== '' ? $broker : us_t('TEST.BROKER_FEHLT'));
+            $t .= us_tz('TEST.L_PRAEFIX', us_cfg($cfg, 'themenpraefix', 'ultraschall'));
             /* Die FASSUNG des Gateways entscheidet, was der Anwender tun muss.
-             * Drei Ausgaenge: ist sie nicht lesbar, werden BEIDE Faelle genannt
-             * statt einer behauptet - einen von beiden zu behaupten waere fuer
-             * die Haelfte der Anlagen falsch. */
+             * Ist sie nicht lesbar, werden BEIDE Faelle genannt. */
             $fassung = us_gateway_fassung();
-            $t .= "Gateway-Fassung: " . ($fassung > 0 ? 'V' . $fassung : 'nicht feststellbar') . "\n\n";
+            $t .= us_tz('TEST.L_GW_FASSUNG', $fassung > 0 ? 'V' . $fassung : us_t('TEST.GW_UNBEKANNT'));
+            $t .= us_tz('TEST.L_MQTT_ZUSTAND', us_test_mqtt_zustand($cfg, us_status(), us_dienst_pid())) . "\n";
             if ($fassung === 1) {
-                $t .= "Fassung 1: das Abo muss von Hand eingetragen werden, unter\n"
-                    . "System -> MQTT Gateway -> Abonnements, Thema <praefix>/#.\n"
-                    . "Ohne diesen Eintrag kommt am Miniserver nichts an.\n\n";
+                $t .= us_t('TEST.GW_V1') . "\n\n";
             } elseif ($fassung >= 2) {
-                $t .= "Fassung 2 und neuer: einzutragen ist nichts. Die Themengruppe\n"
-                    . "erscheint von selbst in den Abonnements; dort werden die\n"
-                    . "gewuenschten Datenpunkte einzeln angehakt.\n\n";
+                $t .= us_t('TEST.GW_V2') . "\n\n";
             } else {
-                $t .= "Welche Fassung das Gateway hat, liess sich nicht feststellen.\n"
-                    . "Deshalb beide Faelle: Fassung 1 verlangt den Abo-Eintrag von\n"
-                    . "Hand, ab Fassung 2 ist nichts einzutragen.\n\n";
+                $t .= us_t('TEST.GW_BEIDE') . "\n\n";
             }
             if ($broker === '') {
-                /* Das Gateway ist KEIN Plugin. Es ist seit LoxBerry 3
-                 * Bestandteil des Systems - hier stand bis 1.1.11 das
-                 * Gegenteil, und der Satz schickte den Anwender in die
-                 * Plugin-Verwaltung, wo er nichts findet. */
-                $t .= "Ohne eingerichtetes MQTT-Gateway kann das Plugin nichts\n"
-                    . "veroeffentlichen. Das Gateway ist KEIN Plugin, sondern seit\n"
-                    . "LoxBerry 3 Bestandteil des Systems - einzurichten unter\n"
-                    . "System -> MQTT Gateway.\n\n";
+                // Das Gateway ist KEIN Plugin (seit LoxBerry 3 Teil des Systems).
+                $t .= us_t('TEST.GW_KEIN_PLUGIN') . "\n\n";
+            }
+            $us_vm = array();
+            $us_vf = us_paths()['praefixe'];
+            if ($us_vf !== '' && is_file($us_vf)) {
+                $us_vm = @json_decode((string) @file_get_contents($us_vf), true);
+            }
+            if (is_array($us_vm) && $us_vm) {
+                // M3: was noch abzuraeumen ist, steht hier.
+                $t .= sprintf(us_t('TEST.VORGEMERKT'),
+                    implode(', ', array_filter($us_vm, 'is_string'))) . "\n\n";
             }
             /* Die Spalte "retained" kommt aus der Feldtabelle
-             * (bin/us_vorgaben.json), aus der auch der Dienst liest. Hier
-             * stand bis 1.2.7 "(alle retained)" und die Behauptung, die
-             * Entfernung stehe nach einem Neustart sofort wieder da - das
-             * war seit 1.2.6 falsch. */
-            $t .= "Themen, die der Dienst setzt:\n\n";
+             * (bin/us_vorgaben.json), aus der auch der Dienst liest. */
+            $t .= us_t('TEST.THEMEN') . "\n\n";
             $praefix = us_cfg($cfg, 'themenpraefix', 'ultraschall');
             foreach (us_status_themen() as $k => $info) {
                 $t .= sprintf("  %-28s %-12s %s\n", $praefix . '/' . $k,
-                    !empty($info[2]) ? 'retained' : 'fluechtig',
+                    !empty($info[2]) ? us_t('TEST.RETAINED') : us_t('TEST.FLUECHTIG'),
                     strip_tags(html_entity_decode($info[0], ENT_QUOTES, 'UTF-8')));
             }
-            $t .= "\nRetained ist nur 'online': 1 beim Verbinden, 0 als Letzter Wille,\n"
-                . "den der Broker selbst setzt, wenn die Verbindung abbricht. Alles\n"
-                . "andere geht fluechtig hinaus - nach einem Neustart des Miniservers\n"
-                . "steht die Entfernung erst mit der naechsten Messung wieder da, dafuer\n"
-                . "nie ein alter Wert, der wie ein frischer aussieht. Die Deinstallation\n"
-                . "raeumt die Themen im Broker ab.\n";
-            return array('MQTT-Gateway', $t);
+            $t .= "\n" . us_t('TEST.RETAIN_TEXT') . "\n";
+            return array(us_t('TEXT.MQTT_GATEWAY'), $t);
 
         case 'udpinfo':
             $ms = us_miniservers();
             $nr = us_cfg($cfg, 'udp_miniserver', '1');
-            $t = "UDP-Versand: " . (us_cfg($cfg, 'udp', '0') === '1' ? 'ein' : 'aus') . "\n";
-            $t .= "Ziel:        Miniserver " . $nr;
+            $t = us_tz('TEST.L_UDP_VERSAND', us_cfg($cfg, 'udp', '0') === '1' ? $ein : $aus);
+            $ziel = sprintf(us_t('TEST.ZIEL_MS'), $nr);
             if (isset($ms[$nr])) {
-                $t .= " (" . $ms[$nr]['name'] . ", " . $ms[$nr]['ip'] . ")";
+                $ziel .= ' (' . $ms[$nr]['name'] . ', ' . $ms[$nr]['ip'] . ')';
             } else {
-                $t .= " - nicht in general.json gefunden";
+                $ziel .= us_t('TEST.ZIEL_FEHLT');
             }
-            $t .= "\nPort:        " . (us_roh($cfg, 'udp_port') !== '' ? us_roh($cfg, 'udp_port') : 'nicht eingetragen') . "\n\n";
-            $t .= "Bekannte Miniserver:\n";
+            $t .= us_tz('TEST.L_ZIEL', $ziel);
+            $t .= us_tz('TEST.L_PORT', us_roh($cfg, 'udp_port') !== '' ? us_roh($cfg, 'udp_port') : us_t('TEST.PORT_FEHLT')) . "\n";
+            $t .= us_t('TEST.BEKANNTE_MS') . "\n";
             foreach ($ms as $k => $m) {
                 $t .= sprintf("  %-3s %-24s %s\n", $k, $m['name'], $m['ip']);
             }
             if (!$ms) {
-                $t .= "  keine\n";
+                $t .= '  ' . us_t('TEST.KEINE') . "\n";
             }
-            $t .= "\nGesendet wird die Entfernung als blanke Zahl in cm, ohne Namen davor -\n"
-                . "so wie es die Originalfassung tat. In Loxone Config braucht man dafuer\n"
-                . "einen virtuellen UDP-Eingang mit Befehlserkennung \\v.\n\n"
-                . "MQTT ist der bessere Weg: dort ueberlebt der Wert einen Neustart des\n"
-                . "Miniservers, und Fuellstand und Liter kommen gleich mit.\n";
-            return array('UDP an den Miniserver', $t);
+            $t .= "\n" . us_t('TEST.UDP_ERKL') . "\n\n" . us_t('TEST.UDP_BESSER') . "\n";
+            return array(us_t('TEXT.UDP_AN_DEN_MINISERVER'), $t);
 
         case 'udptest':
             if (us_cfg($cfg, 'udp', '0') !== '1') {
-                return array('UDP-Testpaket senden',
-                    "Der UDP-Versand ist ausgeschaltet. Zum Ausprobieren im Reiter\n"
-                    . "Einstellungen einschalten, Port eintragen und speichern.");
+                return array(us_t('TEXT.UDP_TESTPAKET_SENDEN'), us_t('TEST.UDP_AUS'));
             }
             $s = us_status();
-            $wert = (is_array($s) && isset($s['entfernung']) && $s['entfernung'] !== null)
-                ? (int) round($s['entfernung']) : 42;
+            $hat = is_array($s) && isset($s['entfernung']) && $s['entfernung'] !== null;
+            $wert = $hat ? (int) round($s['entfernung']) : 42;
             $ms = us_miniservers();
             $nr = us_cfg($cfg, 'udp_miniserver', '1');
             $port = us_roh($cfg, 'udp_port');
             if (!isset($ms[$nr]) || $ms[$nr]['ip'] === '') {
-                return array('UDP-Testpaket senden',
-                    "Miniserver $nr steht nicht in general.json.");
+                return array(us_t('TEXT.UDP_TESTPAKET_SENDEN'), sprintf(us_t('TEST.UDP_MS_FEHLT'), $nr));
             }
             if (preg_match('/^[0-9]{1,5}$/', trim($port)) !== 1) {
-                return array('UDP-Testpaket senden', "Es ist kein gueltiger Port eingetragen.");
+                return array(us_t('TEXT.UDP_TESTPAKET_SENDEN'), us_t('TEST.UDP_PORT_UNG'));
             }
             $sock = @fsockopen('udp://' . $ms[$nr]['ip'], (int) $port, $errno, $errstr, 3);
             if (!$sock) {
-                return array('UDP-Testpaket senden',
-                    "Verbindung nicht moeglich: $errstr ($errno)");
+                return array(us_t('TEXT.UDP_TESTPAKET_SENDEN'), sprintf(us_t('TEST.UDP_KEINE_VERB'), $errstr, $errno));
             }
             @fwrite($sock, (string) $wert);
             @fclose($sock);
-            return array('UDP-Testpaket senden',
-                "Gesendet: $wert\n"
-                . "An:       " . $ms[$nr]['ip'] . ":" . $port . "\n\n"
-                . "UDP bestaetigt nichts. Ob der Miniserver das Paket bekommen hat,\n"
-                . "sieht man nur dort - in Loxone Config unter Monitor / UDP-Monitor.\n"
-                . (is_array($s) && isset($s['entfernung']) && $s['entfernung'] !== null
-                    ? "Gesendet wurde der letzte gemessene Wert.\n"
-                    : "Es gab noch keine Messung, deshalb der Platzhalter 42.\n"));
+            return array(us_t('TEXT.UDP_TESTPAKET_SENDEN'),
+                us_tz('TEST.L_GESENDET', $wert) . us_tz('TEST.L_AN', $ms[$nr]['ip'] . ':' . $port) . "\n"
+                . us_t('TEST.UDP_UNBESTAETIGT') . "\n"
+                . us_t($hat ? 'TEST.UDP_LETZTER' : 'TEST.UDP_PLATZHALTER') . "\n");
 
         case 'restart':
-            $aus = us_dienst('restart');
+            $aus_d = us_dienst('restart');
             $pid = us_dienst_pid();
-            return array('Dienst neu starten',
-                ($pid ? "Der Dienst laeuft wieder (PID $pid)." : "Der Dienst laeuft nicht.\nDie Ursache steht im Protokoll, Reiter Logdateien.")
-                . ($aus !== '' ? "\n\n" . $aus : ''));
+            return array(us_t('TEXT.DIENST_NEU_STARTEN'),
+                ($pid ? sprintf(us_t('TEST.NEU_LAEUFT'), $pid) : us_t('TEST.NEU_LAEUFT_NICHT'))
+                . ($aus_d !== '' ? "\n\n" . $aus_d : ''));
 
         case 'stop':
-            $aus = us_dienst('stop');
+            /* EHRLICH, WAS GESCHAH (Durchgang 02.10.2026, O7). Bis 1.2.10 stand
+             * hier "Der Dienst wurde angehalten." auch dann, wenn keiner lief
+             * oder us_dienst() mangels Wurzel gar nichts tat (gemessen,
+             * Oberflaechen-Pruefer 9). Gefragt wird VORHER, ob einer laeuft. */
+            if ($p['home'] === '') {
+                return array(us_t('TEXT.DIENST_ANHALTEN'), us_t('TEST.STOP_KEINE_WURZEL'));
+            }
+            $vorher = us_dienst_pids();
+            $aus_d = us_dienst('stop');
             $pid = us_dienst_pid();
-            return array('Dienst anhalten',
-                ($pid ? "Der Dienst laeuft noch (PID $pid)." : 'Der Dienst wurde angehalten.')
-                . ($aus !== '' ? "\n\n" . $aus : ''));
+            if (!$vorher) {
+                // Die Zeile "lief nicht" aus us_dienst() sagte dasselbe noch einmal.
+                return array(us_t('TEXT.DIENST_ANHALTEN'), us_t('TEST.STOP_LIEF_NICHT'));
+            } elseif ($pid) {
+                $text = sprintf(us_t('TEST.STOP_NOCH'), $pid);
+            } else {
+                $text = us_t('TEST.STOP_OK');
+            }
+            return array(us_t('TEXT.DIENST_ANHALTEN'), $text . ($aus_d !== '' ? "\n\n" . $aus_d : ''));
     }
 
-    return array('Unbekannt', 'Diese Aktion gibt es nicht: ' . $was);
+    return array(us_t('TEST.UNBEKANNT_T'), sprintf(us_t('TEST.UNBEKANNT'), $was));
+}
+
+/** Der MQTT-Zustand des Dienstes in einem Satz (M2) - aus der Zustandsdatei. */
+function us_test_mqtt_zustand($cfg, $s, $pid)
+{
+    if (us_cfg($cfg, 'mqtt', '1') !== '1') {
+        return us_t('TEST.MQTT_Z_AUS');
+    }
+    if ($pid <= 0 || !is_array($s) || !isset($s['mqtt'])) {
+        return us_t('TEST.MQTT_Z_UNBEKANNT');
+    }
+    if ($s['mqtt'] === 'verbunden') {
+        return us_t('TEST.MQTT_Z_VERBUNDEN');
+    }
+    if ($s['mqtt'] === 'abgewiesen') {
+        return sprintf(us_t('TEST.MQTT_Z_ABGEWIESEN'),
+                       isset($s['mqtt_grund']) ? (string) $s['mqtt_grund'] : '');
+    }
+    return us_t('TEST.MQTT_Z_NICHT');
 }

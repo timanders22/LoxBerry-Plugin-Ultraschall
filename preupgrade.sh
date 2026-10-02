@@ -291,14 +291,41 @@ NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 # ist der einzige Rettungsweg, der purge_installation ueberlebt; ihr
 # Vorhandensein gehoert gemessen, nicht behauptet.
 NETZ_ZWEIT="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.ultraschall.cfg"
+# ERST DIE ALTE ZWEITSCHRIFT WEG, DANN DIE NEUE (Durchgang 02.10.2026, I2,
+# Entscheidung 1, letzter Satz).
+#
+# Bis 1.2.10 blieb eine Zweitschrift aus einem FRUEHEREN Vorgang liegen, wenn
+# hier keine neue entstand ("nichts zu sichern", Kopie misslungen) - und
+# postinstall.sh spielte sie ein: altes Token, enabled=1, Dienst gestartet
+# (gemessen, Installer-Pruefer N3). Jetzt wandert sie zuerst nach .alt (nie
+# eingespielt, die Deinstallation raeumt es ab). Entsteht die neue, ist die
+# alte nicht mehr noetig und wird geloescht; sonst bleibt sie als .alt
+# daneben, und die Meldung nennt den Pfad.
+US_ALT_DA=0
+if [ -e "$NETZ_ZWEIT" ] || [ -L "$NETZ_ZWEIT" ]; then
+    rm -rf "${NETZ_ZWEIT:?}.alt" 2>/dev/null
+    if mv -f "$NETZ_ZWEIT" "$NETZ_ZWEIT.alt" 2>/dev/null; then
+        chmod 600 "$NETZ_ZWEIT.alt" 2>/dev/null
+        US_ALT_DA=1
+    else
+        rm -f "$NETZ_ZWEIT" 2>/dev/null
+        if [ -e "$NETZ_ZWEIT" ]; then
+            echo "<WARNING> Die alte Zweitschrift $NETZ_ZWEIT liess sich nicht wegraeumen."
+        fi
+    fi
+fi
 if [ ! -s "$NETZ_CFG/ultraschall.cfg" ]; then
     echo "<INFO> Keine Einstellungen vorhanden - keine Zweitschrift noetig."
+    [ "$US_ALT_DA" = "1" ] && echo "<INFO> Die Zweitschrift aus einem frueheren Vorgang wird nicht eingespielt; sie liegt als $NETZ_ZWEIT.alt daneben."
 elif cp -p "$NETZ_CFG/ultraschall.cfg" "$NETZ_ZWEIT" 2>/dev/null \
      && [ -s "$NETZ_ZWEIT" ]; then
     chmod 0600 "$NETZ_ZWEIT" 2>/dev/null
+    [ "$US_ALT_DA" = "1" ] && rm -f "$NETZ_ZWEIT.alt" 2>/dev/null
     echo "<INFO> Zweitschrift der Einstellungen angelegt."
 else
+    rm -f "$NETZ_ZWEIT" 2>/dev/null
     echo "<WARNING> Die Zweitschrift der Einstellungen liess sich nicht anlegen."
+    [ "$US_ALT_DA" = "1" ] && echo "<WARNING> Die Zweitschrift aus einem frueheren Vorgang wird nicht eingespielt; sie liegt als $NETZ_ZWEIT.alt daneben."
 fi
 
 exit 0

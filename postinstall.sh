@@ -280,7 +280,29 @@ netz_zurueck() {
         fi
     fi
 }
-netz_zurueck "ultraschall.cfg"
+# NUR MIT UPGRADE-MARKE (Durchgang 02.10.2026, Bauart F, Entscheidung 1).
+#
+# Bis 1.2.10 prueft netz_zurueck nur "fehlt / leer / gleich der Vorgabe" -
+# und bei einer Neuinstallation ist die Datei IMMER gleich der Vorgabe. Eine
+# liegengebliebene Zweitschrift holte so alte Einstellungen, das alte
+# Aktionstoken und enabled=1 zurueck, und der Dienst startete (gemessen,
+# Installer-Pruefer N1). Zurueckgespielt wird jetzt nur, wenn preupgrade.sh
+# die Marke angelegt hat - kein Altersvergleich (Nr. 1, Frage 17). Ohne Marke
+# legt preinstall.sh die Zweitschrift beiseite; ist sie trotzdem da (aeltere
+# LoxBerry-Fassung ohne preinstall-Haken), geschieht es hier.
+NETZ_MARKE="$NETZ_BASE/data/plugins/$NETZ_PDIR.upgrade_laeuft"
+NETZ_ZWEIT="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.ultraschall.cfg"
+if [ -f "$NETZ_MARKE" ]; then
+    netz_zurueck "ultraschall.cfg"
+elif [ -e "$NETZ_ZWEIT" ] || [ -L "$NETZ_ZWEIT" ]; then
+    rm -rf "${NETZ_ZWEIT:?}.alt" 2>/dev/null
+    if mv -f "$NETZ_ZWEIT" "$NETZ_ZWEIT.alt" 2>/dev/null; then
+        chmod 600 "$NETZ_ZWEIT.alt" 2>/dev/null
+        echo "<WARNING> Neuinstallation: Einstellungen einer frueheren Installation werden NICHT eingespielt. Beiseitegelegt: $NETZ_ZWEIT.alt (die Deinstallation raeumt sie ab)."
+    else
+        echo "<WARNING> Neuinstallation: die Zweitschrift $NETZ_ZWEIT einer frueheren Installation liess sich nicht beiseitelegen - sie wird NICHT eingespielt; bitte von Hand entfernen."
+    fi
+fi
 
 # DIE KONFIGURATION TRAEGT DAS AKTIONSTOKEN - ALSO 0600 (seit 1.2.6).
 #
@@ -356,8 +378,25 @@ us_dienste() {
     done
 }
 
+# EINE STARTSPERRE FUER ALLE STARTWEGE (Durchgang 02.10.2026, I3).
+#
+# Waechter, daemon, dieses Skript und der Knopf der Oberflaeche sperren auf
+# dieselbe Datei (flock auf ultraschall.py, Deskriptor 9) und fragen erst
+# DANACH, ob schon einer laeuft. Gemessen bis 1.2.10: zwei gleichzeitige
+# Startwege ergaben in 10 von 10 Runden zwei Dienste (Installer-Pruefer
+# D1/D2). Der Dienst erbt die Sperre NICHT (9<&- beim Start). Ohne flock
+# (kein util-linux) bleibt es beim Verhalten bis 1.2.10; der Dienst sperrt
+# ausserdem selbst (dienst.lock).
+US_GESPERRT=1
+if command -v flock >/dev/null 2>&1 && [ -r "$US_SKRIPT" ]; then
+    exec 9<"$US_SKRIPT"
+    flock -w 15 9 || US_GESPERRT=0
+fi
 US_LAEUFT=$(us_dienste)
-if [ -n "$US_LAEUFT" ]; then
+if [ "$US_GESPERRT" = "0" ]; then
+    echo "<INFO> Ein anderer Startweg haelt gerade die Startsperre - der Waechter"
+    echo "<INFO> (cron.05min) startet den Messdienst nach, falls noetig."
+elif [ -n "$US_LAEUFT" ]; then
     # KEIN ZWEITER DIENST (seit 1.2.8). Bis 1.2.7 startete dieses Skript
     # ohne zu fragen - lief schon einer (erneutes Einspielen, ein Dienst,
     # den preupgrade.sh nicht fand), liefen danach zwei am selben Sensor
@@ -396,7 +435,8 @@ elif [ -r "$US_CFG" ] \
     #
     # ">" statt ">>": die Datei faengt auf, was VOR dem Protokoll passiert,
     # und wird bei jedem Start geleert, statt zu wachsen.
-    nohup "$US_SKRIPT" > "$PLOG/ultraschall_start.log" 2>&1 &
+    # 9<&-: der Dienst erbt die Startsperre nicht (I3).
+    nohup "$US_SKRIPT" > "$PLOG/ultraschall_start.log" 2>&1 9<&- &
     sleep 2
     # Die Wirkung pruefen, nicht den Rueckgabewert des Starts.
     if [ -n "$(us_dienste)" ]; then

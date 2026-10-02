@@ -60,6 +60,63 @@ if ($us_p['home']) {
 $us_saved = false;
 $us_error = '';
 $us_hinweis = '';
+$us_warnung = '';
+
+/* ============ PRG: jeder POST endet mit 303 (Durchgang 02.10.2026, O1) ============
+ *
+ * Bis 1.2.10 wurde nach jedem POST die Seite gerendert. F5 ("Formular
+ * erneut senden") speicherte noch einmal, startete den Dienst noch einmal
+ * neu, hielt ihn noch einmal an und meldete nach "Neues Token" einen
+ * fremden Absender (gemessen, Oberflaechen-Pruefer 1). Jetzt reist das
+ * Ergebnis als Einmalmeldung (us_flash_* in us_lib.php), und der Browser
+ * holt die Seite mit GET. Downloads (Vorlage, Sicherung) liefern weiter
+ * unmittelbar ihre Datei. */
+function us_prg($tab, $daten)
+{
+    $daten['tab'] = $tab;
+    us_flash_schreiben($daten);
+    header('Location: index.php?tab=' . rawurlencode(substr((string) $tab, 4)), true, 303);
+    exit;
+}
+
+/* ============ X-2: die eingetippten Werte kommen zurueck (O4) ============
+ *
+ * Nach einer Beanstandung zeigte das Formular bis 1.2.10 den gespeicherten
+ * oder zurechtgebogenen Wert - die Eingabe war weg, und welches Feld
+ * beanstandet war, war nicht zu erkennen (gemessen, Oberflaechen-Pruefer 4).
+ * Mit der Einmalmeldung reisen die Eingaben des EINEN beanstandeten
+ * Formulars; der GET fuellt die Felder daraus und markiert die falschen
+ * (Regeln/04, "Nach einer Beanstandung"). Nie das Aktionstoken. */
+$us_eing = array('formular' => '', 'werte' => array(), 'falsch' => array());
+
+function us_eingabe($feld, $gespeichert)
+{
+    $e = $GLOBALS['us_eing'];
+    return (isset($e['werte'][$feld]) && is_string($e['werte'][$feld]))
+        ? $e['werte'][$feld] : (string) $gespeichert;
+}
+
+function us_haken_an($feld, $an)
+{
+    $e = $GLOBALS['us_eing'];
+    if (isset($e['werte'][$feld]) && is_string($e['werte'][$feld])) {
+        $an = ($e['werte'][$feld] === '1');
+    }
+    return $an ? ' checked' : '';
+}
+
+function us_mark($feld)
+{
+    return in_array((string) $feld, $GLOBALS['us_eing']['falsch'], true)
+        ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
+
+/** Zahl in der Schreibweise der Sprache (O10) - "55,5" bzw. "55.5". */
+function us_zahl($w, $tausend = false)
+{
+    $de = (us_sprache() === 'de');
+    return number_format((float) $w, 1, $de ? ',' : '.', $tausend ? ($de ? '.' : ',') : '');
+}
 
 /* Die Konfiguration wird beim Aufruf der OBERFLAECHE vervollstaendigt - und
  * nur hier. Der Endpunkt im unangemeldeten Bereich ruft us_config_read(false)
@@ -119,8 +176,10 @@ if ($us_ist_post) {
         }
         $us_ist_post = false;
         // Ein Formular, das wortlos nichts tut, schickt den Anwender auf die
-        // Suche nach einem Fehler, den es nicht gibt.
-        $us_error = us_t('FEHLER.FORMULAR_FREMD');
+        // Suche nach einem Fehler, den es nicht gibt. Seit dem Durchgang
+        // 02.10.2026 auch hier 303 (O1); der Reiter bleibt Einstellungen -
+        // ein fremdes Formular schaltet nicht einmal den Reiter um.
+        us_prg('tab-settings', array('fehler' => us_t('FEHLER.FORMULAR_FREMD')));
     }
 }
 
@@ -147,6 +206,39 @@ $us_wunsch = (isset($_POST['activetab']) && is_string($_POST['activetab']))
 $us_reiter_liste = array('tab-settings', 'tab-mqtt', 'tab-loxone', 'tab-test', 'tab-log');
 $us_tab = in_array($us_wunsch, $us_reiter_liste, true) ? $us_wunsch : $us_reiter_liste[0];
 
+/* Die Einmalmeldung wird NUR beim GET gelesen und dabei geloescht (O1). */
+if (!$us_ist_post && isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+    $us_flash = us_flash_lesen();
+    if (is_array($us_flash)) {
+        $us_saved = !empty($us_flash['gespeichert']);
+        foreach (array('fehler' => 'us_error', 'hinweis' => 'us_hinweis', 'warnung' => 'us_warnung',
+                       'test_titel' => 'us_test_titel_f', 'test_text' => 'us_test_text_f') as $us_k => $us_v) {
+            $$us_v = (isset($us_flash[$us_k]) && is_string($us_flash[$us_k])) ? $us_flash[$us_k] : '';
+        }
+        if (isset($us_flash['eingaben']) && is_array($us_flash['eingaben'])) {
+            $us_e_f = isset($us_flash['eingaben']['formular']) && is_string($us_flash['eingaben']['formular'])
+                ? $us_flash['eingaben']['formular'] : '';
+            $us_e_satz = us_formularfelder($us_e_f);
+            if ($us_e_satz !== null) {
+                $us_e_erlaubt = array_merge($us_e_satz['haken'], $us_e_satz['werte']);
+                $us_eing['formular'] = $us_e_f;
+                foreach ((isset($us_flash['eingaben']['werte']) && is_array($us_flash['eingaben']['werte']))
+                         ? $us_flash['eingaben']['werte'] : array() as $us_k => $us_v) {
+                    if (is_string($us_k) && in_array($us_k, $us_e_erlaubt, true) && is_string($us_v)) {
+                        $us_eing['werte'][$us_k] = $us_v;
+                    }
+                }
+                foreach ((isset($us_flash['eingaben']['falsch']) && is_array($us_flash['eingaben']['falsch']))
+                         ? $us_flash['eingaben']['falsch'] : array() as $us_v) {
+                    if (is_string($us_v)) {
+                        $us_eing['falsch'][] = $us_v;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /* ============ Loxone-Vorlage herunterladen ============ */
 if ($us_ist_post && isset($_POST['download']) && is_string($_POST['download'])) {
     $art = (string) $_POST['download'];
@@ -155,11 +247,9 @@ if ($us_ist_post && isset($_POST['download']) && is_string($_POST['download'])) 
      * die niemand gestellt hat. Was nicht ins Muster passt, wird abgewiesen
      * und gemeldet, nicht zurechtgebogen. */
     if (!in_array($art, array('mqtt_in', 'udp_in'), true)) {
-        $us_error = us_t('FEHLER.VORLAGE_UNBEKANNT');
-        $us_tab = 'tab-loxone';
+        us_prg('tab-loxone', array('fehler' => us_t('FEHLER.VORLAGE_UNBEKANNT')));
     } elseif ($art === 'udp_in' && trim(us_roh($us_cfg, 'udp_port')) === '') {
-        $us_error = us_t('FEHLER.UDP_VORLAGE_PORT');
-        $us_tab = 'tab-loxone';
+        us_prg('tab-loxone', array('fehler' => us_t('FEHLER.UDP_VORLAGE_PORT')));
     } else {
         list($name, $inhalt) = us_vorlage($us_cfg, $art);
         header('Content-Type: application/x-download');
@@ -174,60 +264,51 @@ if ($us_ist_post && isset($_POST['download']) && is_string($_POST['download'])) 
 }
 
 /* ============ Test-Aktionen ============ */
-$us_test_titel = '';
-$us_test_text = '';
+$us_test_titel = isset($us_test_titel_f) ? $us_test_titel_f : '';
+$us_test_text = isset($us_test_text_f) ? $us_test_text_f : '';
 if ($us_ist_post && isset($_POST['test'])) {
     require_once __DIR__ . '/us_test.php';
-    list($us_test_titel, $us_test_text) = us_test_ausfuehren((string) $_POST['test']);
-    $us_tab = 'tab-test';
+    list($us_t1, $us_t2) = us_test_ausfuehren(is_string($_POST['test']) ? $_POST['test'] : '');
+    us_prg('tab-test', array('test_titel' => $us_t1, 'test_text' => $us_t2));
 }
 
 /* ============ Kalibrierpunkt uebernehmen ============ */
 if ($us_ist_post && isset($_POST['kalibrieren'])) {
     require_once __DIR__ . '/us_test.php';
     $mess = us_einmal_messen();
+    $us_fl = array();
     if (!isset($mess['entfernung']) || $mess['entfernung'] === null) {
-        $us_error = us_t('FEHLER.MESSUNG_UNBRAUCHBAR')
+        $us_fl['fehler'] = us_t('FEHLER.MESSUNG_UNBRAUCHBAR')
             . (!empty($mess['fehler']) ? ': ' . us_e($mess['fehler']) : '.');
     } else {
         $feld = $_POST['kalibrieren'] === 'voll' ? 'voll_cm' : 'leer_cm';
-        /* DURCH DIESELBE PRUEFUNG WIE DAS FORMULAR (seit 1.2.2).
-         *
-         * Bis 1.2.1 wurde der Messwert roh in die Konfiguration geschrieben.
-         * us_pruefen() ist aber ausdruecklich "EINE Stelle fuer BEIDE Wege" -
-         * und der Zusammenhang leer_cm > voll_cm faellt genau hier an: wer
-         * die beiden Knoepfe vertauscht drueckt, bekommt sonst einen
-         * Fuellstand, der rueckwaerts laeuft. */
+        /* DURCH DIESELBE PRUEFUNG WIE DAS FORMULAR (seit 1.2.2) - und
+         * GESPEICHERT WIRD NUR EIN GUELTIGES ERGEBNIS (Durchgang 02.10.2026,
+         * O2). Bis 1.2.10 wurde der Messwert trotz Beanstandung geschrieben:
+         * "Gespeichert. Gemessen: 10 cm" stand neben "leer muss groesser
+         * sein als voll", und der Fuellstand fiel aus (gemessen,
+         * Oberflaechen-Pruefer 5). */
         $us_roh_kal = $us_cfg;
         $us_roh_kal[$feld] = (string) $mess['entfernung'];
         list($us_neu_kal, $us_maengel_kal) = us_pruefen($us_roh_kal);
         if ($us_maengel_kal) {
-            $us_error = implode(' ', $us_maengel_kal);
-        }
-        if (us_config_write($us_neu_kal)) {
-            $us_hinweis = sprintf(us_t('MELD.GEMESSEN'), us_e($mess['entfernung']),
+            $us_fl['fehler'] = sprintf(us_t('FEHLER.KALIBRIER_NICHT'), us_e($mess['entfernung']),
+                $feld === 'voll_cm' ? us_t('TEXT.VOLL_Q') : us_t('TEXT.LEER_Q'))
+                . ' ' . implode(' ', $us_maengel_kal);
+        } elseif (us_config_write($us_neu_kal)) {
+            $us_fl['gespeichert'] = 1;
+            $us_fl['hinweis'] = sprintf(us_t('MELD.GEMESSEN'), us_e($mess['entfernung']),
                 $feld === 'voll_cm' ? us_t('TEXT.VOLL_Q') : us_t('TEXT.LEER_Q'));
-            /* UND WOHER DER WERT KAM.
-             *
-             * us_einmal_messen() misst nur, wenn der Dienst NICHT laeuft;
-             * sonst gibt es den letzten Stand aus der Zustandsdatei zurueck
-             * - bei einem Takt von 300 s also einen bis zu fuenf Minuten
-             * alten Wert. Der Reiter Test legt das offen, dieser Weg tat es
-             * bis 1.2.1 nicht: gemeldet wurde "Gemessen: X cm", waehrend
-             * der Behaelter womoeglich seither gefuellt worden war. Wer
-             * einen Kalibrierpunkt setzt, muss wissen, worauf er ihn
-             * setzt. */
+            /* UND WOHER DER WERT KAM: laeuft der Dienst, ist es der letzte
+             * Stand aus der Zustandsdatei, nicht eine neue Messung. */
             if (isset($mess['alter']) && (int) $mess['alter'] > 0) {
-                $us_hinweis .= ' ' . sprintf(us_t('MELD.GEMESSEN_ALT'),
-                                             (int) $mess['alter']);
+                $us_fl['hinweis'] .= ' ' . sprintf(us_t('MELD.GEMESSEN_ALT'), (int) $mess['alter']);
             }
-            $us_saved = true;
-            list($us_cfg, $us_altformat, $us_lage) = us_config_read();
         } else {
-            $us_error = sprintf(us_t('FEHLER.CONFIG_SCHREIBEN'), us_e($us_p['config']));
+            $us_fl['fehler'] = sprintf(us_t('FEHLER.CONFIG_SCHREIBEN'), us_e($us_p['config']));
         }
     }
-    $us_tab = 'tab-settings';
+    us_prg('tab-settings', $us_fl);
 }
 
 
@@ -265,66 +346,65 @@ if ($us_ist_post && isset($_POST['save'])) {
         ? $_POST['formular'] : '';
     $us_feldsatz = us_formularfelder($us_form);
     if ($us_feldsatz === null) {
-        $us_error = us_t('FEHLER.FORMULAR_UNBEKANNT');
-    } else {
-        // Grundlage ist der GESPEICHERTE Stand; darueber kommen ausschliesslich
-        // die Felder DIESES Formulars.
-        $us_roh = $us_cfg;
-        /* Der bisherige Wert des Themenpraefix reist mit (seit 1.2.2).
-         * us_pruefen() beginnt bei den Vorgaben; ohne diese Angabe fiele
-         * ein geleertes Feld auf 'ultraschall' zurueck statt auf das,
-         * was eingestellt war. Der Schluessel steht bewusst NICHT in den
-         * Vorgaben - er ist eine Angabe an die Pruefung, kein
-         * Konfigurationswert, und us_config_write() schreibt nur, was in
-         * den Vorgaben steht. */
-        $us_roh['themenpraefix_bisher'] = us_roh($us_cfg, 'themenpraefix');
-        foreach ($us_feldsatz['haken'] as $us_h) {
-            $us_roh[$us_h] = isset($_POST[$us_h]) ? '1' : '0';
-        }
-        foreach ($us_feldsatz['werte'] as $us_w) {
-            if (isset($_POST[$us_w]) && !is_array($_POST[$us_w])) {
-                $us_roh[$us_w] = (string) $_POST[$us_w];
-            }
-        }
-        list($us_neuwerte, $us_maengel) = us_pruefen($us_roh);
-
-        /* Beanstandungen melden, nicht das ganze Speichern verhindern. */
-        if ($us_maengel) {
-            $us_error = implode(' ', $us_maengel);
-        }
-        if (us_config_write($us_neuwerte)) {
-            $us_saved = true;
-            us_dienst('restart');
-            $us_hinweis = us_dienst_pid()
-                ? us_t('MELD.DIENST_NEUSTART')
-                : us_t('MELD.DIENST_LAEUFT_NICHT');
-            /* $us_lage wird MITGENOMMEN (seit 1.2.2). Bis 1.2.1 stand hier
-             * "list($us_cfg, $us_altformat) = ..." - die Zeile
-             * "Ist die Konfiguration vollstaendig?" im Reiter Test urteilte
-             * danach ueber den Stand VOR dem Speichern. */
-            list($us_cfg, $us_altformat, $us_lage) = us_config_read();
-        } else {
-            $us_error = sprintf(us_t('FEHLER.CONFIG_SCHREIBEN'), us_e($us_p['config']));
+        us_prg('tab-settings', array('fehler' => us_t('FEHLER.FORMULAR_UNBEKANNT')));
+    }
+    $us_tabziel = ($us_form === 'mqtt') ? 'tab-mqtt' : 'tab-settings';
+    // Grundlage ist der GESPEICHERTE Stand; darueber kommen ausschliesslich
+    // die Felder DIESES Formulars.
+    $us_roh = $us_cfg;
+    $us_eingaben = array();
+    foreach ($us_feldsatz['haken'] as $us_h) {
+        $us_roh[$us_h] = isset($_POST[$us_h]) ? '1' : '0';
+        $us_eingaben[$us_h] = $us_roh[$us_h];
+    }
+    foreach ($us_feldsatz['werte'] as $us_w) {
+        if (isset($_POST[$us_w]) && is_string($_POST[$us_w])) {
+            $us_roh[$us_w] = $_POST[$us_w];
+            $us_eingaben[$us_w] = $_POST[$us_w];
         }
     }
-    $us_tab = ($us_form === 'mqtt') ? 'tab-mqtt' : 'tab-settings';
+    list($us_neuwerte, $us_maengel, $us_falsch) = us_pruefen($us_roh);
+
+    /* BEI EINER BEANSTANDUNG WIRD NICHTS GESPEICHERT (Durchgang 02.10.2026,
+     * O2, Entscheidung Nr. 16) - auch nicht die uebrigen, richtigen Felder.
+     * Bis 1.2.10 stand hier "Beanstandungen melden, nicht das ganze Speichern
+     * verhindern": "messungen=30, intervall=90" speicherte das Intervall,
+     * setzte messungen auf den WERKSWERT und meldete oben "Gespeichert"
+     * (gemessen, Oberflaechen-Pruefer 2). Die eingetippten Werte reisen
+     * zurueck und das falsche Feld ist markiert (X-2). */
+    if ($us_maengel) {
+        us_prg($us_tabziel, array(
+            'fehler'   => us_t('FEHLER.NICHTS_GESPEICHERT') . ' ' . implode(' ', $us_maengel),
+            'eingaben' => array('formular' => $us_form, 'werte' => $us_eingaben,
+                                'falsch' => $us_falsch)));
+    }
+    $us_praefix_alt = us_roh($us_cfg, 'themenpraefix');
+    if (!us_config_write($us_neuwerte)) {
+        us_prg($us_tabziel, array('fehler' => sprintf(us_t('FEHLER.CONFIG_SCHREIBEN'), us_e($us_p['config']))));
+    }
+    /* Ein frueheres Praefix wird vorgemerkt (M3): laeuft der Dienst nicht
+     * oder ist MQTT aus, raeumt er es ab, sobald er verbunden ist; die
+     * Deinstallation leert es spaetestens. */
+    if ($us_praefix_alt !== '' && $us_praefix_alt !== $us_neuwerte['themenpraefix']) {
+        us_praefix_vormerken($us_praefix_alt);
+    }
+    us_dienst('restart');
+    us_prg($us_tabziel, array('gespeichert' => 1,
+        'hinweis' => us_dienst_pid() ? us_t('MELD.DIENST_NEUSTART') : us_t('MELD.DIENST_LAEUFT_NICHT')));
 }
 
 /* ============ Neues Aktionstoken ============
  *
  * Oranger Knopf mit Rueckfrage: er liest nicht, er macht JEDE Adresse
  * ungueltig, die im Miniserver steht. Der Warnhinweis steht DANEBEN, nicht
- * erst in der Antwort nach dem Klick. */
+ * erst in der Antwort nach dem Klick. Seit dem Durchgang 02.10.2026 mit 303:
+ * F5 wuerfelt nicht noch einmal und meldet keinen fremden Absender. */
 if ($us_ist_post && isset($_POST['token_neu'])) {
     $us_cfg['aktionstoken'] = us_token_neu();
     if (us_config_write($us_cfg)) {
-        $us_saved = true;
-        $us_hinweis = us_t('TEXT.TOKEN_NEU_OK');
-        list($us_cfg, $us_altformat, $us_lage) = us_config_read();
-    } else {
-        $us_error = sprintf(us_t('FEHLER.CONFIG_SCHREIBEN'), us_e($us_p['config']));
+        us_prg('tab-loxone', array('gespeichert' => 1, 'hinweis' => us_t('TEXT.TOKEN_NEU_OK')));
     }
-    $us_tab = 'tab-loxone';
+    us_prg('tab-loxone', array('fehler' => sprintf(us_t('FEHLER.CONFIG_SCHREIBEN'), us_e($us_p['config']))));
 }
 
 $us_praefix = us_cfg($us_cfg, 'themenpraefix', 'ultraschall');
@@ -381,7 +461,17 @@ $us_hat_kalibrierung = trim(us_roh($us_cfg, 'leer_cm')) !== '' && trim(us_roh($u
  * Felder stuenden richtig, und jede Adresse im Miniserver antwortete mit
  * 403. Wer den Kommentar befolgt haette, haette den Warntext entfernt. */
 if ($us_ist_post && isset($_POST['us_sichern'])) {
-    $us_js = json_encode($us_cfg,
+    /* LESBARER KOPF UND WARNUNG (Durchgang 02.10.2026, O5). Bis 1.2.10 hatte
+     * die Sicherung keinen _-Kopf (CLAUDE.md 9), und ein gespeicherter
+     * Zustand, den das Zurueckspielen abweist (UDP an ohne Port), wurde
+     * wortlos gesichert - gemerkt haette man es erst im Ernstfall (gemessen,
+     * Oberflaechen-Pruefer 6). _warnung nennt nur die NAMEN der Felder. */
+    $us_kopf = array('_hinweis' => us_t('TEXT.SICH_KOPF'), '_stand' => date('Y-m-d H:i:s'));
+    list(, $us_m_s, $us_f_s) = us_pruefen($us_cfg);
+    if ($us_m_s) {
+        $us_kopf['_warnung'] = sprintf(us_t('TEXT.SICH_KOPF_WARNUNG'), implode(', ', $us_f_s));
+    }
+    $us_js = json_encode($us_kopf + $us_cfg,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($us_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
@@ -390,7 +480,7 @@ if ($us_ist_post && isset($_POST['us_sichern'])) {
         echo $us_js;
         exit;
     }
-    $us_error = us_t('TEXT.SICH_SCHREIBFEHLER');
+    us_prg('tab-settings', array('fehler' => us_t('TEXT.SICH_SCHREIBFEHLER')));
 }
 
 /* ---------------- Einstellungen zurueckspielen ----------------
@@ -402,54 +492,49 @@ if ($us_ist_post && isset($_POST['us_zurueck'])) {
     // VOR dem Schreiben feststellen, ob der Dienst lief - danach ist es
     // nicht mehr zu unterscheiden.
     $us_lief_vorher = us_dienst_pid() > 0;
+    $us_fl = array();
     if (!isset($_FILES['us_sicherung']) || !is_array($_FILES['us_sicherung'])
         || !isset($_FILES['us_sicherung']['tmp_name'])
         || !@is_uploaded_file($_FILES['us_sicherung']['tmp_name'])) {
-        $us_error = us_t('TEXT.SICH_KEINE_DATEI');
+        $us_fl['fehler'] = us_t('TEXT.SICH_KEINE_DATEI');
     } elseif ((int) $_FILES['us_sicherung']['size'] > 262144) {
-        $us_error = us_t('TEXT.SICH_ZU_GROSS');
+        $us_fl['fehler'] = us_t('TEXT.SICH_ZU_GROSS');
     } else {
         // Der bestehende Stand wird MITGEGEBEN: eine Sicherung aus 1.1.x
-        // kennt das Aktionstoken nicht, und ein fehlender Schluessel darf
-        // keines loeschen. Einzelheiten in us_sicherung_lesen().
-        list($us_neu, $us_mangel, $us_n) = us_sicherung_lesen(
+        // kennt das Aktionstoken nicht, und ein fehlendes oder leeres darf
+        // keines loeschen (O6). Einzelheiten in us_sicherung_lesen().
+        list($us_neu, $us_mangel, $us_n, $us_sich_hinw) = us_sicherung_lesen(
             (string) @file_get_contents($_FILES['us_sicherung']['tmp_name']),
             $us_cfg);
         if ($us_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
              * nichts. */
-            $us_error = us_t('TEXT.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $us_mangel);
+            $us_fl['fehler'] = us_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $us_mangel);
         } elseif (us_config_write($us_neu)) {
-            $us_saved = true;
-            list($us_cfg, $us_altformat, $us_lage) = us_config_read();
+            $us_praefix_alt = us_roh($us_cfg, 'themenpraefix');
+            if ($us_praefix_alt !== '' && $us_praefix_alt !== $us_neu['themenpraefix']) {
+                us_praefix_vormerken($us_praefix_alt);
+            }
+            $us_fl['gespeichert'] = 1;
             /* Punkt 7 der Hausregel: den Dienst nachziehen UND sagen, was mit
-             * ihm geschehen ist.
-             *
-             * Der Dauerlaeufer liest die Konfiguration zwar im Betrieb neu
-             * ein, uebernimmt dabei aber weder das Themenpraefix noch den
-             * MQTT-Zustand - beide setzt er nur beim Start. Gemessen mit
-             * Attrappe: Praefix in der Datei auf einen anderen Wert geaendert,
-             * Dienst liest neu ein, misst weiter - und veroeffentlicht ueber
-             * den ganzen Lauf ausschliesslich unter dem ALTEN. Ohne diesen
-             * Neustart traegt eine zurueckgespielte Sicherung ihr Praefix
-             * nicht, und in Loxone kommt nichts mehr an.
-             *
-             * Ein bewusst angehaltener Dienst bleibt angehalten: ein Plugin,
-             * das gegen den Willen des Anwenders startet, ist schlimmer als
-             * eines, das stehen bleibt. */
-            $us_hinweis = sprintf(us_t('TEXT.SICH_UEBERNOMMEN'), $us_n) . ' ';
+             * ihm geschehen ist. Ein bewusst angehaltener Dienst bleibt
+             * angehalten. */
+            $us_fl['hinweis'] = sprintf(us_t('TEXT.SICH_UEBERNOMMEN'), $us_n) . ' ';
             if ($us_lief_vorher) {
                 us_dienst('restart');
-                $us_hinweis .= us_t(us_dienst_pid()
+                $us_fl['hinweis'] .= us_t(us_dienst_pid()
                     ? 'TEXT.SICH_DIENST_NEU' : 'TEXT.SICH_DIENST_FEHL');
             } else {
-                $us_hinweis .= us_t('TEXT.SICH_DIENST_AUS');
+                $us_fl['hinweis'] .= us_t('TEXT.SICH_DIENST_AUS');
+            }
+            if ($us_sich_hinw) {
+                $us_fl['warnung'] = implode(' ', $us_sich_hinw);
             }
         } else {
-            $us_error = us_t('TEXT.SICH_SCHREIBFEHLER');
+            $us_fl['fehler'] = us_t('TEXT.SICH_SCHREIBFEHLER');
         }
     }
+    us_prg('tab-settings', $us_fl);
 }
 
 // WICHTIG: LBWeb::lbheader() setzt SDK-Globale - deshalb ueberall us_-Praefix.
@@ -543,6 +628,8 @@ if ($us_frame) {
     background-repeat: no-repeat; background-position: right 10px center;
     padding-right: 32px; cursor: pointer; }
 .sm-tbl select { padding-right: 28px; background-position: right 7px center; }
+/* X-2: das beanstandete Feld (Durchgang 02.10.2026, O4; Wortlaut Raumklima 0.11.13). */
+.sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 
 </style>
 <div class="sm-wrap">
@@ -551,6 +638,7 @@ if ($us_frame) {
 <div class="sm-alert sm-ok"><b><?php echo us_t('TEXT.GESPEICHERT'); ?></b> <?= $us_hinweis ?></div>
 <?php } ?>
 <?php if ($us_error !== '') { ?><div class="sm-alert sm-err"><b><?php echo us_t('TEXT.HINWEIS'); ?></b> <?= $us_error ?></div><?php } ?>
+<?php if ($us_warnung !== '') { ?><div class="sm-alert sm-warn"><b><?php echo us_t('TEXT.HINWEIS'); ?></b> <?= $us_warnung ?></div><?php } ?>
 <?php if ($us_lage['quelle'] !== 'ok') { ?>
 <div class="sm-alert sm-err"><b><?php echo us_t('TEXT.HINWEIS'); ?></b> <?php echo us_t('TEXT.KEINE_DATENQUELLE'); ?></div>
 <?php } ?>
@@ -565,17 +653,17 @@ if ($us_frame) {
 <?php } ?>
 
 <div class="sm-alert sm-info">
-<?php echo us_t('TEXT.DIENST'); ?> <b><?= $us_pid ? 'l&auml;uft' : 'l&auml;uft nicht' ?></b><?= $us_pid ? ' (PID ' . $us_pid . ')' : '' ?>
-<?php echo us_t('TEXT.PLUGIN'); ?> <b><?= us_cfg($us_cfg, 'enabled', '0') === '1' ? 'eingeschaltet' : 'ausgeschaltet' ?></b>
+<?php echo us_t('TEXT.DIENST'); ?> <b><?php echo us_t($us_pid ? 'KOPF.LAEUFT' : 'KOPF.LAEUFT_NICHT'); ?></b><?= ($us_pid ? ' (PID ' . $us_pid . ')' : '') . ' ' ?>
+<?php echo us_t('TEXT.PLUGIN'); ?> <b><?php echo us_t(us_cfg($us_cfg, 'enabled', '0') === '1' ? 'KOPF.EIN' : 'KOPF.AUS'); ?></b>
 <?php echo us_t('TEXT.SENSOR'); ?> <span class="sm-mono"><?= $us_sensor === 'hcsr04' ? 'HC-SR04' : 'SRF02' ?></span>
 <?php if (is_array($us_status) && isset($us_status['entfernung'])
          && $us_status['entfernung'] !== null) { ?>
-<?php echo us_t('TEXT.ZULETZT'); ?> <b><?= us_e(number_format((float) $us_status['entfernung'], 1, ',', '')) ?><?php echo us_t('TEXT.CM'); ?></b>
+<?php echo us_t('TEXT.ZULETZT'); ?> <b><?= us_e(us_zahl($us_status['entfernung'])) ?><?php echo us_t('TEXT.CM'); ?></b>
 <?php if (isset($us_status['prozent']) && $us_status['prozent'] !== null) { ?>
-(<?= us_e(number_format((float) $us_status['prozent'], 1, ',', '')) ?>&nbsp;%)
+(<?= us_e(us_zahl($us_status['prozent'])) ?>&nbsp;%)
 <?php } ?>
 <?php } ?>
-&middot; <?php echo us_t('TEXT.MQTT_2'); ?>: <b><?= us_cfg($us_cfg, 'mqtt', '1') === '1' ? 'ein' : 'aus' ?></b>
+&middot; <?php echo us_t('TEXT.MQTT_2'); ?>: <b><?php echo us_t(us_cfg($us_cfg, 'mqtt', '1') === '1' ? 'KOPF.MQTT_EIN' : 'KOPF.MQTT_AUS'); ?></b>
 <?php if ($us_alter >= 0) { ?><?php echo us_t('TEXT.STAND_VOR'); ?> <?= $us_alter ?> s<?php } ?>
 </div>
 
@@ -603,17 +691,24 @@ if ($us_frame) {
 
 <!-- ================= Reiter: <?php echo us_t('TEXT.EINSTELLUNGEN'); ?> ================= -->
 <div class="sm-pane<?php echo $us_tab === 'tab-settings' ? ' sm-active' : ''; ?>" id="tab-settings">
+<!-- EINE Legende je Reiter, oben (Durchgang 02.10.2026, O11; Regeln/04,
+     Beschluss 01.08.2026). Bis 1.2.10 standen hier drei, je eine ueber
+     einer Knopfreihe. -->
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?php echo us_t('LEGENDE.LESEN_SICHERN'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION'); ?></span>
+</div>
 
 <?php if (is_array($us_status) && isset($us_status['entfernung'])
          && $us_status['entfernung'] !== null) { ?>
 <h2><?php echo us_t('TEXT.AKTUELLER_MESSWERT'); ?></h2>
-<div class="sm-gross"><?= us_e(number_format((float) $us_status['entfernung'], 1, ',', '')) ?> cm</div>
+<div class="sm-gross"><?= us_e(us_zahl($us_status['entfernung'])) ?> cm</div>
 <?php if (isset($us_status['prozent']) && $us_status['prozent'] !== null) { ?>
 <div class="sm-tank"><i style="width: <?= (float) $us_status['prozent'] ?>%;"></i></div>
-<div class="sm-small"><?php echo us_t('TEXT.FLLSTAND'); ?> <?= us_e(number_format((float) $us_status['prozent'], 1, ',', '')) ?>&nbsp;%<?php
+<div class="sm-small"><?php echo us_t('TEXT.FLLSTAND'); ?> <?= us_e(us_zahl($us_status['prozent'])) ?>&nbsp;%<?php
 if (isset($us_status['liter']) && $us_status['liter'] !== null) {
     echo ' &middot; ' . sprintf(us_t('TEXT.RUND_LITER'),
-        us_e(number_format((float) $us_status['liter'], 1, ',', '.')));
+        us_e(us_zahl($us_status['liter'], true)));
 } ?> &middot; <?php echo us_t('TEXT.STAND_VOR_3'); ?> <?= $us_alter ?> <?php echo us_t('TEXT.SEKUNDEN'); ?></div>
 <?php } else { ?>
 <div class="sm-small"><?php echo us_t('TEXT.STAND_VOR_3'); ?> <?= $us_alter ?> <?php echo us_t('TEXT.SEKUNDEN_EIN_FLLSTAND_WIRD_ERST_BE'); ?></div>
@@ -629,26 +724,26 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <input data-role="none" type="hidden" name="formular" value="einstellungen">
 
 <h2><?php echo us_t('TEXT.BETRIEB'); ?></h2>
-<label class="sm-check"><input data-role="none" type="checkbox" name="enabled" value="1"<?= us_cfg($us_cfg, 'enabled', '0') === '1' ? ' checked' : '' ?>> <b><?php echo us_t('TEXT.PLUGIN_EINGESCHALTET'); ?></b></label>
+<label class="sm-check"><input data-role="none" type="checkbox" name="enabled"<?= us_mark('enabled') ?> value="1"<?= us_haken_an('enabled', us_cfg($us_cfg, 'enabled', '0') === '1') ?>> <b><?php echo us_t('TEXT.PLUGIN_EINGESCHALTET'); ?></b></label>
 <div class="sm-small"><?php echo us_t('TEXT.SOLANGE_DAS_NICHT_ANGEHAKT_IST_LUF'); ?></div>
 
 <h2><?php echo us_t('TEXT.SENSOR_2'); ?></h2>
 <label><?php echo us_t('TEXT.BAUART'); ?></label>
-<select data-role="none" name="sensor" id="sm-sensorwahl">
+<select data-role="none" name="sensor"<?= us_mark('sensor') ?> id="sm-sensorwahl">
 <?php foreach (us_sensoren() as $k => $bez) { ?>
-<option value="<?= us_e($k) ?>"<?= $us_sensor === $k ? ' selected' : '' ?>><?= us_e($bez) ?></option>
+<option value="<?= us_e($k) ?>"<?= us_eingabe('sensor', $us_sensor) === $k ? ' selected' : '' ?>><?= us_e($bez) ?></option>
 <?php } ?>
 </select>
 
 <div id="sm-srf02" class="sm-row" style="margin-top:8px;">
 <div>
 <label><?php echo us_t('TEXT.I2C_BUS'); ?></label>
-<input data-role="none" type="number" name="i2c_bus" min="0" max="20" value="<?= us_e(us_cfg($us_cfg, 'i2c_bus', '1')) ?>">
+<input data-role="none" type="number" name="i2c_bus"<?= us_mark('i2c_bus') ?> min="0" max="20" value="<?= us_e(us_eingabe('i2c_bus', us_cfg($us_cfg, 'i2c_bus', '1'))) ?>">
 <div class="sm-small"><?php echo us_t('TEXT.AUF_DEM_RASPBERRY_PI_FAST_IMMER'); ?> <span class="sm-mono">1</span>.</div>
 </div>
 <div>
 <label><?php echo us_t('TEXT.I2C_ADRESSE'); ?></label>
-<input data-role="none" type="text" name="i2c_adresse" value="<?= us_e(us_cfg($us_cfg, 'i2c_adresse', '0x70')) ?>">
+<input data-role="none" type="text" name="i2c_adresse"<?= us_mark('i2c_adresse') ?> value="<?= us_e(us_eingabe('i2c_adresse', us_cfg($us_cfg, 'i2c_adresse', '0x70'))) ?>">
 <div class="sm-small"><?php echo us_t('TEXT.AB_WERK'); ?> <span class="sm-mono">0x70</span><?php echo us_t('TEXT.WELCHE_ADRESSEN_BELEGT_SIND_ZEIGT_'); ?> <i><?php echo us_t('TEXT.SENSOR_PRFEN'); ?></i>.</div>
 </div>
 </div>
@@ -656,11 +751,11 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <div id="sm-hcsr04" class="sm-row" style="margin-top:8px;">
 <div>
 <label><?php echo us_t('TEXT.GPIO_TRIGGER'); ?></label>
-<input data-role="none" type="number" name="gpio_trigger" min="0" max="27" value="<?= us_e(us_cfg($us_cfg, 'gpio_trigger', '23')) ?>">
+<input data-role="none" type="number" name="gpio_trigger"<?= us_mark('gpio_trigger') ?> min="0" max="27" value="<?= us_e(us_eingabe('gpio_trigger', us_cfg($us_cfg, 'gpio_trigger', '23'))) ?>">
 </div>
 <div>
 <label><?php echo us_t('TEXT.GPIO_ECHO'); ?></label>
-<input data-role="none" type="number" name="gpio_echo" min="0" max="27" value="<?= us_e(us_cfg($us_cfg, 'gpio_echo', '24')) ?>">
+<input data-role="none" type="number" name="gpio_echo"<?= us_mark('gpio_echo') ?> min="0" max="27" value="<?= us_e(us_eingabe('gpio_echo', us_cfg($us_cfg, 'gpio_echo', '24'))) ?>">
 <div class="sm-small"><?php echo us_t('TEXT.BCM_NUMMERN_NICHT_STECKERPLATZNUMM'); ?></div>
 </div>
 </div>
@@ -672,44 +767,44 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <div class="sm-row">
 <div>
 <label><?php echo us_t('TEXT.WERTE_JE_DURCHGANG'); ?></label>
-<input data-role="none" type="number" name="messungen" min="1" max="25" value="<?= us_e(us_cfg($us_cfg, 'messungen', '5')) ?>">
+<input data-role="none" type="number" name="messungen"<?= us_mark('messungen') ?> min="1" max="25" value="<?= us_e(us_eingabe('messungen', us_cfg($us_cfg, 'messungen', '5'))) ?>">
 <div class="sm-small"><?php echo us_t('TEXT.AUS_DIESEN_WERTEN_WIRD_DER'); ?> <b><?php echo us_t('TEXT.MEDIAN'); ?></b> <?php echo us_t('TEXT.GENOMMEN_NICHT_DER_MITTELWERT_EIN_'); ?></div>
 </div>
 <div>
 <label><?php echo us_t('TEXT.ABSTAND_ZWISCHEN_DEN_WERTEN_S'); ?></label>
-<input data-role="none" type="text" name="messabstand" value="<?= us_e(us_cfg($us_cfg, 'messabstand', '0.2')) ?>">
+<input data-role="none" type="text" name="messabstand"<?= us_mark('messabstand') ?> value="<?= us_e(us_eingabe('messabstand', us_cfg($us_cfg, 'messabstand', '0.2'))) ?>">
 <div class="sm-small"><?php echo us_t('TEXT.ZU_KURZ_GEWHLT_HRT_DER_SENSOR_NOCH'); ?></div>
 </div>
 </div>
 <div class="sm-row">
 <div>
 <label><?php echo us_t('TEXT.KLEINSTER_PLAUSIBLER_WERT_CM'); ?></label>
-<input data-role="none" type="text" name="min_cm" value="<?= us_e(us_cfg($us_cfg, 'min_cm', '3')) ?>">
+<input data-role="none" type="text" name="min_cm"<?= us_mark('min_cm') ?> value="<?= us_e(us_eingabe('min_cm', us_cfg($us_cfg, 'min_cm', '3'))) ?>">
 </div>
 <div>
 <label><?php echo us_t('TEXT.GRTER_PLAUSIBLER_WERT_CM'); ?></label>
-<input data-role="none" type="text" name="max_cm" value="<?= us_e(us_cfg($us_cfg, 'max_cm', '400')) ?>">
+<input data-role="none" type="text" name="max_cm"<?= us_mark('max_cm') ?> value="<?= us_e(us_eingabe('max_cm', us_cfg($us_cfg, 'max_cm', '400'))) ?>">
 <div class="sm-small"><?php echo us_t('TEXT.WERTE_AUERHALB_DIESES_BEREICHS_WER'); ?></div>
 </div>
 <div>
 <label><?php echo us_t('TEXT.KORREKTUR_CM'); ?></label>
-<input data-role="none" type="text" name="offset_cm" value="<?= us_e(us_cfg($us_cfg, 'offset_cm', '0')) ?>">
+<input data-role="none" type="text" name="offset_cm"<?= us_mark('offset_cm') ?> value="<?= us_e(us_eingabe('offset_cm', us_cfg($us_cfg, 'offset_cm', '0'))) ?>">
 <div class="sm-small"><?php echo us_t('TEXT.WIRD_AUF_JEDEN_MESSWERT_ADDIERT_ET'); ?></div>
 </div>
 </div>
 
-<h2>F&uuml;llstand</h2>
+<h2><?php echo us_t('TEXT.FLLSTAND'); ?></h2>
 <div class="sm-small" style="margin-bottom:6px;">
 <?php echo us_t('TEXT.OPTIONAL_SIND_BEIDE_FELDER_GEFLLT_'); ?>
 </div>
 <div class="sm-row">
 <div>
 <label><?php echo us_t('TEXT.ABSTAND_BEI'); ?> <b><?php echo us_t('TEXT.LEER'); ?></b> (cm)</label>
-<input data-role="none" type="text" name="leer_cm" value="<?= us_e(us_roh($us_cfg, 'leer_cm')) ?>" placeholder="leer lassen = keine Umrechnung">
+<input data-role="none" type="text" name="leer_cm"<?= us_mark('leer_cm') ?> value="<?= us_e(us_eingabe('leer_cm', us_roh($us_cfg, 'leer_cm'))) ?>" placeholder="<?php echo us_e(us_t('TEXT.PLATZ_LEER')); ?>">
 </div>
 <div>
 <label><?php echo us_t('TEXT.ABSTAND_BEI'); ?> <b><?php echo us_t('TEXT.VOLL'); ?></b> (cm)</label>
-<input data-role="none" type="text" name="voll_cm" value="<?= us_e(us_roh($us_cfg, 'voll_cm')) ?>" placeholder="leer lassen = keine Umrechnung">
+<input data-role="none" type="text" name="voll_cm"<?= us_mark('voll_cm') ?> value="<?= us_e(us_eingabe('voll_cm', us_roh($us_cfg, 'voll_cm'))) ?>" placeholder="<?php echo us_e(us_t('TEXT.PLATZ_LEER')); ?>">
 </div>
 <div>
 <label><?php echo us_t('TEXT.GESAMTVOLUMEN_LITER'); ?></label>
@@ -718,7 +813,7 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
      derselbe Wert, es ging also gut; wer uebersetzt und dort etwas anderes
      eintraegt, bekommt ein Feld unter anderem Namen - und das Gesamtvolumen
      waere bei jedem Speichern weg, ohne dass irgendwo etwas stuende. -->
-<input data-role="none" type="text" name="volumen_liter" value="<?= us_e(us_roh($us_cfg, 'volumen_liter')) ?>" placeholder="optional">
+<input data-role="none" type="text" name="volumen_liter"<?= us_mark('volumen_liter') ?> value="<?= us_e(us_eingabe('volumen_liter', us_roh($us_cfg, 'volumen_liter'))) ?>" placeholder="<?php echo us_e(us_t('TEXT.PLATZ_OPTIONAL')); ?>">
 <div class="sm-small"><?php echo us_t('TEXT.NUR_BEI_SENKRECHTEN_WNDEN_VERLSSLI'); ?></div>
 </div>
 </div>
@@ -727,34 +822,34 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <div class="sm-row">
 <div>
 <label><?php echo us_t('TEXT.MESSEN_ALLE_SEKUNDEN'); ?></label>
-<input data-role="none" type="number" name="intervall" min="5" max="86400" value="<?= us_e(us_cfg($us_cfg, 'intervall', '60')) ?>">
+<input data-role="none" type="number" name="intervall"<?= us_mark('intervall') ?> min="5" max="86400" value="<?= us_e(us_eingabe('intervall', us_cfg($us_cfg, 'intervall', '60'))) ?>">
 </div>
 <div>
 <label><?php echo us_t('TEXT.ALLES_NEU_MELDEN_ALLE_SEKUNDEN'); ?></label>
-<input data-role="none" type="number" name="aktualisierung" min="5" max="86400" value="<?= us_e(us_cfg($us_cfg, 'aktualisierung', '300')) ?>">
+<input data-role="none" type="number" name="aktualisierung"<?= us_mark('aktualisierung') ?> min="5" max="86400" value="<?= us_e(us_eingabe('aktualisierung', us_cfg($us_cfg, 'aktualisierung', '300'))) ?>">
 <div class="sm-small"><?php echo us_t('TEXT.SONST_GEHT_NUR_HINAUS_WAS_SICH_GEN'); ?></div>
 </div>
 </div>
 
 <h2><?php echo us_t('TEXT.WEG_ZUM_MINISERVER'); ?></h2>
 <div class="sm-hinweis"><?php echo us_t('TEXT.MQTT_WOHNT_IM_REITER'); ?></div>
-<label class="sm-check" style="margin-top:10px;"><input data-role="none" type="checkbox" name="udp" value="1"<?= us_cfg($us_cfg, 'udp', '0') === '1' ? ' checked' : '' ?>> <?php echo us_t('TEXT.ZUSTZLICH_PER_UDP_SENDEN'); ?></label>
+<label class="sm-check" style="margin-top:10px;"><input data-role="none" type="checkbox" name="udp"<?= us_mark('udp') ?> value="1"<?= us_haken_an('udp', us_cfg($us_cfg, 'udp', '0') === '1') ?>> <?php echo us_t('TEXT.ZUSTZLICH_PER_UDP_SENDEN'); ?></label>
 <div class="sm-small"><?php echo us_t('TEXT.DER_WEG_DER_ORIGINALFASSUNG_DIE_EN'); ?></div>
 
 <div class="sm-row" style="margin-top:12px;">
 <div>
 <label><?php echo us_t('TEXT.MINISERVER_FR_UDP'); ?></label>
-<select data-role="none" name="udp_miniserver">
+<select data-role="none" name="udp_miniserver"<?= us_mark('udp_miniserver') ?>>
 <?php if (!$us_ms) { ?>
 <option value="1"><?php echo us_t('TEXT.MINISERVER_1'); ?></option>
 <?php } foreach ($us_ms as $nr => $m) { ?>
-<option value="<?= us_e($nr) ?>"<?= us_cfg($us_cfg, 'udp_miniserver', '1') === (string) $nr ? ' selected' : '' ?>><?= us_e($nr . ' - ' . $m['name'] . ' (' . $m['ip'] . ')') ?></option>
+<option value="<?= us_e($nr) ?>"<?= us_eingabe('udp_miniserver', us_cfg($us_cfg, 'udp_miniserver', '1')) === (string) $nr ? ' selected' : '' ?>><?= us_e($nr . ' - ' . $m['name'] . ' (' . $m['ip'] . ')') ?></option>
 <?php } ?>
 </select>
 </div>
 <div>
 <label><?php echo us_t('TEXT.UDP_PORT'); ?></label>
-<input data-role="none" type="text" name="udp_port" value="<?= us_e(us_roh($us_cfg, 'udp_port')) ?>" placeholder="z.&nbsp;B. 12345">
+<input data-role="none" type="text" name="udp_port"<?= us_mark('udp_port') ?> value="<?= us_e(us_eingabe('udp_port', us_roh($us_cfg, 'udp_port'))) ?>" placeholder="<?php echo us_t('TEXT.PLATZ_PORT'); ?>">
 </div>
 </div>
 
@@ -763,7 +858,6 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
      Gruenton wie sm-b-lesen. Der Knopf sah also aus wie "liest nur", waehrend
      er die Konfiguration schreibt und den Dienst neu startet. Im Reiter MQTT
      war derselbe Knopf seit jeher richtig orange. -->
-<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION'); ?></span></div>
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="1"><?php echo us_t('TEXT.SPEICHERN'); ?></button>
 <div class="sm-small"><?php echo us_t('TEXT.BEIM_SPEICHERN_WIRD_DER_DIENST_NEU'); ?></div>
 </form>
@@ -772,7 +866,6 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <div class="sm-small" style="margin-bottom:4px;">
 <?php echo us_t('TEXT.MISST_SOFORT_UND_TRGT_DAS_ERGEBNIS'); ?>
 </div>
-<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION_MESSEN'); ?></span></div>
 <div class="sm-knopfreihe">
 <form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-settings"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="kalibrieren" value="leer"><?php echo us_t('TEXT.JETZT_MESSEN_LEER'); ?></button></form>
 <form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-settings"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="kalibrieren" value="voll"><?php echo us_t('TEXT.JETZT_MESSEN_VOLL'); ?></button></form>
@@ -785,14 +878,13 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <h2><?= us_t('TEXT.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= us_t('TEXT.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= us_t('TEXT.SICH_WARNUNG') ?></div>
-<!-- Keine Knopfreihe ohne erklaerende Legende ueber sich - und eine neue
-     Knopffarbe braucht ihren Eintrag darin. Der Sicherungsblock bringt einen
-     gruenen Knopf in einen Reiter, der bisher nur Orange kannte;
-     hausstandard_pruefen.py hat die Spalte leg dafuer sofort klein gemeldet. -->
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?php echo us_t('LEGENDE.LESEN_SICHERN'); ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION_ZURUECK'); ?></span>
-</div>
+<?php
+/* "Sichern" warnt vorher, wenn der gespeicherte Stand Werte traegt, die das
+ * Zurueckspielen abweisen wuerde (O5). Die Datei bekommt dann _warnung. */
+list(, $us_m_jetzt, $us_f_jetzt) = us_pruefen($us_cfg);
+if ($us_m_jetzt) { ?>
+<div class="sm-warnung"><?php printf(us_t('TEXT.SICH_NICHT_ZURUECK'), us_e(implode(', ', $us_f_jetzt))); ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -818,17 +910,17 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
      per isset() und wuerde beim Absenden des anderen Formulars die Werte
      dieses stillschweigend nullen. -->
 <div class="sm-pane<?php echo $us_tab === 'tab-mqtt' ? ' sm-active' : ''; ?>" id="tab-mqtt">
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION'); ?></span></div>
 
 <h2><?php echo us_t('MQTT.H_WEG'); ?></h2>
 <form method="post" action="index.php">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt"><?php echo us_fmt($us_cfg); ?>
 <input data-role="none" type="hidden" name="formular" value="mqtt">
-<label class="sm-check"><input data-role="none" type="checkbox" name="mqtt" value="1"<?= us_cfg($us_cfg, 'mqtt', '1') === '1' ? ' checked' : '' ?>> <b>MQTT</b> <?php echo us_t('TEXT.EMPFOHLEN'); ?></label>
+<label class="sm-check"><input data-role="none" type="checkbox" name="mqtt"<?= us_mark('mqtt') ?> value="1"<?= us_haken_an('mqtt', us_cfg($us_cfg, 'mqtt', '1') === '1') ?>> <b>MQTT</b> <?php echo us_t('TEXT.EMPFOHLEN'); ?></label>
 <div class="sm-small"><?php echo us_t('TEXT.WERTE_GEHEN_RETAINED_AN_DEN_BROKER'); ?></div>
 <label style="margin-top:10px;"><?php echo us_t('TEXT.MQTT_THEMENPRFIX'); ?></label>
-<input data-role="none" type="text" name="themenpraefix" value="<?= us_e($us_praefix) ?>">
+<input data-role="none" type="text" name="themenpraefix"<?= us_mark('themenpraefix') ?> value="<?= us_e(us_eingabe('themenpraefix', $us_praefix)) ?>">
 <div class="sm-small"><?php echo us_t('MQTT.PRAEFIX_HINWEIS'); ?></div>
-<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION'); ?></span></div>
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="1"><?php echo us_t('TEXT.SPEICHERN'); ?></button>
 </form>
 
@@ -871,11 +963,15 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-pane<?php echo $us_tab === 'tab-loxone' ? ' sm-active' : ''; ?>" id="tab-loxone">
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?php echo us_t('LEGENDE.TECHNIK_DATEI'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION'); ?></span>
+</div>
 
 <h2><?php echo us_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
 <div class="sm-small"><?php echo us_t('TEXT.DER_SENSOR_MISST_DEN_ABSTAND_ZUR_O'); ?></div>
 <div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_1_SENSOR_EINRICHTEN'); ?></b><br><br>
-<?php echo us_t('TEXT.IM_REITER'); ?> <i><?php echo us_t('REITER.EINSTELLUNGEN'); ?></i><?php echo us_t('TEXT.DANN_IM_REITER'); ?> <i><?php echo us_t('REITER.TEST'); ?></i> mit <i><?php echo us_t('TEXT.JETZT_MESSEN'); ?></i> <?php echo us_t('TEXT.PRFEN_OB_EIN_PLAUSIBLER_WERT_HERAU'); ?></div>
+<?php echo us_t('TEXT.IM_REITER'); ?> <i><?php echo us_t('REITER.EINSTELLUNGEN'); ?></i><?php echo us_t('TEXT.DANN_IM_REITER'); ?> <i><?php echo us_t('REITER.TEST'); ?></i> <?php echo us_t('TEXT.MIT'); ?> <i><?php echo us_t('TEXT.JETZT_MESSEN'); ?></i> <?php echo us_t('TEXT.PRFEN_OB_EIN_PLAUSIBLER_WERT_HERAU'); ?></div>
 <div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_2_ABO_IM_MQTT_GATEWAY_EINT'); ?></b><br><br>
 
 <?php $us_gw2 = us_mqtt_gateway_info(); if ($us_gw2 !== null && !$us_gw2['autostart']) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo us_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
@@ -887,14 +983,14 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <i><?php echo us_t('TEXT.VORLAGE_EINFGEN'); ?></i><?php echo us_t('TEXT.SIE_LEGT_DIE_VIRTUELLEN_EINGNGE_MI'); ?> <i><?php echo us_t('TEXT.INCOMING_OVERVIEW'); ?></i> <?php echo us_t('TEXT.ERSCHEINEN_DIE_THEMEN_SOBALD_DER_D'); ?> <b><?php echo us_t('TEXT.WER_LIEBER_VON_HAND_ANLEGT'); ?></b><?php echo us_t('TEXT.FINDET_DIE_NAMEN_WEITER_UNTEN_IN_S'); ?> <span class="sm-mono"><?= us_e($us_praefix) ?><?php echo us_t('TEXT.DISTANCE'); ?></span> <?php echo us_t('TEXT.WIRD_ALSO'); ?>
 <span class="sm-mono"><?= us_e($us_praefix) ?><?php echo us_t('TEXT.DISTANCE_2'); ?></span>.</div>
 <div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_4_KACHEL_IN_DER_APP'); ?></b><br><br>
-<?php echo us_t('TEXT.EINEN'); ?> <i><?php echo us_t('TEXT.STATUS'); ?></i><?php echo us_t('TEXT.BAUSTEIN_ANLEGEN'); ?> <span class="sm-mono">v1</span> mit
-<span class="sm-mono"><?php echo us_t('TEXT.LEVEL'); ?></span> und <span class="sm-mono">v2</span> mit
+<?php echo us_t('TEXT.EINEN'); ?> <i><?php echo us_t('TEXT.STATUS'); ?></i><?php echo us_t('TEXT.BAUSTEIN_ANLEGEN'); ?> <span class="sm-mono">v1</span> <?php echo us_t('TEXT.MIT'); ?>
+<span class="sm-mono"><?php echo us_t('TEXT.LEVEL'); ?></span> <?php echo us_t('TEXT.UND_KLEIN'); ?> <span class="sm-mono">v2</span> <?php echo us_t('TEXT.MIT'); ?>
 <span class="sm-mono"><?php echo us_t('TEXT.LITER'); ?></span> <?php echo us_t('TEXT.VERBINDEN_STATUSTEXT_ZUM_BEISPIEL'); ?>
 <span class="sm-mono"><?php echo us_t('TEXT.V1_0_V2_0LITER'); ?></span><?php echo us_t('TEXT.HKCHEN'); ?>
 <i><?php echo us_t('TEXT.VISUALISIERUNG'); ?></i> <?php echo us_t('TEXT.SETZEN_FERTIG'); ?></div>
 
 <div class="sm-small" style="margin-top:10px;">
-<?php echo us_t('TEXT.BROKER'); ?> <span class="sm-mono"><?= $us_broker !== '' ? us_e($us_broker) : 'MQTT-Gateway nicht gefunden' ?></span>
+<?php echo us_t('TEXT.BROKER'); ?> <span class="sm-mono"><?= $us_broker !== '' ? us_e($us_broker) : us_e(us_t('MQTT.GATEWAY_FEHLT')) ?></span>
 <?php echo us_t('TEXT.THEMENPRFIX'); ?> <span class="sm-mono"><?= us_e($us_praefix) ?></span>
 </div>
 
@@ -959,11 +1055,14 @@ foreach (array_merge(us_felder_zeile(), us_felder_endpunkt()) as $us_n => $us_f)
 <tr><td class="sm-mono"><?= us_e(strtoupper($us_n)) ?></td>
     <td><?= us_e($us_f['einheit']) ?></td>
     <td class="sm-mono"><?= us_e(us_check($us_n)) ?></td>
-    <td><?= us_e($us_f['min'] . ' bis ' . $us_f['max']) ?></td></tr>
+    <td><?= us_e(sprintf(us_t('TEXT.VON_BIS'), $us_f['min'], $us_f['max'])) ?></td></tr>
 <?php } ?>
 </table>
 </div>
 <div class="sm-small"><?php echo us_t('LOX.SUCHTEXT_ERKLAERT'); ?></div>
+<!-- Die Schwelle fuer OK steht hier ausdruecklich (Durchgang 02.10.2026,
+     C5, Entscheidung Nr. 4: "Hilfetext und Feldtabelle sagen es"). -->
+<div class="sm-small"><?php printf(us_t('LOX.OK_GRENZE'), us_ok_grenze($us_cfg)); ?></div>
 <?php } ?>
 
 <?php
@@ -986,7 +1085,6 @@ foreach (array_merge(us_felder_zeile(), us_felder_endpunkt()) as $us_n => $us_f)
 <?php if ($us_tok === '') { ?>
 <div class="sm-alert sm-info"><?php echo us_t('LOX.TOKEN_LEER_WEG'); ?></div>
 <?php } ?>
-<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION'); ?></span></div>
 <div class="sm-knopfreihe">
 <form method="post" action="index.php" onsubmit="return confirm(<?= us_e(json_encode(us_t('LOX.TOKEN_NEU_FRAGE'))) ?>);">
 <input data-role="none" type="hidden" name="activetab" value="tab-loxone"><?php echo us_fmt($us_cfg); ?>
@@ -997,12 +1095,14 @@ foreach (array_merge(us_felder_zeile(), us_felder_endpunkt()) as $us_n => $us_f)
 <h2><?php echo us_t('TEXT.VORLAGEN'); ?></h2>
 <form method="post" action="index.php">
 <input data-role="none" type="hidden" name="activetab" value="tab-loxone"><?php echo us_fmt($us_cfg); ?>
-<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION_DATEI'); ?></span></div>
 <div class="sm-knopfreihe">
-<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="download" value="mqtt_in"><?php echo us_t('TEXT.VORLAGE_EINGNGE_MQTT'); ?></button>
-<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="download" value="udp_in"><?php echo us_t('TEXT.VORLAGE_EINGANG_UDP'); ?></button>
+<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="mqtt_in"><?php echo us_t('TEXT.VORLAGE_EINGNGE_MQTT'); ?></button>
+<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="udp_in"><?php echo us_t('TEXT.VORLAGE_EINGANG_UDP'); ?></button>
 </div>
 </form>
+<!-- Sichtbar im Reiter, nicht nur im Kommentar der XML-Datei (O11,
+     Regeln/04): zweimal eingelesen ergibt doppelte Objekte. -->
+<div class="sm-small"><?php echo us_t('LOX.VORLAGE_IMPORT'); ?></div>
 <div class="sm-small"><?php echo us_t('TEXT.DIE_MQTT_VORLAGE_LEGT'); ?> <?= count(us_felder_vorlage()) ?> <?php echo us_t('TEXT.VIRTUELLE_EINGNGE_AN_DIE_UDP_VORLA'); ?></div>
 
 <h2><?php echo us_t('TEXT.WAS_VERFFENTLICHT_WIRD'); ?></h2>
@@ -1016,7 +1116,7 @@ foreach (array_merge(us_felder_zeile(), us_felder_endpunkt()) as $us_n => $us_f)
 
 <?php if (!$us_hat_kalibrierung) { ?>
 <div class="sm-alert sm-info"><b><?php echo us_t('TEXT.HINWEIS'); ?></b> <?php echo us_t('TEXT.OHNE_EINGETRAGENE_KALIBRIERUNG_LEE'); ?>
-<span class="sm-mono">level</span> und <span class="sm-mono">liter</span> <?php echo us_t('TEXT.LEER_DIE_VORLAGE_LEGT_SIE_TROTZDEM'); ?></div>
+<span class="sm-mono">level</span> <?php echo us_t('TEXT.UND_KLEIN'); ?> <span class="sm-mono">liter</span> <?php echo us_t('TEXT.LEER_DIE_VORLAGE_LEGT_SIE_TROTZDEM'); ?></div>
 <?php } ?>
 
 <h2><?php echo us_t('TEXT.SCHRITT_5_KOMPLETTE_BAUSTEIN_LISTE'); ?></h2>
@@ -1039,10 +1139,10 @@ foreach (array_merge(us_felder_zeile(), us_felder_endpunkt()) as $us_n => $us_f)
 <tr><td>14</td><td><?php echo us_t('TEXT.FORMEL_OPTIONAL'); ?></td><td><?php echo us_t('TEXT.VERBRAUCH_HEUTE_L'); ?></td><td><?php echo us_t('TEXT.FORMEL'); ?> <span class="sm-mono">I2-I1</span></td><td>I1 = #3, I2 = #13</td></tr>
 </table>
 <div class="sm-alert sm-info">
-<b>Zu #7:</b> <?php echo us_t('TEXT.OHNE_DIE_VERKNPFUNG_MIT'); ?> <span class="sm-mono"><?php echo us_t('TEXT.VALID_2'); ?></span> <?php echo us_t('TEXT.LST_EIN_EINZELNER_FEHLSCHUSS_DES_S'); ?><br>
+<b><?php echo us_t('TEXT.ZU_7'); ?></b> <?php echo us_t('TEXT.OHNE_DIE_VERKNPFUNG_MIT'); ?> <span class="sm-mono"><?php echo us_t('TEXT.VALID_2'); ?></span> <?php echo us_t('TEXT.LST_EIN_EINZELNER_FEHLSCHUSS_DES_S'); ?><br>
 <b><?php echo us_t('TEXT.ZU_8_UND_11'); ?></b> <?php echo us_t('TEXT.DIE_VERZGERUNGEN_SIND_KEIN_SCHMUCK'); ?><br>
-<b>Zu #9:</b> <?php echo us_t('TEXT.EIN_BENACHRICHTIGUNGS_BAUSTEIN_SEN'); ?><br>
-<b>Zu #6:</b> <?php echo us_t('TEXT.DIE_EIN_SCHWELLE_LIEGT'); ?> <i><?php echo us_t('TEXT.UNTER_2'); ?></i> <?php echo us_t('TEXT.DER_AUS_SCHWELLE_OHNE_DIESEN_ABSTA'); ?>
+<b><?php echo us_t('TEXT.ZU_9'); ?></b> <?php echo us_t('TEXT.EIN_BENACHRICHTIGUNGS_BAUSTEIN_SEN'); ?><br>
+<b><?php echo us_t('TEXT.ZU_6'); ?></b> <?php echo us_t('TEXT.DIE_EIN_SCHWELLE_LIEGT'); ?> <i><?php echo us_t('TEXT.UNTER_2'); ?></i> <?php echo us_t('TEXT.DER_AUS_SCHWELLE_OHNE_DIESEN_ABSTA'); ?>
 </div>
 
 <h2><?php echo us_t('TEXT.WORAUF_MAN_SICH_NICHT_VERLASSEN_KA'); ?></h2>
@@ -1124,6 +1224,7 @@ $us_offen = 0;
 <!-- ================= Reiter: Logdateien ================= -->
 <div class="sm-pane<?php echo $us_tab === 'tab-log' ? ' sm-active' : ''; ?>" id="tab-log">
 <h2><?php echo us_t('TEXT.PROTOKOLL'); ?></h2>
+<div class="sm-hinweis"><?php echo us_t('TEXT.LOG_RAMDISK'); ?></div>
 <div class="sm-small">
 <?php if ($us_log !== '') { ?>
 <?php echo us_t('TEXT.DATEI'); ?> <span class="sm-mono"><?= us_e($us_log) ?></span> &middot; <?php echo us_t('TEXT.NEUESTE_ZEILE'); ?>

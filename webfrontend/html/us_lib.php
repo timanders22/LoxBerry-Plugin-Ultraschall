@@ -127,6 +127,8 @@ function us_paths()
             'status' => $status,
             'pid'    => $pid,
             'marke'  => $home . '/data/plugins/' . $dir . '.upgrade_laeuft',
+            'datadir' => $home . '/data/plugins/' . $dir,
+            'praefixe' => $home . '/config/plugins/' . $dir . '/mqtt_praefixe_alt.json',
         );
     } else {
         $base = dirname(dirname(__DIR__));
@@ -139,6 +141,8 @@ function us_paths()
             'status' => $status,
             'pid'    => $pid,
             'marke'  => '',
+            'datadir' => sys_get_temp_dir() . '/' . $dir,
+            'praefixe' => '',
         );
     }
     return $p;
@@ -439,55 +443,45 @@ function us_config_read($erzeugen = false)
 }
 
 /**
- * Eingaben pruefen und zurechtruecken - EINE Stelle fuer BEIDE Wege.
+ * Eingaben pruefen - EINE Stelle fuer BEIDE Wege.
  *
  * Bis 1.1.11 stand diese Pruefung ausschliesslich im Speichern-Zweig von
  * index.php. Das Zurueckspielen einer Sicherung ging vollstaendig daran
- * vorbei und schrieb roh durch. Am 26.08.2026 an einem echten Webserver
- * gemessen: eine Datei mit den Werten
+ * vorbei und schrieb roh durch (gemessen am 26.08.2026: "sensor=laserpistole",
+ * "min_cm=9000 / max_cm=1" wurden angenommen).
  *
- *     sensor=laserpistole   gpio_trigger=999999   intervall=0
- *     min_cm=9000  max_cm=1  themenpraefix=a b/c"d
+ * SEIT DEM DURCHGANG 02.10.2026 WIRD NICHTS MEHR ZURECHTGERUECKT
+ * (Entscheidungen Nr. 16 und 19, Bauliste O2/O3). Bis 1.2.10 fiel ein
+ * abgewiesenes Feld auf den WERKSWERT zurueck (aus "hcsr04" mit Tippfehler
+ * wurde "srf02"), vertauschte Grenzen wurden still getauscht, gleiche
+ * GPIO-Pins still auf 23/24 gesetzt, "keller/eins" still zu "kellereins"
+ * und "leer_cm=abc" still zu "keine Kalibrierung" - und das Formular
+ * speicherte den Rest trotzdem (gemessen, Oberflaechen-Pruefer 2/3/5).
+ * Jetzt gilt: jede Unstimmigkeit ist eine Beanstandung, und beide Aufrufer
+ * schreiben dann GAR NICHTS. Still bleibt nur, was den Wert nicht aendert:
+ * Leerraum am Rand, Komma statt Punkt, die Schreibweise einer Zahl und
+ * Kleinbuchstaben in Hexziffern.
  *
- * wurde mit "8 Werte uebernommen" angenommen. Der Dienst meldete danach
- * einen Sensor "bereit", den es nicht gibt (sensor_aufbauen() faellt still
- * auf den SRF02 zurueck - wer einen HC-SR04 hat, misst ab da auf einem Bus,
- * an dem nichts haengt), und verwarf mit 9000 bis 1 cm JEDE Messung.
- *
- * Rueckgabe: array($werte, $maengel)
- *
- * Was der Aufrufer damit macht, entscheidet er selbst - und die beiden Wege
- * entscheiden verschieden:
- *   Formular   zurechtruecken, alles Uebrige speichern, Maengel daneben
- *              melden (Hausregel "Beanstandungen melden, nicht das ganze
- *              Speichern verhindern")
- *   Sicherung  eine einzige Beanstandung lehnt die GANZE Datei ab und
- *              aendert nichts (Hausregel "eine halb gueltige Datei
- *              ueberschreibt NICHTS")
+ * Rueckgabe: array($werte, $maengel, $falsch)
+ *   $falsch  die Namen der beanstandeten Felder - fuer die Markierung im
+ *            Formular (X-2, sm-beanstandet und aria-invalid)
  */
 function us_pruefen($roh)
 {
     $v = us_defaults();
     $m = array();
+    $falsch = array();
 
     $hol = function ($k) use ($roh) {
         return isset($roh[$k]) && !is_array($roh[$k]) ? trim((string) $roh[$k]) : '';
     };
-    // Nur Steuerzeichen und Anfuehrungszeichen raus - nie eine Positivliste.
-    // Ein preg_replace, das alles ausser einer Positivliste entfernt,
-    // zerstoert eingefuegte Werte, ohne es zu sagen.
-    $saeubern = function ($s) {
-        return trim(preg_replace('/[\x00-\x1F\x7F"\']+/u', '', (string) $s));
-    };
-    /* Maskiert wird das ARGUMENT, nicht die Meldung.
-     *
-     * Die Beanstandung traegt Auszeichnung und wird deshalb ROH in die Seite
-     * geschrieben. Der beanstandete Wert kommt aber aus dem Formular oder aus
-     * einer hochgeladenen Datei - er gehoert durch die Maskierfunktion, sonst
-     * steht fremdes Markup in der Oberflaeche. */
-    $ruege = function ($feld, $wert) use (&$m) {
+    /* Maskiert wird das ARGUMENT, nicht die Meldung. Die Beanstandung traegt
+     * Auszeichnung und wird ROH in die Seite geschrieben; der beanstandete
+     * Wert kommt aus dem Formular oder aus einer hochgeladenen Datei. */
+    $ruege = function ($feld, $wert) use (&$m, &$falsch) {
         $m[] = sprintf(us_t('FEHLER.WERT_UNZULAESSIG'), us_e($feld),
                        us_e(substr((string) $wert, 0, 40)));
+        $falsch[] = $feld;
     };
     // sprintf('%.2f', 0) ergibt "0.00"; die Nullen und der Punkt fallen weg,
     // "-0" wird zu "0" - sonst stuende das in der Konfigurationsdatei.
@@ -502,72 +496,38 @@ function us_pruefen($roh)
         $v['sensor'] = $sensor;
     } else {
         $ruege('sensor', $sensor);
+        $v['sensor'] = $sensor;
     }
 
-    /* --- Haken. Sie kommen als '1'/'0' herein, nicht als isset().
-     *
-     * Alles andere ist eine Beanstandung. Aus dem Formular kann sie nie
-     * kommen - dort werden die drei vorher ausdruecklich umgesetzt. Aus
-     * einer Datei sehr wohl, und dann steht sonst ein Wert in der
-     * Konfiguration, den niemand geschrieben hat. */
+    /* --- Haken. Sie kommen als '1'/'0' herein, nicht als isset(). Aus dem
+     * Formular kann nichts anderes kommen - dort werden die drei vorher
+     * ausdruecklich umgesetzt. Aus einer Datei sehr wohl. */
     foreach (array('enabled', 'mqtt', 'udp') as $k) {
         $w = $hol($k);
         if ($w !== '0' && $w !== '1') {
             $ruege($k, $w);
         }
-        $v[$k] = ($w === '1') ? '1' : '0';
+        $v[$k] = $w;
     }
 
     // --- Themenpraefix ------------------------------------------------------
-    /* EIN LEERES PRAEFIX IST EINE BEANSTANDUNG, KEIN RUECKFALL
-     * (seit 1.2.2).
-     *
-     * Bis 1.2.1 stand hier am Ende
-     *     $v['themenpraefix'] = ($sauber !== '') ? $sauber : $v['themenpraefix'];
-     * und $v kommt aus us_defaults(). Ein geleertes Feld fiel damit
-     * stillschweigend auf die VORGABE zurueck, nicht auf den bisherigen
-     * Wert - und weil $sauber bei leerer Eingabe gleich $p ist, gab es
-     * auch keine Beanstandung. Gemessen: Praefix 'keller', Feld geleert,
-     * gespeichert -> 'ultraschall', ohne ein Wort. Der Dienst wird beim
-     * Speichern neu gestartet und veroeffentlicht ab da unter einem
-     * anderen Praefix; im Miniserver kommt nichts mehr an.
-     *
-     * Der bisherige Wert steht im Rohsatz, den der Aufrufer mitgibt -
-     * der Speicher-Handler legt ihn ueber den GESPEICHERTEN Stand. Beim
-     * Zurueckspielen einer Sicherung ist er der Wert aus der Datei. In
-     * beiden Faellen ist er das Richtige. */
-    $p = $saeubern($hol('themenpraefix'));
-    $sauber = preg_replace('/[^A-Za-z0-9_-]+/', '', $p);
-    if ($p === '') {
+    /* Erlaubt sind Buchstaben, Ziffern, Bindestrich und Unterstrich. Alles
+     * andere - leer, Schraegstrich, Leerzeichen, Anfuehrungszeichen - ist eine
+     * Beanstandung. Bis 1.2.10 wurde "keller/eins" still zu "kellereins" und
+     * gespeichert: der Dienst veroeffentlichte danach unter einem Praefix, das
+     * niemand eingegeben hatte, und in Loxone kam nichts mehr an. */
+    $p = $hol('themenpraefix');
+    if (preg_match('/^[A-Za-z0-9_-]+$/', $p) !== 1) {
         $ruege('themenpraefix', $p);
-        if (isset($roh['themenpraefix_bisher'])
-            && (string) $roh['themenpraefix_bisher'] !== '') {
-            $v['themenpraefix'] = (string) $roh['themenpraefix_bisher'];
-        }
-    } elseif ($sauber === '') {
-        // Nur unerlaubte Zeichen - dann bleibt nichts uebrig.
-        $ruege('themenpraefix', $p);
-        if (isset($roh['themenpraefix_bisher'])
-            && (string) $roh['themenpraefix_bisher'] !== '') {
-            $v['themenpraefix'] = (string) $roh['themenpraefix_bisher'];
-        }
-    } else {
-        if ($sauber !== $p) {
-            // Ein Schraegstrich oder ein Leerzeichen im Praefix ergibt
-            // Themen, die das Gateway anders benennt, als die Vorlage
-            // sie anlegt.
-            $ruege('themenpraefix', $p);
-        }
-        $v['themenpraefix'] = $sauber;
     }
+    $v['themenpraefix'] = $p;
 
     // --- I2C-Adresse --------------------------------------------------------
-    $adr = strtolower($saeubern($hol('i2c_adresse')));
-    if (preg_match('/^0x[0-9a-f]{1,2}$/', $adr)) {
-        $v['i2c_adresse'] = $adr;
-    } else {
+    $adr = strtolower($hol('i2c_adresse'));
+    if (preg_match('/^0x[0-9a-f]{1,2}$/', $adr) !== 1) {
         $ruege('i2c_adresse', $adr);
     }
+    $v['i2c_adresse'] = $adr;
 
     // --- Ganzzahlen ---------------------------------------------------------
     $ganze = array(
@@ -588,14 +548,20 @@ function us_pruefen($roh)
             $v[$k] = (string) (int) $w;
         } else {
             $ruege($k, $w);
+            $v[$k] = $w;
         }
     }
 
     // --- Kommazahlen. Komma statt Punkt kommt bei deutscher Tastatur
     //     staendig vor und ist kein Fehler. --------------------------------
+    /* min_cm MINDESTENS 1 (Durchgang 02.10.2026, C3). Mit min_cm=0 ging ein
+     * Rohwert 0 - kein Echo, Stoerung - als gueltige Messung "0 cm" hinaus,
+     * mit Kalibrierung als "randvoll" (gemessen, Code-Pruefer C3). Der Dienst
+     * verwirft eine 0 seither ohnehin; Formular und Sicherung beanstanden
+     * die 0, damit niemand glaubt, sie wirke. */
     $kommas = array(
         'messabstand' => array(0.05, 5),
-        'min_cm'      => array(0, 1000),
+        'min_cm'      => array(1, 1000),
         'max_cm'      => array(1, 2000),
         'offset_cm'   => array(-500, 500),
     );
@@ -605,29 +571,36 @@ function us_pruefen($roh)
             $v[$k] = $zahltext($w);
         } else {
             $ruege($k, $w);
+            $v[$k] = $w;
         }
     }
 
     // --- Felder, die leer bleiben duerfen: dann wird nicht umgerechnet. -----
+    /* Ein unzulaessiger Wert LOESCHT die Kalibrierung nicht mehr (O3): bis
+     * 1.2.10 wurde aus "leer_cm=abc" ein leeres Feld und gespeichert - die
+     * Kalibrierung war weg. Das Gesamtvolumen muss groesser als 0 sein (C7):
+     * mit 0 rechnete der Dienst "0 Liter", mit einer negativen Zahl aus einer
+     * Datei negative Liter. */
     $leerbar = array(
-        'leer_cm'       => array(0, 2000),
-        'voll_cm'       => array(0, 2000),
-        'volumen_liter' => array(0, 1000000),
+        'leer_cm'       => array(0, 2000, false),
+        'voll_cm'       => array(0, 2000, false),
+        'volumen_liter' => array(0, 1000000, true),
     );
     foreach ($leerbar as $k => $g) {
         $w = str_replace(',', '.', $hol($k));
         if ($w === '') {
             $v[$k] = '';
-        } elseif (is_numeric($w) && (float) $w >= $g[0] && (float) $w <= $g[1]) {
+        } elseif (is_numeric($w) && (float) $w >= $g[0] && (float) $w <= $g[1]
+                  && (!$g[2] || (float) $w > 0)) {
             $v[$k] = $zahltext($w);
         } else {
             $ruege($k, $w);
-            $v[$k] = '';
+            $v[$k] = $w;
         }
     }
 
     // --- UDP-Port -----------------------------------------------------------
-    $port = $saeubern($hol('udp_port'));
+    $port = $hol('udp_port');
     if ($port === '') {
         $v['udp_port'] = '';
     } elseif (preg_match('/^[0-9]{1,5}$/', $port)
@@ -635,7 +608,7 @@ function us_pruefen($roh)
         $v['udp_port'] = (string) (int) $port;
     } else {
         $ruege('udp_port', $port);
-        $v['udp_port'] = '';
+        $v['udp_port'] = $port;
     }
 
     /* --- Aktionstoken --------------------------------------------------
@@ -643,67 +616,52 @@ function us_pruefen($roh)
      * Es MUSS hier stehen, auch wenn kein Formular es anzeigt: us_pruefen()
      * beginnt bei den Vorgaben, und was hier fehlt, faellt beim Speichern
      * auf die Vorgabe zurueck. Fuer das Token ist die Vorgabe leer - ohne
-     * diesen Block hat jedes Speichern es geloescht, ohne ein Wort zu sagen.
-     * Gemessen an 1.2.0 vor der Behebung: ein Speichern im Reiter MQTT, und
-     * jede Adresse im Miniserver waere tot gewesen.
+     * diesen Block hat jedes Speichern es geloescht (gemessen an 1.2.0).
      *
-     * Leer ist zulaessig - so sieht es vor der ersten Einrichtung aus. */
-    $tok = strtolower($saeubern($hol('aktionstoken')));
-    if ($tok === '') {
-        $v['aktionstoken'] = '';
-    } elseif (preg_match('/^[0-9a-f]{16,64}$/', $tok)) {
+     * Leer ist hier zulaessig - so sieht es vor der ersten Einrichtung aus.
+     * Ein leeres Token aus einer SICHERUNG kommt gar nicht erst hier an
+     * (us_sicherung_lesen behaelt dann das geltende, O6). */
+    $tok = strtolower($hol('aktionstoken'));
+    if ($tok === '' || preg_match('/^[0-9a-f]{16,64}$/', $tok) === 1) {
         $v['aktionstoken'] = $tok;
     } else {
         $ruege('aktionstoken', $tok);
-        $v['aktionstoken'] = '';
+        $v['aktionstoken'] = $tok;
     }
 
     // --- Zusammenhaenge, die erst nach den Einzelwerten greifen -------------
-    $vorgabe = us_defaults();
-    if ($v['gpio_trigger'] === $v['gpio_echo']) {
+    // Beurteilt wird nur, was einzeln in Ordnung war - sonst stuende zu einem
+    // Feld zweimal etwas da.
+    $gut = function ($k) use (&$falsch) {
+        return !in_array($k, $falsch, true);
+    };
+    if ($gut('gpio_trigger') && $gut('gpio_echo') && $v['gpio_trigger'] === $v['gpio_echo']) {
         // Ein Pin kann nicht beides sein - sonst laeuft der Treiber ins Leere.
         $m[] = us_t('FEHLER.GPIO_GLEICH');
-        $v['gpio_trigger'] = $vorgabe['gpio_trigger'];
-        $v['gpio_echo']    = $vorgabe['gpio_echo'];
+        $falsch[] = 'gpio_trigger';
+        $falsch[] = 'gpio_echo';
     }
-    if ((float) $v['min_cm'] >= (float) $v['max_cm']) {
-        // Vertauscht ist zurechtrueckbar - und die Zahlen des Anwenders
-        // bleiben erhalten. Nur wenn auch das nichts hilft (beide gleich),
-        // gelten wieder die Vorgaben.
+    if ($gut('min_cm') && $gut('max_cm') && (float) $v['min_cm'] >= (float) $v['max_cm']) {
         $m[] = us_t('FEHLER.MIN_MAX');
-        $tausch = $v['min_cm'];
-        $v['min_cm'] = $v['max_cm'];
-        $v['max_cm'] = $tausch;
-        if ((float) $v['min_cm'] >= (float) $v['max_cm']) {
-            $v['min_cm'] = $vorgabe['min_cm'];
-            $v['max_cm'] = $vorgabe['max_cm'];
-        }
+        $falsch[] = 'min_cm';
+        $falsch[] = 'max_cm';
     }
-    /* leer_cm und voll_cm duerfen nicht vertauscht sein (seit 1.2.2).
-     *
-     * Der Sensor sitzt oben: bei leerem Behaelter ist der Abstand GROSS,
-     * bei vollem klein. leer_cm <= voll_cm kann es also nicht geben. Bis
-     * 1.2.1 pruefte nur der Dienst auf Gleichheit, und bei vertauschten
-     * Werten lief der Fuellstand rueckwaerts - gemessen mit leer_cm=20 und
-     * voll_cm=100 ergaben 25 cm einen Fuellstand von 6,2 %, 95 cm einen von
-     * 93,8 %. Beide Felder sind einzeln auf 0..2000 geprueft; es gab nichts,
-     * was widersprochen haette.
-     *
-     * ZURECHTGERUECKT WIRD HIER NICHT. Bei min_cm/max_cm ist ein Tausch
-     * eindeutig richtig, hier nicht: welcher der beiden Werte bei leerem
-     * und welcher bei vollem Behaelter gemessen wurde, weiss nur der
-     * Anwender. Gemeldet wird es, und der Dienst rechnet solange keinen
-     * Fuellstand - lieber kein Wert als eine Zahl mit umgekehrtem
-     * Vorzeichen. */
-    if ($v['leer_cm'] !== '' && $v['voll_cm'] !== ''
+    /* leer_cm und voll_cm duerfen nicht vertauscht sein (seit 1.2.2). Der
+     * Sensor sitzt oben: bei leerem Behaelter ist der Abstand GROSS, bei
+     * vollem klein. Welcher Wert bei leerem und welcher bei vollem Behaelter
+     * gemessen wurde, weiss nur der Anwender - also nie tauschen. */
+    if ($gut('leer_cm') && $gut('voll_cm') && $v['leer_cm'] !== '' && $v['voll_cm'] !== ''
         && (float) $v['leer_cm'] <= (float) $v['voll_cm']) {
         $m[] = us_t('FEHLER.LEER_VOLL');
+        $falsch[] = 'leer_cm';
+        $falsch[] = 'voll_cm';
     }
     if ($v['udp'] === '1' && $v['udp_port'] === '') {
         $m[] = us_t('FEHLER.UDP_OHNE_PORT');
+        $falsch[] = 'udp_port';
     }
 
-    return array($v, $m);
+    return array($v, $m, array_values(array_unique($falsch)));
 }
 
 /** Wert lesen, mit Vorgabe. Leere Werte sind hier zulaessig. */
@@ -857,6 +815,46 @@ function us_status()
     return is_array($j) ? $j : null;
 }
 
+/**
+ * Ab wann ein Wert nicht mehr frisch ist - 3 x (Takt + Messdauer).
+ *
+ * Entscheidung Nr. 4: OK=0 ab dem Dreifachen des Takts. Bis 1.2.10 stand hier
+ * max(180, 3 x Takt): bei Takt 5 s galt ein Wert zweieinhalb Minuten lang als
+ * frisch (gemessen, Code-Pruefer C7, MQTT-Pruefer M6). Die feste Untergrenze
+ * sollte verhindern, dass ein langsamer Durchgang auslost - das bildet die
+ * Messdauer ab, (messungen - 1) x messabstand, gedeckelt wie im Dienst
+ * (us_common.messplan, 180 s). Durchgang 02.10.2026, C5.
+ */
+function us_ok_grenze($cfg)
+{
+    $takt = max(5, (int) us_cfg($cfg, 'intervall', '60'));
+    $n = max(1, (int) us_cfg($cfg, 'messungen', '5'));
+    $abstand = max(0.05, (float) str_replace(',', '.', us_cfg($cfg, 'messabstand', '0.2')));
+    $dauer = min(180.0, ($n - 1) * $abstand);
+    return (int) ceil(3 * ($takt + $dauer));
+}
+
+/** Alter der letzten gelungenen Messung OHNE Kappung bei 0 - negativ heisst
+ *  "Zeitstempel in der Zukunft". null = keine Zustandsdatei oder kein zeit. */
+function us_status_alter_roh()
+{
+    $s = us_status();
+    if (!$s || !isset($s['zeit']) || !is_numeric($s['zeit'])) {
+        return null;
+    }
+    return time() - (int) $s['zeit'];
+}
+
+/** Alter des Herzschlags (Dienst lebt und hat einen Durchgang beendet). */
+function us_herzschlag_alter()
+{
+    $s = us_status();
+    if (!$s || !isset($s['herzschlag']) || !is_numeric($s['herzschlag'])) {
+        return null;
+    }
+    return time() - (int) $s['herzschlag'];
+}
+
 /** Wie alt ist die Zustandsdatei in Sekunden? -1 = keine. */
 function us_status_alter()
 {
@@ -1000,9 +998,7 @@ function us_dienst($aktion)
      * Pruefung-Ultraschall-1.2.8, Fall H4). Was Prozesse startet oder
      * Signale schickt, laeuft nur aus der Installation. */
     if ($p['home'] === '') {
-        return 'nicht ausgefuehrt: keine LoxBerry-Wurzel gefunden (ausgepacktes '
-            . 'Archiv oder Kopie). Den Dienst startet und haelt nur die '
-            . 'installierte Oberflaeche an.';
+        return us_t('DIENST.KEINE_WURZEL');
     }
     if (in_array($aktion, array('stop', 'restart'), true)) {
         // Gezielt die eigenen PIDs beenden statt "pkill -f ultraschall.py" -
@@ -1026,21 +1022,59 @@ function us_dienst($aktion)
             if ($rest) {
                 sleep(1);
             }
-            $meldungen[] = 'angehalten (PID ' . implode(', ', $ziel) . ')';
+            $meldungen[] = sprintf(us_t('DIENST.ANGEHALTEN'), implode(', ', $ziel));
             $uebrig = us_dienst_pids();
             if ($uebrig) {
-                $meldungen[] = 'FEHLER: der Dienst laeuft weiter (PID '
-                    . implode(', ', $uebrig) . ')';
+                $meldungen[] = sprintf(us_t('DIENST.LAEUFT_WEITER'), implode(', ', $uebrig));
             }
         } else {
-            $meldungen[] = 'lief nicht';
+            $meldungen[] = us_t('DIENST.LIEF_NICHT');
         }
         @unlink($p['pid']);
     }
     if (in_array($aktion, array('start', 'restart'), true)) {
         if (!is_file($skript)) {
-            return 'Dienst nicht gefunden: ' . $skript;
+            return sprintf(us_t('DIENST.NICHT_GEFUNDEN'), $skript);
         }
+        /* EINE STARTSPERRE FUER ALLE STARTWEGE (Durchgang 02.10.2026, I3).
+         *
+         * Gemessen in WSL (Installer-Pruefer D1/D2): zwei Waechterlaeufe in
+         * derselben Sekunde, oder daemon und Waechter zugleich, ergaben in
+         * 10 von 10 Runden ZWEI Dienste - Pruefen und Starten geschahen ohne
+         * Sperre. Waechter, daemon, postinstall.sh und dieser Knopf sperren
+         * jetzt alle auf dieselbe Datei (flock auf ultraschall.py) und fragen
+         * erst DANACH, ob schon einer laeuft. Gewartet wird wie dort bis 15 s.
+         *
+         * Die Sperre wird NICHT an den Dienst vererbt: ein von PHP geoeffneter
+         * Deskriptor geht an jedes Kind (Gedaechtnis "Sperre vererbt sich an
+         * Kinder"), und ein Dienst, der sie haelt, sperrte jeden spaeteren
+         * Start fuer immer. Der Start schliesst deshalb genau diesen
+         * Deskriptor, und hinterher wird ausdruecklich entsperrt. */
+        $sperre = @fopen($skript, 'r');
+        $gesperrt = false;
+        if ($sperre !== false) {
+            for ($i = 0; $i < 150 && !$gesperrt; $i++) {
+                if (@flock($sperre, LOCK_EX | LOCK_NB)) {
+                    $gesperrt = true;
+                } else {
+                    usleep(100000);
+                }
+            }
+            if (!$gesperrt) {
+                @fclose($sperre);
+                $meldungen[] = us_t('DIENST.SPERRE');
+                return implode("\n", $meldungen);
+            }
+        }
+        $us_ende = function () use (&$sperre, $gesperrt) {
+            if ($sperre !== false) {
+                if ($gesperrt) {
+                    @flock($sperre, LOCK_UN);
+                }
+                @fclose($sperre);
+                $sperre = false;
+            }
+        };
         /* ZWEI FRAGEN VOR DEM START (seit 1.2.7).
          *
          * Bis 1.2.6 startete diese Stelle bedingungslos. Gemessen in WSL am
@@ -1057,9 +1091,8 @@ function us_dienst($aktion)
          *    gestartet wird nicht. */
         $alter = us_marke_alter();
         if ($alter >= 0) {
-            $meldungen[] = 'nicht gestartet: es laeuft gerade eine Aktualisierung '
-                . 'dieses Plugins (seit ' . $alter . ' Sekunden). '
-                . 'Nach der Installation startet der Dienst von selbst.';
+            $us_ende();
+            $meldungen[] = sprintf(us_t('DIENST.MARKE'), $alter);
             return implode("\n", $meldungen);
         }
         /* 2. Laeuft schon einer? us_dienst_pid() sieht argumentweise nach -
@@ -1068,7 +1101,8 @@ function us_dienst($aktion)
          *    dieselbe Zustandsdatei und dieselben MQTT-Themen. */
         $schon = us_dienst_pid();
         if ($schon > 0) {
-            $meldungen[] = 'nicht gestartet: der Dienst laeuft bereits (PID ' . $schon . ')';
+            $us_ende();
+            $meldungen[] = sprintf(us_t('DIENST.LAEUFT_BEREITS'), $schon);
             return implode("\n", $meldungen);
         }
         /* EIGENE STARTDATEI, NICHT DAS PROTOKOLL (seit 1.2.6).
@@ -1086,11 +1120,156 @@ function us_dienst($aktion)
          * ">" statt ">>": die Datei faengt auf, was VOR dem Protokoll
          * passiert, und wird bei jedem Start geleert. */
         $log = $p['logdir'] . '/ultraschall_start.log';
-        @exec('nohup ' . escapeshellarg($skript) . ' > ' . escapeshellarg($log)
-            . ' 2>&1 & echo gestartet', $meldungen);
+        $fd = ($sperre !== false) ? us_eigener_deskriptor($skript) : null;
+        $befehl = 'nohup ' . escapeshellarg($skript) . ' > ' . escapeshellarg($log)
+            . ' 2>&1' . ($fd !== null ? ' ' . $fd . '<&-' : '') . ' &';
+        $aus = array();
+        if (is_file('/bin/bash')) {
+            // bash, nicht sh: dash kennt nur einstellige Deskriptornummern.
+            @exec('/bin/bash -c ' . escapeshellarg($befehl) . ' && echo ok', $aus);
+        } else {
+            @exec($befehl . ' echo ok', $aus);
+        }
+        if ($aus) {
+            $meldungen[] = us_t('DIENST.GESTARTET');
+        }
         sleep(3);
+        $us_ende();
     }
     return implode("\n", $meldungen);
+}
+
+/**
+ * Die Nummer des Deskriptors, unter dem DIESER Prozess $pfad offen hat
+ * (I3) - ueber /proc/self/fd. null, wenn es nicht genau einer ist oder es
+ * /proc nicht gibt; dann bleibt es beim ausdruecklichen Entsperren.
+ */
+function us_eigener_deskriptor($pfad)
+{
+    $ziel = @realpath($pfad);
+    if ($ziel === false || !is_dir('/proc/self/fd')) {
+        return null;
+    }
+    $treffer = array();
+    foreach ((array) @scandir('/proc/self/fd') as $e) {
+        if (preg_match('/^[0-9]+$/', (string) $e) !== 1 || (int) $e < 3) {
+            continue;
+        }
+        if (@readlink('/proc/self/fd/' . $e) === $ziel) {
+            $treffer[] = (int) $e;
+        }
+    }
+    return count($treffer) === 1 ? $treffer[0] : null;
+}
+
+/**
+ * Ein frueheres Themenpraefix vormerken (Durchgang 02.10.2026, M3).
+ *
+ * Wer das Praefix in der Oberflaeche aendert, waehrend der Dienst nicht
+ * laeuft oder MQTT aus ist, laesst unter dem alten online=0 zurueckbehalten
+ * stehen. Der Dienst raeumt vorgemerkte Praefixe ab, sobald er verbunden
+ * ist; die Deinstallation leert alle. Dieselbe Datei schreibt
+ * bin/us_common.py (praefix_vormerken). Rueckgabe: steht danach in der Liste.
+ */
+function us_praefix_vormerken($praefix)
+{
+    $f = us_paths()['praefixe'];
+    $praefix = (string) $praefix;
+    if ($f === '' || preg_match('/^[A-Za-z0-9_-]+$/', $praefix) !== 1) {
+        return false;
+    }
+    $liste = array();
+    if (is_file($f)) {
+        $j = @json_decode((string) @file_get_contents($f), true);
+        if (is_array($j)) {
+            foreach ($j as $x) {
+                if (is_string($x) && preg_match('/^[A-Za-z0-9_-]+$/', $x) === 1
+                    && !in_array($x, $liste, true)) {
+                    $liste[] = $x;
+                }
+            }
+        }
+    }
+    if (in_array($praefix, $liste, true)) {
+        return true;
+    }
+    $liste[] = $praefix;
+    $tmp = $f . '.tmp.' . getmypid();
+    $js = json_encode($liste);
+    if ($js === false || @file_put_contents($tmp, $js) !== strlen($js)) {
+        @unlink($tmp);
+        return false;
+    }
+    @chmod($tmp, 0600);
+    if (!@rename($tmp, $f)) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
+}
+
+/* ==================================================================
+ * Einmalmeldung nach einem POST (Durchgang 02.10.2026, O1)
+ *
+ * Hausstandard (Regeln/04, Raumklima 0.11.8): jeder POST-Handler endet mit
+ * 303 und exit; das Ergebnis reist in data/plugins/<ordner>/
+ * einmalmeldung.json, 0600, wird NUR beim GET gelesen, dabei geloescht und
+ * nach 120 s verworfen. Bis 1.2.10 wurde nach jedem POST gerendert: F5
+ * speicherte erneut, startete den Dienst erneut neu und meldete nach
+ * "Neues Token" einen fremden Absender (gemessen, Oberflaechen-Pruefer 1).
+ * Keine Zugangsdaten: das Aktionstoken reist nie mit.
+ * ================================================================== */
+function us_flash_datei()
+{
+    return us_paths()['datadir'] . '/einmalmeldung.json';
+}
+
+function us_flash_schreiben($daten)
+{
+    $f = us_flash_datei();
+    if (!is_dir(dirname($f))) {
+        @mkdir(dirname($f), 0775, true);
+    }
+    if (isset($daten['eingaben']['werte']) && is_array($daten['eingaben']['werte'])) {
+        unset($daten['eingaben']['werte']['aktionstoken']);
+    }
+    $daten['ts'] = time();
+    $js = json_encode($daten, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($js === false) {
+        return false;
+    }
+    $tmp = $f . '.tmp.' . getmypid();
+    $fh = @fopen($tmp, 'c');
+    if ($fh === false) {
+        return false;
+    }
+    @chmod($tmp, 0600);
+    $ok = (@ftruncate($fh, 0) !== false) && (@fwrite($fh, $js) === strlen($js));
+    @fclose($fh);
+    if (!$ok || !@rename($tmp, $f)) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
+}
+
+/** Liest die Einmalmeldung und LOESCHT sie. null = keine oder zu alt. */
+function us_flash_lesen()
+{
+    $f = us_flash_datei();
+    if (!is_file($f)) {
+        return null;
+    }
+    $d = @json_decode((string) @file_get_contents($f), true);
+    @unlink($f);
+    if (!is_array($d) || !isset($d['ts'])) {
+        return null;
+    }
+    $alter = time() - (int) $d['ts'];
+    if ($alter < -5 || $alter > 120) {
+        return null;
+    }
+    return $d;
 }
 
 /** Miniserver aus general.json. */
@@ -1250,8 +1429,8 @@ function us_felder_endpunkt()
 function us_sensoren()
 {
     return array(
-        'srf02'  => 'SRF02 am I2C-Bus (auch SRF08, SRF10)',
-        'hcsr04' => 'HC-SR04 an zwei GPIO-Pins',
+        'srf02'  => us_t('TEXT.SENSOR_SRF02'),
+        'hcsr04' => us_t('TEXT.SENSOR_HCSR04'),
     );
 }
 
@@ -1320,18 +1499,46 @@ function us_fuellstand($cfg, $entfernung)
     if ($entfernung === null || trim($leer) === '' || trim($voll) === '') {
         return array(null, null);
     }
+    if (!is_numeric(trim($leer)) || !is_numeric(trim($voll))) {
+        return array(null, null);
+    }
     $leer = (float) $leer;
     $voll = (float) $voll;
-    if (abs($leer - $voll) < 0.001) {
+    /* DIESELBE RECHNUNG WIE PYTHON (Durchgang 02.10.2026, C4). Bis 1.2.10
+     * fing diese Seite nur "leer == voll" ab; bei vertauschten Grenzen zeigte
+     * der Reiter Test einen rueckwaerts laufenden Fuellstand (20/100 bei
+     * 25 cm: 6,3 %), waehrend der Dienst keinen rechnete. Der Sensor sitzt
+     * oben: leer heisst grosser Abstand. Kein Wert, und der Reiter Test sagt
+     * warum (us_fuellstand_hinweis). */
+    if (!is_finite($leer) || !is_finite($voll) || $leer - $voll < 0.001) {
         return array(null, null);
     }
     $prozent = max(0.0, min(100.0, ($leer - $entfernung) / ($leer - $voll) * 100.0));
     $liter = null;
     $vol = trim(us_roh($cfg, 'volumen_liter'));
-    if ($vol !== '') {
+    // Gesamtvolumen nur, wenn groesser als 0 (C7) - wie Python.
+    if ($vol !== '' && is_numeric($vol) && (float) $vol > 0) {
         $liter = round((float) $vol * $prozent / 100.0, 1);
     }
     return array(round($prozent, 1), $liter);
+}
+
+/** Warum kein Fuellstand gerechnet wird, obwohl beide Grenzen eingetragen
+ *  sind - '' sonst (C4). */
+function us_fuellstand_hinweis($cfg)
+{
+    $leer = trim(us_roh($cfg, 'leer_cm'));
+    $voll = trim(us_roh($cfg, 'voll_cm'));
+    if ($leer === '' || $voll === '') {
+        return '';
+    }
+    if (!is_numeric($leer) || !is_numeric($voll)) {
+        return us_t('TEST.FUELL_UNLESBAR');
+    }
+    if ((float) $leer - (float) $voll < 0.001) {
+        return sprintf(us_t('TEST.FUELL_VERTAUSCHT'), $leer, $voll);
+    }
+    return '';
 }
 
 /* ==================================================================
@@ -1657,14 +1864,33 @@ function us_abo_text()
 function us_sicherung_lesen($roh, $bestand = null)
 {
     $mangel = array();
+    $hinweise = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
-        return array(null, array(us_t('TEXT.SICH_KEIN_JSON')), 0);
+        return array(null, array(us_t('TEXT.SICH_KEIN_JSON')), 0, array());
     }
     $bekannt = array_keys(us_defaults());
     $anzahl = 0;
     $gelesen = array();
+    $token_leer = false;
     foreach ($daten as $k => $w) {
+        /* DER LESBARE KOPF GEHOERT ZUR DATEI (Durchgang 02.10.2026, O5).
+         * _hinweis, _stand und _warnung schreibt "Einstellungen sichern"
+         * selbst hinein (CLAUDE.md 9). Bis 1.2.10 wurde eine Datei mit
+         * solchem Kopf als fremd abgewiesen (gemessen, Oberflaechen-
+         * Pruefer 8). */
+        if (is_string($k) && $k !== '' && $k[0] === '_') {
+            continue;
+        }
+        /* EIN LEERES ODER null-TOKEN LOESCHT KEINES (O6). Bis 1.2.10 wurde
+         * es angenommen: jede Adresse im Miniserver antwortete danach 403,
+         * und die Oberflaeche liess nur noch "Neues Token" zu (gemessen,
+         * Code-Pruefer C6, Oberflaechen-Pruefer 7). Es gilt wie ein
+         * fehlender Schluessel: das geltende bleibt, mit Hinweis. */
+        if ($k === 'aktionstoken' && ($w === null || $w === '')) {
+            $token_leer = true;
+            continue;
+        }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(us_t('TEXT.SICH_FREMD'), us_e((string) $k));
             continue;
@@ -1703,9 +1929,13 @@ function us_sicherung_lesen($roh, $bestand = null)
         if ($bestand === null) {
             list($bestand) = us_config_read(false);
         }
-        if (is_array($bestand) && isset($bestand['aktionstoken'])
-            && (string) $bestand['aktionstoken'] !== '') {
+        $us_hat = is_array($bestand) && isset($bestand['aktionstoken'])
+            && (string) $bestand['aktionstoken'] !== '';
+        if ($us_hat) {
             $gelesen['aktionstoken'] = (string) $bestand['aktionstoken'];
+        }
+        if ($token_leer) {
+            $hinweise[] = us_t($us_hat ? 'TEXT.SICH_TOKEN_LEER' : 'TEXT.SICH_TOKEN_LEER_KEINS');
         }
     }
 
@@ -1724,11 +1954,11 @@ function us_sicherung_lesen($roh, $bestand = null)
     if (!$mangel) {
         list($geprueft, $wertmaengel) = us_pruefen($gelesen);
         if (!$wertmaengel) {
-            return array($geprueft, array(), $anzahl);
+            return array($geprueft, array(), $anzahl, $hinweise);
         }
         $mangel = $wertmaengel;
     }
-    return array(null, $mangel, $anzahl);
+    return array(null, $mangel, $anzahl, $hinweise);
 }
 
 /* ==================================================================
@@ -1841,8 +2071,17 @@ function us_endpunkt_probe($token, $frisch = false)
         $rumpf = file_get_contents($adr, false, $ctx);
         @ini_set('default_socket_timeout', (string) $us_sock_alt);
         restore_error_handler();
-        if (isset($http_response_header)) {
-            foreach ((array) $http_response_header as $z) {
+        /* PHP 8.5 kuendigt die vordefinierte lokale Variable
+         * http_response_header ab, schon beim Uebersetzen ihres Namens; mit
+         * PHP 9 faellt sie weg (Durchgang 02.10.2026, C8). Ab 8.4 gibt es die
+         * Funktion; darunter wird die Variable ueber ihren Namen gelesen, so
+         * dass 8.5 beim Uebersetzen nichts zu melden hat. */
+        $us_kopfname = 'http_response_header';
+        $us_kopfzeilen = function_exists('http_get_last_response_headers')
+            ? http_get_last_response_headers()
+            : (isset($$us_kopfname) ? $$us_kopfname : null);
+        if (is_array($us_kopfzeilen)) {
+            foreach ($us_kopfzeilen as $z) {
                 if (preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) {
                     $code = (int) $m[1];
                 }
@@ -1925,18 +2164,21 @@ function us_pruefzeilen($cfg, $lage, $netz = false)
     $j(us_t('PRUEF.DIENST'), $pid > 0,
        $pid > 0 ? sprintf(us_t('PRUEF.DIENST_JA'), $pid) : us_t('PRUEF.DIENST_NEIN'));
 
-    $alter = us_status_alter();
-    $takt = (int) us_cfg($cfg, 'intervall', '60');
-    $grenze = max(180, 3 * $takt);
+    /* Beurteilt wird der HERZSCHLAG, nicht das Alter der letzten Messung
+     * (Durchgang 02.10.2026, C1): ein Dienst, der laeuft, den Sensor aber
+     * nicht oeffnen kann, arbeitet - er misst nur nicht. Das sagt VALID. Die
+     * Grenze ist dieselbe wie fuer OK (C5). */
+    $alter = us_herzschlag_alter();
+    $grenze = us_ok_grenze($cfg);
     if ($pid <= 0) {
         // Ueber einen Dienst, der gar nicht laeuft, wird kein Herzschlag
         // beurteilt.
         $o(us_t('PRUEF.ARBEITET'), us_t('PRUEF.ARBEITET_OFFEN'));
-    } elseif ($alter < 0) {
+    } elseif ($alter === null) {
         $o(us_t('PRUEF.ARBEITET'), us_t('PRUEF.ARBEITET_KEINE_DATEI'));
     } else {
-        $j(us_t('PRUEF.ARBEITET'), $alter <= $grenze,
-           sprintf(us_t('PRUEF.ARBEITET_TEXT'), $alter, $grenze));
+        $j(us_t('PRUEF.ARBEITET'), $alter >= -5 && $alter <= $grenze,
+           sprintf(us_t('PRUEF.ARBEITET_TEXT'), max(0, $alter), $grenze));
     }
 
     // --- Token und Endpunkt ------------------------------------------------
@@ -1984,8 +2226,18 @@ function us_pruefzeilen($cfg, $lage, $netz = false)
 
             $formulare = substr_count($q, '<form ');
             $merkmale = substr_count($q, 'us_fmt($us_cfg)');
-            $j(us_t('PRUEF.FORMULARE'), $formulare > 0 && $merkmale >= $formulare,
-               sprintf(us_t('PRUEF.FORMULARE_TEXT'), $merkmale, $formulare));
+            /* DAS MERKMAL MUSS GEFUELLT SEIN (Durchgang 02.10.2026, O8). Bis
+             * 1.2.10 zaehlte diese Zeile nur die Zeichenfolge im Quelltext und
+             * zeigte bei leerem Token einen Haken, waehrend alle 19 Formulare
+             * ein LEERES Merkmal trugen (gemessen, Oberflaechen-Pruefer 10).
+             * Gemessen wird das gerenderte Feld, wie es jedes Formular
+             * ausgibt. */
+            $us_feld = us_fmt($cfg);
+            $us_gefuellt = preg_match('/name="formtoken" value="[0-9a-f]{64}"/', $us_feld) === 1;
+            $j(us_t('PRUEF.FORMULARE'), $formulare > 0 && $merkmale >= $formulare && $us_gefuellt,
+               $us_gefuellt
+                   ? sprintf(us_t('PRUEF.FORMULARE_TEXT'), $merkmale, $formulare)
+                   : sprintf(us_t('PRUEF.FORMULARE_LEER'), $merkmale, $formulare));
         }
     }
 
@@ -2041,9 +2293,39 @@ function us_pruefzeilen($cfg, $lage, $netz = false)
     $j(us_t('PRUEF.VORLAGEN'), $wieviel > 0 && !$kaputt,
        $kaputt ? implode(', ', $kaputt) : sprintf(us_t('PRUEF.VORLAGEN_JA'), $wieviel));
 
+    // --- MQTT dieses Plugins (Durchgang 02.10.2026, O9) -------------------------
+    /* Bis 1.2.10 gab es keine Zeile zum MQTT-Schalter des Plugins, und die
+     * Gateway-Zeile blieb gruen, auch wenn dieses Plugin gar nichts sendet
+     * (gemessen, Oberflaechen-Pruefer 11; Regeln/04, BatterieBMS 0.9.17).
+     * Ist MQTT aus, sind die Folgezeilen grau: ueber einen Weg, der nicht
+     * benutzt wird, ist nichts zu sagen. Der Verbindungszustand kommt aus
+     * der Zustandsdatei (MQTT-Pruefer M2): eine abgewiesene Anmeldung stand
+     * bis 1.2.10 nur im Protokoll. */
+    $us_mqtt_an = us_cfg($cfg, 'mqtt', '1') === '1';
+    if ($us_mqtt_an) {
+        $j(us_t('PRUEF.MQTT_EIN'), true, us_t('PRUEF.MQTT_EIN_JA'));
+    } else {
+        $o(us_t('PRUEF.MQTT_EIN'), us_t('PRUEF.MQTT_EIN_AUS'));
+    }
+    $us_st = us_status();
+    if (!$us_mqtt_an) {
+        $o(us_t('PRUEF.MQTT_VERB'), us_t('PRUEF.MQTT_AUS_GRAU'));
+    } elseif ($pid <= 0 || !is_array($us_st) || !isset($us_st['mqtt'])) {
+        $o(us_t('PRUEF.MQTT_VERB'), us_t('PRUEF.MQTT_VERB_OFFEN'));
+    } elseif ($us_st['mqtt'] === 'verbunden') {
+        $j(us_t('PRUEF.MQTT_VERB'), true, us_t('PRUEF.MQTT_VERB_JA'));
+    } elseif ($us_st['mqtt'] === 'abgewiesen') {
+        $j(us_t('PRUEF.MQTT_VERB'), false, sprintf(us_t('PRUEF.MQTT_VERB_ABGEWIESEN'),
+            isset($us_st['mqtt_grund']) ? (string) $us_st['mqtt_grund'] : ''));
+    } else {
+        $j(us_t('PRUEF.MQTT_VERB'), false, us_t('PRUEF.MQTT_VERB_NEIN'));
+    }
+
     // --- MQTT-Gateway ----------------------------------------------------------
     $g = us_mqtt_gateway_info();
-    if ($g === null) {
+    if (!$us_mqtt_an) {
+        $o(us_t('PRUEF.GATEWAY'), us_t('PRUEF.MQTT_AUS_GRAU'));
+    } elseif ($g === null) {
         $o(us_t('PRUEF.GATEWAY'), us_t('PRUEF.GATEWAY_OFFEN'));
     } else {
         $j(us_t('PRUEF.GATEWAY'), $g['autostart'],

@@ -258,16 +258,21 @@ fi
 #
 # Nachgezaehlt statt behauptet: gemeldet wird der Erfolg nur, wenn die
 # Datei danach wirklich weg ist.
+#
+# Seit dem Durchgang 02.10.2026 (I1) auch die beiseitegelegte .alt, die
+# preinstall.sh, postinstall.sh und preupgrade.sh anlegen.
 ZWEITSCHRIFT="$BASE/config/plugins/$PDIR.backup.ultraschall.cfg"
-if [ -f "$ZWEITSCHRIFT" ]; then
-    rm -f "$ZWEITSCHRIFT"
-    if [ -f "$ZWEITSCHRIFT" ]; then
-        echo "<WARNING> Zweitschrift $ZWEITSCHRIFT liess sich nicht entfernen."
-        echo "<WARNING> Sie enthaelt die Einstellungen und gehoert von Hand geloescht."
-    else
-        echo "<OK> Zweitschrift der Einstellungen entfernt."
+for US_Z in "$ZWEITSCHRIFT" "$ZWEITSCHRIFT.alt"; do
+    if [ -e "$US_Z" ] || [ -L "$US_Z" ]; then
+        rm -f "$US_Z"
+        if [ -e "$US_Z" ] || [ -L "$US_Z" ]; then
+            echo "<WARNING> Zweitschrift $US_Z liess sich nicht entfernen."
+            echo "<WARNING> Sie enthaelt die Einstellungen und gehoert von Hand geloescht."
+        else
+            echo "<OK> Zweitschrift der Einstellungen entfernt: $(basename "$US_Z")."
+        fi
     fi
-fi
+done
 
 # Der Cron-Waechter. LoxBerry legt ihn beim Installieren unter
 # system/cron/cron.05min/<plugin> ab und entfernt ihn beim Deinstallieren

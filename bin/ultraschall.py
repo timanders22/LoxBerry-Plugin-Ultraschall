@@ -28,6 +28,7 @@ import os
 import signal
 import socket
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -109,12 +110,17 @@ logging.basicConfig(
 log = logging.getLogger("ultraschall")
 # Zweiter Name fuer DENSELBEN Logger, kein zweiter Logger.
 #
-# Werkzeuge/connack_klartext_pruefen.py schneidet den Anmelde-Rueckruf
-# aus dieser Datei und fuehrt ihn mit eigenen Attrappen aus; die
-# Protokoll-Attrappe haengt es unter dem Namen _LOGGER ein. Ohne diesen
-# Namen scheitert der Lauf mit einem NameError, und die Pruefung meldet
-# "nicht gemessen" - eine Regel, die kein Werkzeug findet, ist eine
-# halbe Regel (CLAUDE.md, Abschnitt 6).
+# Werkzeuge/connack_klartext_pruefen.py haengt seine Protokoll-Attrappe
+# unter dem Namen _LOGGER ein, wenn es einen Anmelde-Rueckruf aus dieser
+# Datei schneidet und mit eigenen Attrappen ausfuehrt.
+#
+# ES MISST DIESEN RUECKRUF ZURZEIT NICHT (berichtigt im Durchgang
+# 02.10.2026, MQTT-Pruefer M9). Das Werkzeug nimmt die ERSTE Zuweisung an
+# on_connect in der Datei, und das ist seit 1.2.8 der verschachtelte
+# Rueckruf in broker_leeren(), nicht mqtt_angemeldet(). Es meldet deshalb
+# "nicht gemessen". Bis 1.2.10 stand hier, das Werkzeug pruefe diesen
+# Rueckruf - das stimmte nicht. Der Name bleibt fuer den Tag, an dem das
+# Werkzeug alle Rueckrufe prueft (Werkzeugpunkt in VERBESSERUNGEN_OFFEN).
 _LOGGER = log
 
 
@@ -174,13 +180,43 @@ def mqtt_angemeldet(client, userdata, flags, rc, properties=None):
     else:
         grund = MQTT_GRUENDE.get(
             code, "Der Broker hat die Anmeldung abgelehnt.")
-        _LOGGER.error("MQTT-Anmeldung abgelehnt: %s (Code %s)", grund, code)
+        # PROTOKOLLBREMSE (Durchgang 02.10.2026, M2): paho verbindet sich
+        # selbst neu, und jeder abgewiesene Versuch kam hier an - gemessen
+        # 29 Fehlerzeilen in 40 s. Mit der Huelle als userdata hoechstens
+        # eine Zeile je Minute; ohne userdata (Pruefwerkzeug) wie bisher.
+        melden = True
+        if userdata is not None:
+            jetzt = time.time()
+            if jetzt - getattr(userdata, "ablehnung_gemeldet", 0.0) < 60:
+                melden = False
+            else:
+                try:
+                    userdata.ablehnung_gemeldet = jetzt
+                except AttributeError:
+                    pass
+        if melden:
+            _LOGGER.error("MQTT-Anmeldung abgelehnt: %s (Code %s)", grund, code)
     if userdata is not None:
         try:
             userdata.connack = code
             userdata.abgelehnt = grund
         except AttributeError:
             pass
+        # ONLINE=1 BEI JEDER ANMELDUNG (Durchgang 02.10.2026, M1).
+        #
+        # Nach einem Abriss setzt der Broker den Letzten Willen online=0
+        # retained. paho verbindet sich selbst neu - aber online=1 kam bis
+        # 1.2.10 erst mit dem naechsten Durchgang, bei Takt 60 s also nach
+        # bis zu einer Minute, ohne Sensor nie (gemessen, MQTT-Pruefer M1).
+        # Jetzt geht es hier hinaus, und die Huelle merkt sich, dass alle
+        # Werte einmal neu gesendet werden muessen (M8).
+        nach = getattr(userdata, "nach_anmeldung", None)
+        if code == 0 and callable(nach):
+            try:
+                nach(client)
+            except Exception as fehler:  # noqa: BLE001
+                _LOGGER.warning("MQTT: online=1 nach der Anmeldung nicht "
+                                "gesendet: %s", fehler)
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +345,31 @@ class Mqtt:
         # bei offenem Stand stuendlich erneut (Dienst.altlast_nachfassen).
         self.altlast_stand = None
         self.altlast_zeit = 0.0
+        # M1/M8: der Anmelde-Rueckruf setzt diesen Merker; die Dienstschleife
+        # sendet dann alle zuletzt gesendeten Werte einmal neu.
+        self.neu_verbunden = False
+        # M2: Protokollbremse fuer abgewiesene Anmeldungen und Sendungen.
+        self.ablehnung_gemeldet = 0.0
+        self.sendefehler_gemeldet = 0.0
+        self.sendefehler_still = 0
+
+    def nach_anmeldung(self, client):
+        """Aus dem Anmelde-Rueckruf (paho-Netzfaden): online=1 retained.
+
+        Dasselbe Thema wie der Letzte Wille (Regeln/07, "als Paar"). Nicht
+        ueber senden(): das liest self.client, und waehrend start() ist der
+        Rueckruf schneller als die Zuweisung nicht garantiert."""
+        client.publish(self.praefix + "/online", "1", qos=0, retain=True)
+        self.neu_verbunden = True
+
+    def verbunden(self):
+        """Steht die Verbindung gerade (nicht nur: gibt es eine Huelle)?"""
+        if self.client is None:
+            return False
+        try:
+            return bool(self.client.is_connected())
+        except Exception:  # noqa: BLE001
+            return self.connack == 0
 
     def start(self):
         try:
@@ -540,8 +601,21 @@ class Mqtt:
         # Veroeffentlichung still, und bis 1.2.5 sah das niemand.
         rc = getattr(erg, "rc", 0)
         if rc:
-            log.error("MQTT-Veröffentlichung von %s abgewiesen (Code %s)",
-                      unterthema, rc)
+            # Hoechstens eine Zeile je Minute (M2): waehrend paho mit
+            # abgewiesenen Zugangsdaten weiterprobiert, scheitert JEDE
+            # Sendung - gemessen 29 Zeilen in 40 s, die das Protokoll
+            # verdraengten.
+            jetzt = time.time()
+            if jetzt - self.sendefehler_gemeldet >= 60:
+                log.error("MQTT-Veröffentlichung von %s abgewiesen (Code %s)%s",
+                          unterthema, rc,
+                          "" if not self.sendefehler_still else
+                          " - dazu {0} weitere seit der letzten Meldung".format(
+                              self.sendefehler_still))
+                self.sendefehler_gemeldet = jetzt
+                self.sendefehler_still = 0
+            else:
+                self.sendefehler_still += 1
 
     def stop(self):
         if not self.client:
@@ -613,13 +687,28 @@ class Dienst:
         # unlesbar, bleibt es bei 0 - dann meldet der Endpunkt ALTER und
         # OK=0, und das ist die richtige Richtung.
         self.letzte_messung = 0
+        # DER LETZTE GUELTIGE WERT (Durchgang 02.10.2026, C1/M4). Faellt der
+        # Sensor aus, meldet der Endpunkt ihn mit VALID=0 weiter - wie MQTT,
+        # wo der Altwert im virtuellen Eingang stehen bleibt. Bis 1.2.10
+        # kamen dort leere Felder, die Loxone als 0 liest ("Behaelter leer").
+        self.letzte_gueltig = {"entfernung": None, "prozent": None, "liter": None}
         try:
             with open(gem.STATUS_FILE, "r", encoding="utf-8") as fh:
                 alt_stand = json.load(fh)
             if isinstance(alt_stand, dict):
                 self.letzte_messung = int(alt_stand.get("zeit") or 0)
+                endung = "" if _zahl_oder_none(alt_stand.get("entfernung")) is not None \
+                    else "_letzte"
+                for k in self.letzte_gueltig:
+                    self.letzte_gueltig[k] = _zahl_oder_none(alt_stand.get(k + endung))
         except (OSError, ValueError, TypeError):
             pass
+        # C6: Messfaeden, deren Sensorzugriff die Frist ueberschritten hat.
+        self._haengend = []
+        # M2: zuletzt gemeldeter MQTT-Zustand fuer die Zustandsdatei.
+        self.mqtt_grund = ""
+        # M3: wann die vorgemerkten frueheren Praefixe zuletzt versucht wurden.
+        self.praefixe_zeit = 0.0
         # Wann der naechste MQTT-Verbindungsversuch fruehestens ansteht, und
         # wie lange dann gewartet wird. Siehe mqtt_nachfassen().
         self.mqtt_naechster = 0.0
@@ -670,15 +759,132 @@ class Dienst:
         if self.mqtt.start():
             self.mqtt_wartezeit = 60.0
             self.mqtt_naechster = 0.0
-            # Der Doppelt-senden-Filter kennt den Broker nicht. Ohne dieses
-            # Leeren stuende nach einer wiedergewonnenen Verbindung nur das
-            # im Broker, was sich seither zufaellig geaendert hat.
-            self.letzter_stand.clear()
+            # Der Doppelt-senden-Filter kennt den Broker nicht. Seit dem
+            # Durchgang 02.10.2026 (M8) sendet nach_verbindung() die zuletzt
+            # gesendeten Werte gleich nach der Anmeldung neu - nicht erst
+            # mit dem naechsten Durchgang.
             log.info("MQTT-Verbindung nachgeholt - alle Werte werden neu gesendet")
             return True
         self.mqtt_naechster = jetzt + self.mqtt_wartezeit
         self.mqtt_wartezeit = min(300.0, self.mqtt_wartezeit * 2.0)
         return False
+
+    def mqtt_ablehnung_pruefen(self):
+        """M2: weist der Broker eine WIEDERverbindung ab, wird die Huelle
+        zurueckgenommen. Das Nachfassen baut sie dann mit frisch gelesener
+        general.json neu auf - paho selbst probiert nur mit den alten
+        Zugangsdaten weiter (gemessen: 5 von 5 Versuchen mit dem alten
+        Kennwort, keiner mit dem neuen)."""
+        m = self.mqtt
+        if m.client is None or m.connack in (None, 0):
+            return False
+        self.mqtt_grund = m.abgelehnt or "Code {0}".format(m.connack)
+        self._einmal("mqtt_abgewiesen",
+                     "MQTT: der Broker weist die Anmeldung ab ({0}) - die "
+                     "Verbindung wird neu aufgebaut, die Zugangsdaten werden "
+                     "aus general.json neu gelesen.".format(self.mqtt_grund),
+                     "warning", 60)
+        m._abraeumen()
+        return True
+
+    def nach_verbindung(self):
+        """M1/M8: nach jeder Anmeldung die zuletzt gesendeten Werte einmal
+        neu senden - der Broker kennt sie nicht, und der Doppelt-senden-
+        Filter hielte sie zurueck. Dazu die vorgemerkten Praefixe."""
+        m = self.mqtt
+        if not m.neu_verbunden:
+            return False
+        m.neu_verbunden = False
+        self.mqtt_grund = ""
+        self._gemeldet.pop("mqtt_abgewiesen", None)
+        stand = dict(self.letzter_stand)
+        for thema in sorted(stand):
+            m.senden(thema, stand[thema])
+        if stand:
+            log.info("MQTT angemeldet - %d zuletzt gesendete Werte erneut "
+                     "gesendet.", len(stand))
+        self.praefixe_nachfassen(sofort=True)
+        return True
+
+    def mqtt_zustand(self):
+        """Fuer die Zustandsdatei und den Reiter Test (M2)."""
+        if not self.mqtt_soll:
+            return "aus"
+        if self.mqtt.verbunden():
+            return "verbunden"
+        if self.mqtt_grund or self.mqtt.abgelehnt:
+            return "abgewiesen"
+        return "nicht_verbunden"
+
+    def praefixe_nachfassen(self, sofort=False):
+        """M3: vorgemerkte fruehere Praefixe abraeumen - bei jeder Anmeldung
+        und stuendlich, nur bei stehender Verbindung."""
+        if not self.mqtt.verbunden():
+            return
+        if not sofort and time.time() - self.praefixe_zeit < 3600:
+            return
+        liste = gem.praefixe_vorgemerkt()
+        if not liste:
+            return
+        self.praefixe_zeit = time.time()
+        for p in liste:
+            if p == self.praefix:
+                # Wieder das aktuelle Praefix - dort sendet der Dienst.
+                gem.praefix_entfernen(p)
+                continue
+            code, geleert, rest, grund = broker_leeren(p, sorted(gem.FELDER))
+            if code == 0:
+                gem.praefix_entfernen(p)
+                log.info("MQTT: frueheres Praefix %s abgeraeumt und nachgelesen "
+                         "(%d Themen).", p, len(geleert))
+            else:
+                self._einmal("praefix_" + p,
+                             "MQTT: frueheres Praefix {0} noch nicht abgeraeumt "
+                             "({1}) - neuer Versuch spaeter.".format(
+                                 p, grund or ", ".join(rest)), "warning")
+
+    def messen_mit_frist(self):
+        """C6: die Messung mit Frist - Messdauer plus 10 s.
+
+        Im Dienst lief sensor.messen() bis 1.2.10 ohne Zeitgrenze im
+        Hauptfaden. Haengt ein Zugriff (I2C-Takt festgehalten, gpiozero
+        wartet), stand der Dienst: keine Zustandsdatei, kein Zaehler, und
+        weil der paho-Netzfaden die Verbindung hielt, blieb online=1
+        stehen. Jetzt misst ein eigener Faden; ueberschreitet er die Frist,
+        bleibt er zurueck (ein Faden laesst sich nicht abbrechen), der
+        Durchgang meldet valid=0 mit Grund, und der Sensor wird neu
+        geoeffnet. Haengen schon drei, wird nicht weiter gestapelt."""
+        self._haengend = [t for t in self._haengend if t.is_alive()]
+        anzahl, abstand, _ = gem.messplan(self.cfg)
+        frist = (anzahl - 1) * abstand + 10.0
+        if len(self._haengend) >= 3:
+            return {"entfernung": None, "roh": [], "verworfen": [],
+                    "fehler": ("{0} fruehere Sensorzugriffe haengen noch - es "
+                               "wird nicht erneut gemessen. Ein Neustart des "
+                               "Dienstes gibt sie frei.").format(len(self._haengend)),
+                    "sensorfehler": False, "haengt": True, "hinweise": []}
+        ablage = {}
+        sensor = self.sensor
+
+        def lauf():
+            try:
+                ablage["e"] = gem.messen(self.cfg, sensor)
+            except Exception as fehler:  # noqa: BLE001
+                ablage["x"] = fehler
+
+        faden = threading.Thread(target=lauf, name="messung", daemon=True)
+        faden.start()
+        faden.join(frist)
+        if faden.is_alive():
+            self._haengend.append(faden)
+            return {"entfernung": None, "roh": [], "verworfen": [],
+                    "fehler": ("Der Sensor hat nicht innerhalb von {0:.0f} s "
+                               "geantwortet - der Zugriff haengt. Der Sensor "
+                               "wird neu geoeffnet.").format(frist),
+                    "sensorfehler": True, "haengt": True, "hinweise": []}
+        if "x" in ablage:
+            raise ablage["x"]
+        return ablage["e"]
 
     def altlast_nachfassen(self):
         """Ist das einmalige Abraeumen offen geblieben (Broker verweigerte,
@@ -716,9 +922,23 @@ class Dienst:
         except OSError as fehler:
             log.warning("Zustandsdatei nicht schreibbar: %s", fehler)
 
-    def durchgang(self, erzwingen=False):
+    def durchgang(self, erzwingen=False, ausfall=None):
         self.zaehler = 0 if self.zaehler < 0 else (self.zaehler + 1) % 1000
-        ergebnis = gem.messen(self.cfg, self.sensor)
+        if ausfall is not None:
+            # DER SENSOR LIESS SICH NICHT OEFFNEN (Durchgang 02.10.2026, C1).
+            #
+            # Bis 1.2.10 lief in diesem Fall gar kein Durchgang: keine
+            # Zustandsdatei, kein ts/zaehler/online ueber MQTT, der
+            # Herzschlag stand - und der Endpunkt meldete weiter VALID=1 mit
+            # dem alten Abstand, waehrend MQTT valid=0 sagte (gemessen,
+            # Code-Pruefer C1, MQTT-Pruefer M7). Jetzt ist es ein Durchgang
+            # ohne Messung: valid=0, der Grund in last_error, das
+            # Lebenszeichen geht weiter, und im naechsten Takt wird der
+            # Sensor erneut geoeffnet.
+            ergebnis = {"entfernung": None, "roh": [], "verworfen": [],
+                        "fehler": ausfall, "sensorfehler": True, "hinweise": []}
+        else:
+            ergebnis = self.messen_mit_frist()
         # Was an der Konfiguration nicht stimmt, wird gesagt - einmal je
         # Stunde und je Sache. Bis 1.2.1 fiel ein unlesbarer Wert still
         # auf die Vorgabe zurueck; gemessen wurde dann ohne Korrektur,
@@ -729,7 +949,8 @@ class Dienst:
         prozent, liter = gem.fuellstand(self.cfg, entfernung)
 
         if entfernung is None:
-            self._einmal("messung", ergebnis["fehler"], "warning")
+            if ausfall is None:
+                self._einmal("messung", ergebnis["fehler"], "warning")
             self._senden("valid", "0", erzwingen)
             self._senden("last_error", ergebnis["fehler"], erzwingen)
             # NACH EINEM SENSORFEHLER WIRD DER SENSOR NEU AUFGEBAUT
@@ -750,12 +971,6 @@ class Dienst:
             # dass das Geraet antwortet und die Werte nur nicht passen - da
             # hilft kein Neuoeffnen, und wer es in jedem Takt versucht,
             # erzeugt Last ohne Gegenwert.
-            if ergebnis.get("sensorfehler") and self.sensor is not None:
-                try:
-                    self.sensor.schliessen()
-                except Exception:  # noqa: BLE001
-                    pass
-                self.sensor = None
         else:
             self._gemeldet.pop("messung", None)
             log.info("Entfernung %.1f cm%s%s", entfernung,
@@ -767,7 +982,16 @@ class Dienst:
                 self._senden("level", prozent, erzwingen)
             if liter is not None:
                 self._senden("liter", liter, erzwingen)
-            self._senden("last_error", "", erzwingen)
+            # Ein gueltiger Durchgang MIT Sensorfehlern (C2) traegt den Fehler
+            # weiter in last_error - bis 1.2.10 ging hier immer "" hinaus,
+            # waehrend die Zustandsdatei den Fehler trug.
+            self._senden("last_error", ergebnis["fehler"], erzwingen)
+            if ergebnis["fehler"]:
+                self._einmal("teilfehler", ergebnis["fehler"], "warning")
+            else:
+                self._gemeldet.pop("teilfehler", None)
+            self.letzte_gueltig = {"entfernung": entfernung, "prozent": prozent,
+                                   "liter": liter}
 
             if self.cfg.get("udp", "0") == "1":
                 ok, wohin = udp_senden(self.cfg, int(round(entfernung)))
@@ -775,6 +999,19 @@ class Dienst:
                     log.info("Per UDP an %s gesendet: %d", wohin, round(entfernung))
                 else:
                     log.warning("UDP fehlgeschlagen: %s", wohin)
+
+        # NEU OEFFNEN NACH JEDEM SENSORFEHLER (Durchgang 02.10.2026, C2).
+        # Bis 1.2.10 nur, wenn der Durchgang KEINEN Wert ergab - ein
+        # Wackler, der jeden Durchgang ab der dritten Messung trifft, wurde
+        # damit nie durch Neuoeffnen behoben. Haengt der Zugriff (C6), wird
+        # das alte Objekt nicht geschlossen: das koennte selbst haengen.
+        if ergebnis.get("sensorfehler") and self.sensor is not None:
+            if not ergebnis.get("haengt"):
+                try:
+                    self.sensor.schliessen()
+                except Exception:  # noqa: BLE001
+                    pass
+            self.sensor = None
 
         # DER HERZSCHLAG. Er geht in JEDEM Durchgang hinaus, auch wenn sich
         # sonst nichts geaendert hat - der Doppelt-senden-Filter wird fuer
@@ -829,9 +1066,18 @@ class Dienst:
             "entfernung": entfernung,
             "prozent": prozent,
             "liter": liter,
+            # Der letzte GUELTIGE Stand (M4) - der Endpunkt liefert ihn bei
+            # einem Ausfall mit VALID=0 statt leerer Felder.
+            "entfernung_letzte": self.letzte_gueltig["entfernung"],
+            "prozent_letzte": self.letzte_gueltig["prozent"],
+            "liter_letzte": self.letzte_gueltig["liter"],
             "roh": ergebnis["roh"],
             "verworfen": ergebnis["verworfen"],
             "fehler": ergebnis["fehler"],
+            # Der MQTT-Zustand fuer den Reiter Test (M2).
+            "mqtt": self.mqtt_zustand(),
+            "mqtt_grund": ("" if self.mqtt.verbunden() or not self.mqtt_soll
+                           else (self.mqtt_grund or self.mqtt.abgelehnt)),
         })
 
     def start(self):
@@ -863,6 +1109,7 @@ class Dienst:
 
         while self.laeuft:
             if self.cfg.get("enabled", "0") == "1":
+                ausfall = None
                 if self.sensor is None:
                     try:
                         self.sensor = gem.sensor_aufbauen(self.cfg)
@@ -871,22 +1118,26 @@ class Dienst:
                             log.info("Sensor wieder ansprechbar")
                     except gem.SensorFehler as fehler:
                         self._einmal("sensor", str(fehler))
-                        self._senden("valid", "0")
-                        self._senden("last_error", str(fehler))
                         self.sensor = None
-                if self.sensor is not None:
-                    erzwingen = (time.time() - letzte_vollmeldung) >= vollmeldung_alle
-                    self.durchgang(erzwingen=erzwingen)
-                    if erzwingen:
-                        letzte_vollmeldung = time.time()
+                        ausfall = str(fehler)
+                # C1: auch ohne offenen Sensor ein Durchgang - mit valid=0,
+                # Grund und Lebenszeichen; bei der Vollmeldung mit erzwingen
+                # (M7: valid/last_error gingen bis 1.2.10 nur einmal hinaus).
+                erzwingen = (time.time() - letzte_vollmeldung) >= vollmeldung_alle
+                self.durchgang(erzwingen=erzwingen, ausfall=ausfall)
+                if erzwingen:
+                    letzte_vollmeldung = time.time()
 
             # Einmal je Takt nachsehen, ob das Protokoll zu gross wird.
             log_kappen()
 
             # Und einmal je Takt nachfassen, falls MQTT beim Start nicht
             # zustande kam. Kostet nichts, solange die Verbindung steht.
+            self.mqtt_ablehnung_pruefen()
             self.mqtt_nachfassen()
+            self.nach_verbindung()
             self.altlast_nachfassen()
+            self.praefixe_nachfassen()
 
             if self._mtime() != self.config_mtime:
                 log.info("Konfiguration geändert - wird neu eingelesen")
@@ -939,7 +1190,14 @@ class Dienst:
                     # "ultraschall/online 0" im Broker (Regeln/07). Nur wenn
                     # MQTT an war: wer es ausgeschaltet hatte, will nicht,
                     # dass der Dienst den Broker anspricht.
-                    if mqtt_neu != self.praefix and self.mqtt_soll:
+                    # MQTT AUS RAEUMT AB WIE DER PRAEFIXWECHSEL (Durchgang
+                    # 02.10.2026, M3, Entscheidung Nr. 26). Bis 1.2.10 nur
+                    # beim Praefixwechsel; nach "MQTT aus" blieb online=0
+                    # retained stehen (gemessen, MQTT-Pruefer P2). Was sich
+                    # nicht abraeumen laesst - oder wer das Praefix bei
+                    # ausgeschaltetem MQTT wechselt -, wird vorgemerkt und
+                    # spaeter abgeraeumt; die Deinstallation leert alle.
+                    if (mqtt_neu != self.praefix or not mqtt_an) and self.mqtt_soll:
                         code, geleert, rest, grund = broker_leeren(
                             self.praefix, sorted(gem.FELDER))
                         if code == 2:
@@ -952,6 +1210,18 @@ class Dienst:
                             log.info("MQTT: altes Praefix %s abgeraeumt und "
                                      "nachgelesen (%d Themen).", self.praefix,
                                      len(geleert))
+                        if code != 0 and mqtt_neu != self.praefix:
+                            if gem.praefix_vormerken(self.praefix):
+                                log.info("MQTT: Praefix %s vorgemerkt - neuer "
+                                         "Versuch spaeter, die Deinstallation "
+                                         "leert es.", self.praefix)
+                    elif mqtt_neu != self.praefix:
+                        # MQTT war aus: der Dienst spricht den Broker nicht an.
+                        if gem.praefix_vormerken(self.praefix):
+                            log.info("MQTT: Praefix %s vorgemerkt (MQTT war aus) "
+                                     "- abgeraeumt wird, sobald MQTT verbunden "
+                                     "ist, spaetestens bei der Deinstallation.",
+                                     self.praefix)
                     self.praefix = mqtt_neu
                     self.mqtt = Mqtt(self.praefix)
                     self.mqtt_soll = mqtt_an
@@ -984,6 +1254,10 @@ class Dienst:
             while self.laeuft and time.time() < ende:
                 if self._mtime() != self.config_mtime:
                     break
+                # M1/M8: nach einer Wiederverbindung durch paho nicht bis zum
+                # naechsten Durchgang warten.
+                self.mqtt_ablehnung_pruefen()
+                self.nach_verbindung()
                 time.sleep(min(1.0, max(0.05, ende - time.time())))
 
     def stop(self):
@@ -991,6 +1265,50 @@ class Dienst:
         if self.sensor:
             self.sensor.schliessen()
         self.mqtt.stop()
+
+
+def _zahl_oder_none(w):
+    """Eine endliche Zahl aus der Zustandsdatei, sonst None."""
+    if isinstance(w, bool) or not isinstance(w, (int, float)):
+        return None
+    try:
+        import math
+        return w if math.isfinite(w) else None
+    except (TypeError, ValueError):
+        return None
+
+
+_DIENSTSPERRE = None
+
+
+def dienstsperre_nehmen():
+    """I3 (Durchgang 02.10.2026): nur EIN Dienst je Installation.
+
+    fcntl.flock auf gem.DIENST_SPERRE ohne Warten. Der Deskriptor ist
+    O_CLOEXEC und bleibt offen, solange der Dienst laeuft; das
+    Betriebssystem gibt die Sperre beim Prozessende frei. Ohne fcntl oder
+    ohne anlegbare Datei faellt sie OFFEN aus - dann gilt die Startsperre
+    der Startwege. Rueckgabe False: ein anderer Dienst haelt sie."""
+    global _DIENSTSPERRE
+    try:
+        import fcntl
+    except ImportError:
+        return True
+    gem.ram_ordner_anlegen()
+    try:
+        fd = os.open(gem.DIENST_SPERRE,
+                     os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o644)
+    except OSError as fehler:
+        log.warning("Sperrdatei %s nicht anlegbar (%s) - es gilt nur die "
+                    "Startsperre der Startwege.", gem.DIENST_SPERRE, fehler)
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return False
+    _DIENSTSPERRE = fd
+    return True
 
 
 def pid_schreiben():
@@ -1037,24 +1355,30 @@ def mqtt_leeren():
         return 2
     cfg, _ = gem.konfiguration_lesen()
     praefix = (cfg.get("themenpraefix") or "ultraschall").strip("/") or "ultraschall"
-    code, geleert, rest, grund = broker_leeren(praefix, sorted(gem.FELDER))
-    if code == 2:
-        print("<INFO> MQTT: zurueckbehaltene Themen unter {0}/ nicht geleert "
-              "- {1}. Sie sind von Hand zu loeschen (System -> MQTT "
-              "Gateway).".format(praefix, grund))
-        return 2
-    if rest:
-        print("<WARNING> MQTT: {0} zurueckbehaltene Themen stehen nach dem "
-              "Loeschen noch im Broker: {1}".format(len(rest), ", ".join(rest)))
-        return 1
-    if geleert:
-        print("<OK> MQTT: {0} zurueckbehaltene Themen unter {1}/ geloescht "
-              "und nachgelesen ({2}).".format(len(geleert), praefix,
-                                              ", ".join(geleert)))
-    else:
-        print("<OK> MQTT: unter {0}/ stand nichts zurueckbehalten "
-              "(nachgelesen).".format(praefix))
-    return 0
+    # M3 (Durchgang 02.10.2026): auch die vorgemerkten frueheren Praefixe -
+    # bis 1.2.10 blieb unter ihnen online=0 fuer immer stehen.
+    alle = [praefix] + [p for p in gem.praefixe_vorgemerkt() if p != praefix]
+    schlimmster = 0
+    for p in alle:
+        code, geleert, rest, grund = broker_leeren(p, sorted(gem.FELDER))
+        if code == 2:
+            print("<INFO> MQTT: zurueckbehaltene Themen unter {0}/ nicht geleert "
+                  "- {1}. Sie sind von Hand zu loeschen (System -> MQTT "
+                  "Gateway).".format(p, grund))
+        elif rest:
+            print("<WARNING> MQTT: {0} zurueckbehaltene Themen stehen nach dem "
+                  "Loeschen noch im Broker: {1}".format(len(rest), ", ".join(rest)))
+        elif geleert:
+            print("<OK> MQTT: {0} zurueckbehaltene Themen unter {1}/ geloescht "
+                  "und nachgelesen ({2}).".format(len(geleert), p,
+                                                  ", ".join(geleert)))
+        else:
+            print("<OK> MQTT: unter {0}/ stand nichts zurueckbehalten "
+                  "(nachgelesen).".format(p))
+        if code == 0 and p != praefix:
+            gem.praefix_entfernen(p)
+        schlimmster = max(schlimmster, 1 if (rest and code != 2) else code)
+    return schlimmster
 
 
 def main():
@@ -1099,6 +1423,15 @@ def main():
         log.error("Vorgaben nicht lesbar: %s", gem.DATEN_FEHLER)
         log.error("Das Plugin ist unvollstaendig installiert. bin/us_vorgaben.json fehlt.")
         sys.exit(1)
+
+    # EIN DIENST JE INSTALLATION (Durchgang 02.10.2026, I3). Vor allem
+    # anderen, auch vor der PID-Datei: ein zweiter Start darf die PID des
+    # ersten nicht ueberschreiben (gemessen D4: danach fand "anhalten" den
+    # ersten nicht mehr, und online=0 stand retained, waehrend er weiterlief).
+    if not dienstsperre_nehmen():
+        log.warning("Ein Messdienst dieser Installation laeuft bereits "
+                    "(Sperre %s) - dieser zweite Start endet.", gem.DIENST_SPERRE)
+        sys.exit(0)
 
     dienst = Dienst()
 
