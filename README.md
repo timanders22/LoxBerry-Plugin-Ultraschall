@@ -4,6 +4,19 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.11
+
+Kommentar zum Anmelde-Rückruf berichtigt (Verbesserungsliste Ultraschall-k1).
+Gemessen mit
+`Werkzeuge/connack_klartext_pruefen.py` gegen den Bau (15 von 15) und mit `ast.parse` (Programm gleich dem Original);
+nicht am Gerät.
+
+* **Für den Nutzer ändert sich nichts.** Berichtigt ist ein Kommentar in `bin/ultraschall.py`: Er sagte, das
+  Prüfwerkzeug messe den Anmelde-Rückruf des Dienstes nicht. Seit dem Werkzeugstand vom 02.10.2026 misst es ihn
+  (`mqtt_angemeldet()`, 15 von 15 Prüfungen). Der Programmtext ist unverändert.
+
+**In Loxone:** Nichts zu ändern.
+
 ## Neu in 1.2.10
 
 Durchgang mit vier Prüfern (Befunde: `Pruefung-Durchgang-2026-09-29/Ultraschall_BEFUNDE_UND_VERBESSERUNGEN.md`, Entscheidungen 1, 4, 8, 16, 19, 26).

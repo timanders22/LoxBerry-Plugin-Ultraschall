@@ -114,13 +114,14 @@ log = logging.getLogger("ultraschall")
 # unter dem Namen _LOGGER ein, wenn es einen Anmelde-Rueckruf aus dieser
 # Datei schneidet und mit eigenen Attrappen ausfuehrt.
 #
-# ES MISST DIESEN RUECKRUF ZURZEIT NICHT (berichtigt im Durchgang
-# 02.10.2026, MQTT-Pruefer M9). Das Werkzeug nimmt die ERSTE Zuweisung an
-# on_connect in der Datei, und das ist seit 1.2.8 der verschachtelte
-# Rueckruf in broker_leeren(), nicht mqtt_angemeldet(). Es meldet deshalb
-# "nicht gemessen". Bis 1.2.10 stand hier, das Werkzeug pruefe diesen
-# Rueckruf - das stimmte nicht. Der Name bleibt fuer den Tag, an dem das
-# Werkzeug alle Rueckrufe prueft (Werkzeugpunkt in VERBESSERUNGEN_OFFEN).
+# Gemessen wird mqtt_angemeldet(), der Rueckruf, den der Dienst an
+# self.client.on_connect bindet. Seit Werkzeug-C1 (02.10.2026) nimmt das
+# Werkzeug den an ein Objekt namens client gebundenen Rueckruf, nicht mehr
+# die erste Zuweisung an on_connect in der Datei (das ist seit 1.2.8 der
+# verschachtelte Rueckruf in broker_leeren(), den es nicht schneiden kann).
+# Gegen 1.2.11 gemessen: 15 von 15 Pruefungen wie erwartet. In 1.2.10
+# stand hier, das Werkzeug messe diesen Rueckruf nicht - das galt nur bis
+# Werkzeug-C1.
 _LOGGER = log
 
 
