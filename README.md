@@ -4,6 +4,18 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.12
+
+Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
+
+* **Statusübersicht über den Reitern** als Tabelle: Messdienst (mit PID), Plugin ein/aus, Sensor, letzter
+  Messwert mit Alter und MQTT. Dieselben Werte standen bisher als Fließtext in einem blauen Kasten an dieser
+  Stelle; der Kasten entfällt. Keine eigene Abfrage.
+* **Zusammenfassung** des Plugins in einem grünen Kasten oben im Reiter Einstellungen.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
+**In Loxone:** Nichts zu ändern.
+
 ## Neu in 1.2.11
 
 Kommentar zum Anmelde-Rückruf berichtigt (Verbesserungsliste Ultraschall-k1).

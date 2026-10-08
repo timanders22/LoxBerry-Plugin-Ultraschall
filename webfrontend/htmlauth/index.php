@@ -652,20 +652,29 @@ if ($us_frame) {
 <div class="sm-alert sm-info"><?php echo us_t('TEXT.DIE_KONFIGURATION_STAMMT_NOCH_AUS_'); ?></div>
 <?php } ?>
 
-<div class="sm-alert sm-info">
-<?php echo us_t('TEXT.DIENST'); ?> <b><?php echo us_t($us_pid ? 'KOPF.LAEUFT' : 'KOPF.LAEUFT_NICHT'); ?></b><?= ($us_pid ? ' (PID ' . $us_pid . ')' : '') . ' ' ?>
-<?php echo us_t('TEXT.PLUGIN'); ?> <b><?php echo us_t(us_cfg($us_cfg, 'enabled', '0') === '1' ? 'KOPF.EIN' : 'KOPF.AUS'); ?></b>
-<?php echo us_t('TEXT.SENSOR'); ?> <span class="sm-mono"><?= $us_sensor === 'hcsr04' ? 'HC-SR04' : 'SRF02' ?></span>
-<?php if (is_array($us_status) && isset($us_status['entfernung'])
+<?php /* Kopf (Entscheidung Nr. 43, seit 1.2.12): Statusuebersicht ueber den
+   Reitern, immer sichtbar. Bis 1.2.11 standen dieselben Werte als Fliesstext
+   in einem blauen Meldungskasten an dieser Stelle. Keine eigene Abfrage. */ ?>
+<table class="sm-tbl" style="max-width:620px">
+<tr><th><?php echo us_t('KOPF.EIGENSCHAFT'); ?></th><th><?php echo us_t('KOPF.WERT'); ?></th></tr>
+<tr><td><?php echo us_t('KOPF.DIENST'); ?></td>
+    <td><b><?php echo us_t($us_pid ? 'KOPF.LAEUFT' : 'KOPF.LAEUFT_NICHT'); ?></b><?= $us_pid ? ' (PID ' . $us_pid . ')' : '' ?></td></tr>
+<tr><td><?php echo us_t('KOPF.PLUGIN'); ?></td>
+    <td><b><?php echo us_t(us_cfg($us_cfg, 'enabled', '0') === '1' ? 'KOPF.EIN' : 'KOPF.AUS'); ?></b></td></tr>
+<tr><td><?php echo us_t('KOPF.SENSOR'); ?></td>
+    <td><span class="sm-mono"><?= $us_sensor === 'hcsr04' ? 'HC-SR04' : 'SRF02' ?></span></td></tr>
+<tr><td><?php echo us_t('KOPF.MESSWERT'); ?></td>
+    <td><?php if (is_array($us_status) && isset($us_status['entfernung'])
          && $us_status['entfernung'] !== null) { ?>
-<?php echo us_t('TEXT.ZULETZT'); ?> <b><?= us_e(us_zahl($us_status['entfernung'])) ?><?php echo us_t('TEXT.CM'); ?></b>
+<b><?= us_e(us_zahl($us_status['entfernung'])) ?><?php echo us_t('TEXT.CM'); ?></b>
 <?php if (isset($us_status['prozent']) && $us_status['prozent'] !== null) { ?>
 (<?= us_e(us_zahl($us_status['prozent'])) ?>&nbsp;%)
 <?php } ?>
-<?php } ?>
-&middot; <?php echo us_t('TEXT.MQTT_2'); ?>: <b><?php echo us_t(us_cfg($us_cfg, 'mqtt', '1') === '1' ? 'KOPF.MQTT_EIN' : 'KOPF.MQTT_AUS'); ?></b>
-<?php if ($us_alter >= 0) { ?><?php echo us_t('TEXT.STAND_VOR'); ?> <?= $us_alter ?> s<?php } ?>
-</div>
+<?php } else { ?>&ndash;<?php } ?>
+<?php if ($us_alter >= 0) { ?><?php echo us_t('TEXT.STAND_VOR'); ?> <?= $us_alter ?> s<?php } ?></td></tr>
+<tr><td><?php echo us_t('TEXT.MQTT_2'); ?></td>
+    <td><b><?php echo us_t(us_cfg($us_cfg, 'mqtt', '1') === '1' ? 'KOPF.MQTT_EIN' : 'KOPF.MQTT_AUS'); ?></b></td></tr>
+</table>
 
 <?php
 /*
@@ -691,6 +700,7 @@ if ($us_frame) {
 
 <!-- ================= Reiter: <?php echo us_t('TEXT.EINSTELLUNGEN'); ?> ================= -->
 <div class="sm-pane<?php echo $us_tab === 'tab-settings' ? ' sm-active' : ''; ?>" id="tab-settings">
+<div class="sm-hinweis"><?php echo us_t('KOPF.WAS_IST_DAS'); ?></div>
 <!-- EINE Legende je Reiter, oben (Durchgang 02.10.2026, O11; Regeln/04,
      Beschluss 01.08.2026). Bis 1.2.10 standen hier drei, je eine ueber
      einer Knopfreihe. -->
