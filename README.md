@@ -4,6 +4,17 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.13
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs.
+
+* **Baustein-Liste (Reiter Einbindung in Loxone, Schritt 5):** Die Spalte „Eingänge verbinden mit“
+  nennt die Quellen in fester Form: `Ausgang von #8` statt „← #8“ (#9), `Ausgang von #3` statt „← #3“ (#13).
+  Bei #11 steht der Folgebaustein jetzt in der Spalte „Baustein (Typ)“
+  (`Einschaltverzögerung → Benachrichtigung`), die Spalte daneben nennt nur `Eingang = #10`.
+  Gleiche Bausteine, gleiche Verbindungen.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.2.12
 
 Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
