@@ -4,6 +4,25 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.14
+
+Reiter „Einbindung in Loxone“ zeigt ein Bild der Bausteine aus dem gemeinsamen Musterprojekt und
+verlinkt die Projektdatei; die Baustein-Liste ist die dort in Loxone Config gebaute.
+
+* Unter der Baustein-Liste (Schritt 5) steht das Bild der Seite „Ultraschall“ aus dem
+  [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt); das Bild liegt im Plugin,
+  nachgeladen wird nichts. Config kürzt lange Bausteinnamen, die vollen Namen stehen in der Tabelle.
+* **Baustein-Liste neu (15 statt 14 Zeilen):** eine Zeile = ein Baustein, nur die Hauptvariante,
+  so wie im Musterprojekt gebaut und verbunden. Die vier Eingänge `<Präfix>_level`, `_liter`,
+  `_valid` und `_online` kommen aus der Vorlage „Ultraschall Entfernung“ (`_distance` steht nicht
+  mehr in der Liste, die Vorlage legt ihn weiter an). Neu als eigene Zeilen: die Benachrichtigung
+  „Ultraschall ausgefallen“ (#11, bisher „→ Benachrichtigung“ an der Einschaltverzögerung), der
+  Analogspeicher „Stand bei Tagesbeginn (l)“ (#13, bisher „Merker (optional)“) und der Impuls um
+  0:00 (#15), der ihn setzt. Unter der Tabelle zwei neue Hinweise: die Schwellen (Ein 18 %, Aus 25 %)
+  nach dem eigenen Behälter wählen, und wie Impuls, Analogspeicher und Formel den Verbrauch seit
+  Mitternacht rechnen.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.2.13
 
 Baustein-Liste in der Schreibweise des Leitungswerkzeugs.
@@ -1069,6 +1088,10 @@ retained" — das war seit 1.2.6 falsch).
 `ts`, `zaehler` und `online` gehen in **jedem** Durchgang hinaus, auch wenn sich
 der Messwert nicht geändert hat — sonst ließe sich ein stehengebliebener Dienst
 nicht von einem gleichbleibenden Füllstand unterscheiden.
+
+Die Bausteine der Baustein-Liste aus dem Reiter *Einbindung in Loxone* stehen fertig verbunden auf
+der Seite „Ultraschall“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
 ## Anschluss
 

@@ -630,6 +630,10 @@ if ($us_frame) {
 .sm-tbl select { padding-right: 28px; background-position: right 7px center; }
 /* X-2: das beanstandete Feld (Durchgang 02.10.2026, O4; Wortlaut Raumklima 0.11.13). */
 .sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
+/* Ergaenzung (Welle Bild, Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 
 </style>
 <div class="sm-wrap">
@@ -1133,27 +1137,40 @@ foreach (array_merge(us_felder_zeile(), us_felder_endpunkt()) as $us_n => $us_f)
 <div class="sm-small"><?php echo us_t('TEXT.SO_SIEHT_DIE_VOLLSTNDIGE_LOGIK_AUF'); ?></div>
 <table class="sm-tbl">
 <tr><th>#</th><th><?php echo us_t('TEXT.BAUSTEIN_TYP'); ?></th><th><?php echo us_t('TEXT.NAME_VORSCHLAG'); ?></th><th><?php echo us_t('TEXT.PARAMETER'); ?></th><th><?php echo us_t('TEXT.EINGNGE_VERBINDEN_MIT'); ?></th></tr>
-<tr><td>1</td><td><?php echo us_t('TEXT.VIRTUELLER_EINGANG'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_distance</td><td><?php echo us_t('TEXT.EINHEIT_CM'); ?></td><td><?php echo us_t('TEXT.KOMMT_BER_DAS_GATEWAY'); ?></td></tr>
-<tr><td>2</td><td><?php echo us_t('TEXT.VIRTUELLER_EINGANG'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_level</td><td><?php echo us_t('TEXT.EINHEIT'); ?></td><td><?php echo us_t('TEXT.TEXT'); ?></td></tr>
-<tr><td>3</td><td><?php echo us_t('TEXT.VIRTUELLER_EINGANG'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_liter</td><td><?php echo us_t('TEXT.EINHEIT_L'); ?></td><td>&mdash;</td></tr>
-<tr><td>4</td><td><?php echo us_t('TEXT.VIRTUELLER_EINGANG'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_valid</td><td><?php echo us_t('TEXT.DIGITAL_1_MESSUNG_BRAUCHBAR'); ?></td><td>&mdash;</td></tr>
-<tr><td>5</td><td><?php echo us_t('TEXT.VIRTUELLER_EINGANG'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_online</td><td><?php echo us_t('TEXT.DIGITAL_1_DIENST_LUFT'); ?></td><td>&mdash;</td></tr>
-<tr><td>6</td><td><?php echo us_t('TEXT.SCHWELLWERTSCHALTER'); ?></td><td><?php echo us_t('TEXT.FLLSTAND_NIEDRIG'); ?></td><td><?php echo us_t('TEXT.EIN'); ?> <b>18</b> <?php echo us_t('TEXT.AUS'); ?> <b>25</b> <?php echo us_t('TEXT.EIN_AUS_SCHALTET_BEIM'); ?> <b><?php echo us_t('TEXT.UNTER'); ?></b><?php echo us_t('TEXT.SCHREITEN_EIN'); ?></td><td><?php echo us_t('TEXT.EINGANG_2'); ?></td></tr>
-<tr><td>7</td><td><?php echo us_t('TEXT.UND'); ?></td><td><?php echo us_t('TEXT.WARNUNG_ERLAUBT'); ?></td><td>&mdash;</td><td>I1 = #6, I2 = #4</td></tr>
-<tr><td>8</td><td><?php echo us_t('TEXT.EINSCHALTVERZGERUNG'); ?></td><td><?php echo us_t('TEXT.NIEDRIG_UND_ZWAR_LNGER'); ?></td><td><?php echo us_t('TEXT.600S'); ?></td><td><?php echo us_t('TEXT.EINGANG_7'); ?></td></tr>
-<tr><td>9</td><td><?php echo us_t('TEXT.BENACHRICHTIGUNG'); ?></td><td><?php echo us_t('TEXT.FLLSTAND_NIEDRIG'); ?></td><td><?php echo us_t('TEXT.TEXT_Z_B_DER_BEHLTER_IST_UNTER_18_'); ?></td><td><?php echo us_t('TEXT.8'); ?></td></tr>
-<tr><td>10</td><td><?php echo us_t('TEXT.NICHT'); ?></td><td><?php echo us_t('TEXT.DIENST_ANTWORTET_NICHT'); ?></td><td>&mdash;</td><td><?php echo us_t('TEXT.EINGANG_5'); ?></td></tr>
-<tr><td>11</td><td><?php echo us_t('TEXT.EINSCHALTVERZGERUNG'); ?> <?php echo us_t('TEXT.FOLGE_BENACHRICHTIGUNG'); ?></td><td><?php echo us_t('TEXT.AUSFALL_BESTTIGT'); ?></td><td><?php echo us_t('TEXT.1800S'); ?></td><td><?php echo us_t('TEXT.EINGANG_10'); ?></td></tr>
-<tr><td>12</td><td><?php echo us_t('TEXT.STATUS'); ?></td><td><?php echo us_t('TEXT.BEHLTER'); ?></td><td><?php echo us_t('TEXT.STATUSTEXT_SIEHE_SCHRITT4_VISUALIS'); ?></td><td>v1 = #2, v2 = #3</td></tr>
-<tr><td>13</td><td><?php echo us_t('TEXT.MERKER_OPTIONAL'); ?></td><td><?php echo us_t('TEXT.STAND_BEI_TAGESBEGINN_L'); ?></td><td><?php echo us_t('TEXT.SPEICHERN_DURCH_EINEN_IMPULS_UM_0_'); ?></td><td><?php echo us_t('TEXT.3'); ?></td></tr>
-<tr><td>14</td><td><?php echo us_t('TEXT.FORMEL_OPTIONAL'); ?></td><td><?php echo us_t('TEXT.VERBRAUCH_HEUTE_L'); ?></td><td><?php echo us_t('TEXT.FORMEL'); ?> <span class="sm-mono">I2-I1</span></td><td>I1 = #3, I2 = #13</td></tr>
+<?php /* Welle Bild 5 (1.2.14, Entscheidung A): die Liste ist die im LoxBerry-Plugins
+         Musterprojekt in Loxone Config gebaute und mit leitungen_setzen.py verbundene
+         (Musterprojekt/baustein_listen.txt, Abschnitt Ultraschall) - eine Zeile = ein
+         Baustein, nur die Hauptvariante. Bausteinnamen in beiden Sprachen wie im
+         Musterprojekt; die Namen #1 bis #4 aus dem Themenpraefix wie in us_vorlage(). */ ?>
+<tr><td>1</td><td><?php echo us_t('BAUSTEIN.B1_TYP'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_level</td><td><?php echo us_t('BAUSTEIN.B1_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B1_VERB'); ?></td></tr>
+<tr><td>2</td><td><?php echo us_t('BAUSTEIN.B2_TYP'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_liter</td><td><?php echo us_t('BAUSTEIN.B2_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B2_VERB'); ?></td></tr>
+<tr><td>3</td><td><?php echo us_t('BAUSTEIN.B3_TYP'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_valid</td><td><?php echo us_t('BAUSTEIN.B3_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B3_VERB'); ?></td></tr>
+<tr><td>4</td><td><?php echo us_t('BAUSTEIN.B4_TYP'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_online</td><td><?php echo us_t('BAUSTEIN.B4_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B4_VERB'); ?></td></tr>
+<tr><td>5</td><td><?php echo us_t('BAUSTEIN.B5_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B5_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B5_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B5_VERB'); ?></td></tr>
+<tr><td>6</td><td><?php echo us_t('BAUSTEIN.B6_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B6_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B6_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B6_VERB'); ?></td></tr>
+<tr><td>7</td><td><?php echo us_t('BAUSTEIN.B7_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B7_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B7_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B7_VERB'); ?></td></tr>
+<tr><td>8</td><td><?php echo us_t('BAUSTEIN.B8_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B8_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B8_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B8_VERB'); ?></td></tr>
+<tr><td>9</td><td><?php echo us_t('BAUSTEIN.B9_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B9_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B9_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B9_VERB'); ?></td></tr>
+<tr><td>10</td><td><?php echo us_t('BAUSTEIN.B10_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B10_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B10_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B10_VERB'); ?></td></tr>
+<tr><td>11</td><td><?php echo us_t('BAUSTEIN.B11_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B11_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B11_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B11_VERB'); ?></td></tr>
+<tr><td>12</td><td><?php echo us_t('BAUSTEIN.B12_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B12_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B12_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B12_VERB'); ?></td></tr>
+<tr><td>13</td><td><?php echo us_t('BAUSTEIN.B13_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B13_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B13_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B13_VERB'); ?></td></tr>
+<tr><td>14</td><td><?php echo us_t('BAUSTEIN.B14_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B14_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B14_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B14_VERB'); ?></td></tr>
+<tr><td>15</td><td><?php echo us_t('BAUSTEIN.B15_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B15_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B15_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B15_VERB'); ?></td></tr>
 </table>
 <div class="sm-alert sm-info">
-<b><?php echo us_t('TEXT.ZU_7'); ?></b> <?php echo us_t('TEXT.OHNE_DIE_VERKNPFUNG_MIT'); ?> <span class="sm-mono"><?php echo us_t('TEXT.VALID_2'); ?></span> <?php echo us_t('TEXT.LST_EIN_EINZELNER_FEHLSCHUSS_DES_S'); ?><br>
-<b><?php echo us_t('TEXT.ZU_8_UND_11'); ?></b> <?php echo us_t('TEXT.DIE_VERZGERUNGEN_SIND_KEIN_SCHMUCK'); ?><br>
-<b><?php echo us_t('TEXT.ZU_9'); ?></b> <?php echo us_t('TEXT.EIN_BENACHRICHTIGUNGS_BAUSTEIN_SEN'); ?><br>
-<b><?php echo us_t('TEXT.ZU_6'); ?></b> <?php echo us_t('TEXT.DIE_EIN_SCHWELLE_LIEGT'); ?> <i><?php echo us_t('TEXT.UNTER_2'); ?></i> <?php echo us_t('TEXT.DER_AUS_SCHWELLE_OHNE_DIESEN_ABSTA'); ?>
+<?php echo us_t('BAUSTEIN.H_ZU5'); ?><br>
+<?php echo us_t('BAUSTEIN.H_ZU6'); ?><br>
+<?php echo us_t('BAUSTEIN.H_ZU7_10'); ?><br>
+<?php echo us_t('BAUSTEIN.H_ZU8_11'); ?><br>
+<?php printf(us_t('BAUSTEIN.H_SCHWELLEN'), '<span class="sm-mono">' . us_e($us_praefix) . '_valid</span>'); ?><br>
+<?php echo us_t('BAUSTEIN.H_TAGESBEGINN'); ?>
 </div>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= us_e(us_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= us_e(us_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<div class="sm-small"><?php echo us_t('LOX.MUSTERPROJEKT'); ?></div>
 
 <h2><?php echo us_t('TEXT.WORAUF_MAN_SICH_NICHT_VERLASSEN_KA'); ?></h2>
 <div class="sm-small">
