@@ -4,6 +4,21 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.16
+
+Nur Texte im Reiter „Einbindung in Loxone“, in der Hilfe und hier; kein Verhalten geändert.
+
+* **Ein Importweg überall:** Schritt 3 sagte „Rechtsklick auf den Miniserver → Vorlage einfügen“,
+  der Kasten in Schritt 5 „Peripherie → Virtuelle Eingänge → Vorlage importieren“, die Hilfe
+  „Vorlage einfügen“. Jetzt steht an allen drei Stellen (deutsch und englisch) der in Loxone Config
+  gemessene Weg: im Baum links **Virtuelle Eingänge** wählen, dann im Menüband
+  **Vordefinierte HTTP-Geräte → Vorlage Importieren…**.
+* **Einleitung des Reiters:** Sie nennt jetzt den ganzen Umfang der Seite – Kachel mit Füllstand und
+  Inhalt, Verbrauch von heute und gestern, Reichweite in Tagen, Trockenlaufschutz für die Pumpe und
+  die Meldungen (Stand niedrig oder hoch, bald nachfüllen, Sensor ausgefallen oder misst nicht).
+  Bisher hieß es nur „eine Kachel und, wenn man will, eine Warnung bei niedrigem Stand“.
+* Gerendert unter PHP 7.4, 8.4 und 8.5 (deutsch und englisch), nicht am Gerät angesehen.
+
 ## Neu in 1.2.15
 
 Vollausstattung aus dem [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt): Der Reiter „Einbindung in
