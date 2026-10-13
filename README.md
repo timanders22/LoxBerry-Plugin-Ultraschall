@@ -4,6 +4,26 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.15
+
+Vollausstattung aus dem [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt): Der Reiter „Einbindung in
+Loxone“ zeigt in Schritt 5 die Seite „Füllstand, Verbrauch und Meldungen“ mit einem Bild und
+Schritt-für-Schritt-Anleitung – 36 statt 15 Zeilen, dazu Abstand und Lebenszeichen, Ausfallerkennung
+über den Zähler, der Fehlertext als Virtueller Texteingang, Meldungen „misst nicht“, „Füllstand hoch“
+und „bald nachfüllen“, ein Trockenlaufschutz für die eigene Pumpe und der Verbrauch von gestern mit
+Reichweite in Tagen.
+
+* **UDP-Vorlage mit eigenem Titel:** Die Vorlage des Knopfs „Vorlage: Eingang (UDP)“ heißt jetzt
+  „Ultraschall Entfernung UDP“. Bis 1.2.14 trug sie denselben Gerätetitel wie die MQTT-Vorlage
+  („Ultraschall Entfernung“); wer beide einlas, hatte zwei Geräte gleichen Namens in Loxone Config.
+  Der Befehl `Ultraschall_Entfernung` bleibt, der Titel ist fest und in beiden Sprachen gleich.
+* „Ultraschall ausgefallen“ (#11) hängt jetzt über ein ODER (#20) auch am Lebenszeichen: Es meldet
+  auch einen Dienst, der läuft, aber nicht mehr misst.
+* Textberichtigungen im Reiter: `last_error` kommt nicht über die Vorlage, sondern wird von Hand als
+  Virtueller Texteingang angelegt; Schritt 4 verweist auf den Status „Behälter“ (#12) der Liste.
+* Kein anderes Verhalten geändert. Gerendert unter PHP 7.4, 8.4 und 8.5 (deutsch und englisch), nicht
+  am Gerät angesehen.
+
 ## Neu in 1.2.14
 
 Reiter „Einbindung in Loxone“ zeigt ein Bild der Bausteine aus dem gemeinsamen Musterprojekt und

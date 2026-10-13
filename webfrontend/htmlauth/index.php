@@ -634,6 +634,11 @@ if ($us_frame) {
 .sm-bild { margin: 12px 0; }
 .sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+/* Welle Bild 12 VOLL (1.2.15): Abschnitt, Schritte und Hinweise der Baustein-Liste (wie Kodi-NG 1.2.19). */
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 
 </style>
 <div class="sm-wrap">
@@ -997,11 +1002,9 @@ if ($us_m_jetzt) { ?>
 <i><?php echo us_t('TEXT.VORLAGE_EINFGEN'); ?></i><?php echo us_t('TEXT.SIE_LEGT_DIE_VIRTUELLEN_EINGNGE_MI'); ?> <i><?php echo us_t('TEXT.INCOMING_OVERVIEW'); ?></i> <?php echo us_t('TEXT.ERSCHEINEN_DIE_THEMEN_SOBALD_DER_D'); ?> <b><?php echo us_t('TEXT.WER_LIEBER_VON_HAND_ANLEGT'); ?></b><?php echo us_t('TEXT.FINDET_DIE_NAMEN_WEITER_UNTEN_IN_S'); ?> <span class="sm-mono"><?= us_e($us_praefix) ?><?php echo us_t('TEXT.DISTANCE'); ?></span> <?php echo us_t('TEXT.WIRD_ALSO'); ?>
 <span class="sm-mono"><?= us_e($us_praefix) ?><?php echo us_t('TEXT.DISTANCE_2'); ?></span>.</div>
 <div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_4_KACHEL_IN_DER_APP'); ?></b><br><br>
-<?php echo us_t('TEXT.EINEN'); ?> <i><?php echo us_t('TEXT.STATUS'); ?></i><?php echo us_t('TEXT.BAUSTEIN_ANLEGEN'); ?> <span class="sm-mono">v1</span> <?php echo us_t('TEXT.MIT'); ?>
-<span class="sm-mono"><?php echo us_t('TEXT.LEVEL'); ?></span> <?php echo us_t('TEXT.UND_KLEIN'); ?> <span class="sm-mono">v2</span> <?php echo us_t('TEXT.MIT'); ?>
-<span class="sm-mono"><?php echo us_t('TEXT.LITER'); ?></span> <?php echo us_t('TEXT.VERBINDEN_STATUSTEXT_ZUM_BEISPIEL'); ?>
-<span class="sm-mono"><?php echo us_t('TEXT.V1_0_V2_0LITER'); ?></span><?php echo us_t('TEXT.HKCHEN'); ?>
-<i><?php echo us_t('TEXT.VISUALISIERUNG'); ?></i> <?php echo us_t('TEXT.SETZEN_FERTIG'); ?></div>
+<?php /* 1.2.15 (Welle Bild 12 VOLL): die Kachel ist der Status "Behaelter" (#12) der Baustein-Liste
+       * in Schritt 5 - hier nur der Verweis; die Bauanleitung stand bis 1.2.14 doppelt. */ ?>
+<?php echo us_t('LOX.S4_KACHEL'); ?></div>
 
 <div class="sm-small" style="margin-top:10px;">
 <?php echo us_t('TEXT.BROKER'); ?> <span class="sm-mono"><?= $us_broker !== '' ? us_e($us_broker) : us_e(us_t('MQTT.GATEWAY_FEHLT')) ?></span>
@@ -1135,37 +1138,126 @@ foreach (array_merge(us_felder_zeile(), us_felder_endpunkt()) as $us_n => $us_f)
 
 <h2><?php echo us_t('TEXT.SCHRITT_5_KOMPLETTE_BAUSTEIN_LISTE'); ?></h2>
 <div class="sm-small"><?php echo us_t('TEXT.SO_SIEHT_DIE_VOLLSTNDIGE_LOGIK_AUF'); ?></div>
+<?php
+/* Welle Bild 12 VOLL (1.2.15, Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das
+ * Maximum leicht uebernehmen koennen): die Seite "Ultraschall" aus dem LoxBerry-Plugins
+ * Musterprojekt, dort in Loxone Config gebaut und mit leitungen_setzen.py verbunden
+ * (Musterprojekt/baustein_listen.txt, Abschnitt "Ultraschall", 36 Zeilen; bis 1.2.14 15).
+ * Ueberschrift, Kasten "So uebernehmen Sie diese Seite", Tabelle, Hinweise, Bild, Link - immer
+ * sichtbar.
+ * Die Namen der Eingaenge kommen aus DEMSELBEN XML wie der Knopf "Vorlage: Eingaenge (MQTT)"
+ * (us_vorlage('mqtt_in')); fehlt einer dort, steht ein "?" davor. Die Vorlagentitel aus den
+ * XML-Koepfen. Den Virtuellen Texteingang legt keine Vorlage an (Regeln/07); sein Name ist der
+ * Gateway-Name <Praefix>_last_error (das Praefix traegt keinen Schraegstrich, us_lib.php).
+ * Texte aus [BAUSTEIN]; Zellen sind fertiges HTML, eingesetzte Namen maskiert.
+ * Zeile: array(Nr, Art, Feld) - Art vi = Eingang aus der Vorlage, tx = Texteingang, zl = Baustein. */
+list(, $us_bs_vxml) = us_vorlage($us_cfg, 'mqtt_in');
+list(, $us_bs_uxml) = us_vorlage($us_cfg, 'udp_in');
+$us_bs_titel = function ($xml, $wurzel) {
+    return preg_match('/<' . $wurzel . ' [^>]*?Title="([^"]*)"/', $xml, $m)
+        ? html_entity_decode($m[1], ENT_QUOTES | ENT_XML1, 'UTF-8') : '';
+};
+$us_bs_vtitel = $us_bs_titel($us_bs_vxml, 'VirtualInHttp');
+$us_bs_utitel = $us_bs_titel($us_bs_uxml, 'VirtualInUdp');
+preg_match_all('/<VirtualInHttpCmd Title="([^"]*)"/', $us_bs_vxml, $us_bs_t);
+$us_bs_vnamen = array();
+foreach ($us_bs_t[1] as $us_bs_x) { $us_bs_vnamen[] = html_entity_decode($us_bs_x, ENT_QUOTES | ENT_XML1, 'UTF-8'); }
+$us_bs_vi = function ($feld) use ($us_praefix, $us_bs_vnamen) {
+    $n = $us_praefix . '_' . $feld;
+    return in_array($n, $us_bs_vnamen, true) ? $n : '?' . $n;
+};
+$us_bs_tx = $us_praefix . '_last_error';
+$us_bs_i = function ($s) { return '<i>' . us_e($s) . '</i>'; };
+$us_bs_m = function ($s) { return '<span class="sm-mono">' . us_e($s) . '</span>'; };
+/* Sprachtext einer Zeile (B<n>_TYP/_NAME/_PARAM/_VERB) - fertiges HTML ohne Platzhalter. */
+$us_bs_k = function ($schluessel) { return (string) us_t('BAUSTEIN.' . $schluessel); };
+/* Texte mit Platzhaltern als ausgeschriebenes sprintf um us_t mit festem Schluessel, damit
+ * Werkzeuge/sprachplatzhalter_pruefen.py die Aufrufstelle sieht; Argumente maskiert. */
+$us_bs_vi_typ = sprintf(us_t('BAUSTEIN.TYP_VI'), us_e($us_bs_vtitel));
+$us_bs_zeilen = array(
+    array(1, 'vi', 'level'),
+    array(2, 'vi', 'liter'),
+    array(3, 'vi', 'valid'),
+    array(4, 'vi', 'online'),
+    array(5, 'zl', ''),
+    array(6, 'zl', ''),
+    array(7, 'zl', ''),
+    array(8, 'zl', ''),
+    array(9, 'zl', ''),
+    array(10, 'zl', ''),
+    array(11, 'zl', ''),
+    array(12, 'zl', ''),
+    array(13, 'zl', ''),
+    array(14, 'zl', ''),
+    array(15, 'zl', ''),
+    array(16, 'vi', 'distance'),
+    array(17, 'vi', 'zaehler'),
+    array(18, 'zl', ''),
+    array(19, 'zl', ''),
+    array(20, 'zl', ''),
+    array(21, 'tx', 'last_error'),
+    array(22, 'zl', ''),
+    array(23, 'zl', ''),
+    array(24, 'zl', ''),
+    array(25, 'zl', ''),
+    array(26, 'zl', ''),
+    array(27, 'zl', ''),
+    array(28, 'zl', ''),
+    array(29, 'zl', ''),
+    array(30, 'zl', ''),
+    array(31, 'zl', ''),
+    array(32, 'zl', ''),
+    array(33, 'zl', ''),
+    array(34, 'zl', ''),
+    array(35, 'zl', ''),
+    array(36, 'zl', ''),
+);
+$us_bs_schritte = array(
+    sprintf(us_t('BAUSTEIN.S1'), $us_bs_i(us_t('REITER.EINSTELLUNGEN')), $us_bs_i(us_t('TEXT.PLUGIN_EINGESCHALTET')), $us_bs_i(us_t('TEXT.JETZT_MESSEN_LEER')), $us_bs_i(us_t('TEXT.JETZT_MESSEN_VOLL')), $us_bs_i(us_t('TEXT.GESAMTVOLUMEN_LITER')), $us_bs_i(us_t('REITER.TEST')), $us_bs_i(us_t('TEXT.JETZT_MESSEN'))),
+    sprintf(us_t('BAUSTEIN.S2'), $us_bs_m($us_praefix . '/#'), $us_bs_m($us_praefix)),
+    sprintf(us_t('BAUSTEIN.S3'), $us_bs_i(us_t('TEXT.VORLAGEN')), $us_bs_i(us_t('TEXT.VORLAGE_EINGNGE_MQTT')), $us_bs_i(us_t('TEXT.VORLAGE_EINGANG_UDP')), us_e($us_bs_utitel)),
+    sprintf(us_t('BAUSTEIN.S4'), $us_bs_m($us_bs_tx)),
+    sprintf(us_t('BAUSTEIN.S5'), us_e($us_bs_vtitel), $us_bs_m($us_bs_vi('level')), $us_bs_m($us_bs_vi('liter')), $us_bs_m($us_bs_vi('valid')), $us_bs_m($us_bs_vi('online')), $us_bs_m($us_bs_vi('distance')), $us_bs_m($us_bs_vi('zaehler')), $us_bs_m($us_bs_tx), $us_bs_m($us_bs_vi('level')), $us_bs_m($us_bs_vi('liter'))),
+    us_t('BAUSTEIN.S6'),
+    us_t('BAUSTEIN.S7'),
+    us_t('BAUSTEIN.S8'),
+    sprintf(us_t('BAUSTEIN.S9'), $us_bs_m($us_bs_vi('zaehler')), $us_bs_i(us_t('REITER.TEST')), $us_bs_i(us_t('TEXT.LETZTER_MESSWERT'))),
+);
+$us_bs_hinweise = array(
+    us_t('BAUSTEIN.H_ZU5'),
+    us_t('BAUSTEIN.H_ZU6'),
+    us_t('BAUSTEIN.H_ZU7_10'),
+    us_t('BAUSTEIN.H_ZU8_11'),
+    sprintf(us_t('BAUSTEIN.H_SCHWELLEN'), $us_bs_m($us_bs_vi('valid'))),
+    us_t('BAUSTEIN.H_TAGESBEGINN'),
+    us_t('BAUSTEIN.H_VERBRAUCH'),
+    sprintf(us_t('BAUSTEIN.H_TAKT'), $us_bs_i(us_t('TEXT.MESSEN_ALLE_SEKUNDEN'))),
+    us_t('BAUSTEIN.H_AUSFALL'),
+    sprintf(us_t('BAUSTEIN.H_TOKEN'), $us_bs_i(us_t('LOX.K_TOKEN_NEU'))),
+);
+?>
+<h4 class="sm-h4"><?= us_e($us_bs_k('UE_TITEL')) ?></h4>
+<div class="sm-hinweis"><b><?= us_e($us_bs_k('SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($us_bs_schritte as $us_bs_x) { ?>
+<li><?= $us_bs_x ?></li>
+<?php } ?>
+</ol></div>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th>#</th><th><?php echo us_t('TEXT.BAUSTEIN_TYP'); ?></th><th><?php echo us_t('TEXT.NAME_VORSCHLAG'); ?></th><th><?php echo us_t('TEXT.PARAMETER'); ?></th><th><?php echo us_t('TEXT.EINGNGE_VERBINDEN_MIT'); ?></th></tr>
-<?php /* Welle Bild 5 (1.2.14, Entscheidung A): die Liste ist die im LoxBerry-Plugins
-         Musterprojekt in Loxone Config gebaute und mit leitungen_setzen.py verbundene
-         (Musterprojekt/baustein_listen.txt, Abschnitt Ultraschall) - eine Zeile = ein
-         Baustein, nur die Hauptvariante. Bausteinnamen in beiden Sprachen wie im
-         Musterprojekt; die Namen #1 bis #4 aus dem Themenpraefix wie in us_vorlage(). */ ?>
-<tr><td>1</td><td><?php echo us_t('BAUSTEIN.B1_TYP'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_level</td><td><?php echo us_t('BAUSTEIN.B1_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B1_VERB'); ?></td></tr>
-<tr><td>2</td><td><?php echo us_t('BAUSTEIN.B2_TYP'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_liter</td><td><?php echo us_t('BAUSTEIN.B2_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B2_VERB'); ?></td></tr>
-<tr><td>3</td><td><?php echo us_t('BAUSTEIN.B3_TYP'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_valid</td><td><?php echo us_t('BAUSTEIN.B3_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B3_VERB'); ?></td></tr>
-<tr><td>4</td><td><?php echo us_t('BAUSTEIN.B4_TYP'); ?></td><td class="sm-mono"><?= us_e($us_praefix) ?>_online</td><td><?php echo us_t('BAUSTEIN.B4_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B4_VERB'); ?></td></tr>
-<tr><td>5</td><td><?php echo us_t('BAUSTEIN.B5_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B5_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B5_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B5_VERB'); ?></td></tr>
-<tr><td>6</td><td><?php echo us_t('BAUSTEIN.B6_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B6_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B6_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B6_VERB'); ?></td></tr>
-<tr><td>7</td><td><?php echo us_t('BAUSTEIN.B7_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B7_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B7_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B7_VERB'); ?></td></tr>
-<tr><td>8</td><td><?php echo us_t('BAUSTEIN.B8_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B8_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B8_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B8_VERB'); ?></td></tr>
-<tr><td>9</td><td><?php echo us_t('BAUSTEIN.B9_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B9_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B9_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B9_VERB'); ?></td></tr>
-<tr><td>10</td><td><?php echo us_t('BAUSTEIN.B10_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B10_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B10_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B10_VERB'); ?></td></tr>
-<tr><td>11</td><td><?php echo us_t('BAUSTEIN.B11_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B11_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B11_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B11_VERB'); ?></td></tr>
-<tr><td>12</td><td><?php echo us_t('BAUSTEIN.B12_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B12_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B12_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B12_VERB'); ?></td></tr>
-<tr><td>13</td><td><?php echo us_t('BAUSTEIN.B13_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B13_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B13_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B13_VERB'); ?></td></tr>
-<tr><td>14</td><td><?php echo us_t('BAUSTEIN.B14_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B14_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B14_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B14_VERB'); ?></td></tr>
-<tr><td>15</td><td><?php echo us_t('BAUSTEIN.B15_TYP'); ?></td><td><?= us_e(us_t('BAUSTEIN.B15_NAME')) ?></td><td><?php echo us_t('BAUSTEIN.B15_PARAM'); ?></td><td><?php echo us_t('BAUSTEIN.B15_VERB'); ?></td></tr>
+<?php foreach ($us_bs_zeilen as $us_bs_z) { $us_bs_n = (int) $us_bs_z[0]; ?>
+<tr><td><?= $us_bs_n ?></td><td><?= $us_bs_z[1] === 'vi' ? $us_bs_vi_typ : $us_bs_k('B' . $us_bs_n . '_TYP') ?></td><td><?= $us_bs_z[1] === 'vi' ? $us_bs_m($us_bs_vi($us_bs_z[2])) : ($us_bs_z[1] === 'tx' ? $us_bs_m($us_bs_tx) : us_e($us_bs_k('B' . $us_bs_n . '_NAME'))) ?></td>
+    <td><?= $us_bs_k('B' . $us_bs_n . '_PARAM') ?></td><td><?= $us_bs_k('B' . $us_bs_n . '_VERB') ?></td></tr>
+<?php } ?>
 </table>
-<div class="sm-alert sm-info">
-<?php echo us_t('BAUSTEIN.H_ZU5'); ?><br>
-<?php echo us_t('BAUSTEIN.H_ZU6'); ?><br>
-<?php echo us_t('BAUSTEIN.H_ZU7_10'); ?><br>
-<?php echo us_t('BAUSTEIN.H_ZU8_11'); ?><br>
-<?php printf(us_t('BAUSTEIN.H_SCHWELLEN'), '<span class="sm-mono">' . us_e($us_praefix) . '_valid</span>'); ?><br>
-<?php echo us_t('BAUSTEIN.H_TAGESBEGINN'); ?>
 </div>
+<div class="sm-warnung"><b><?= us_e($us_bs_k('HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($us_bs_hinweise as $us_bs_x) { ?>
+<li><?= $us_bs_x ?></li>
+<?php } ?>
+</ul></div>
 <figure class="sm-bild">
 <img src="einbindung_loxone.png" alt="<?= us_e(us_t('LOX.BILD_ALT')) ?>" loading="lazy">
 <figcaption><?= us_e(us_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>

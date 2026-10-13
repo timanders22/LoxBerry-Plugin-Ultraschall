@@ -1648,8 +1648,13 @@ function us_vorlage($cfg, $art)
         $f = us_felder();
         $d = isset($f['distance']) ? $f['distance'] : array('min' => 0, 'max' => 2000,
                                                             'einheit' => 'cm', 'art' => 'analog');
+        /* 1.2.15 (Hausherr 13.10.2026): eigener Geraetetitel "Ultraschall Entfernung UDP".
+         * Bis 1.2.14 trugen BEIDE Vorlagen den Titel "Ultraschall Entfernung" - wer beide
+         * einlas, hatte zwei Geraete gleichen Namens in Loxone Config. Der Befehl
+         * Ultraschall_Entfernung bleibt. Fest im Code, nicht ueber die Sprachdatei: Titel
+         * werden in Config zu Namen (Regeln/07, Sprache einer Loxone-Vorlage). */
         return array('ultraschall_udp.xml', us_xml_rumpf('VirtualInUdp', '1', array(
-            'title'   => 'Ultraschall Entfernung',
+            'title'   => 'Ultraschall Entfernung UDP',
             'address' => '',
             'port'    => $port !== '' ? $port : '0',
             'comment' => $fuss,
