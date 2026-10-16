@@ -1232,6 +1232,7 @@ $us_bs_hinweise = array(
     us_t('BAUSTEIN.H_TAGESBEGINN'),
     us_t('BAUSTEIN.H_VERBRAUCH'),
     sprintf(us_t('BAUSTEIN.H_TAKT'), $us_bs_i(us_t('TEXT.MESSEN_ALLE_SEKUNDEN'))),
+    us_t('BAUSTEIN.H_ZU19'),
     us_t('BAUSTEIN.H_AUSFALL'),
     sprintf(us_t('BAUSTEIN.H_TOKEN'), $us_bs_i(us_t('LOX.K_TOKEN_NEU'))),
 );

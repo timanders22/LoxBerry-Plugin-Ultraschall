@@ -4,6 +4,11 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.17
+
+Einbindung in Loxone: Eingang En der Analogwertvalidierung nicht negieren (Hinweis und Bild); ohne diese
+Korrektur löste die Ausfallmeldung nie aus. Wer die Seite schon gebaut hat: Haken bei ‚En‘ entfernen.
+
 ## Neu in 1.2.16
 
 Nur Texte im Reiter „Einbindung in Loxone“, in der Hilfe und hier; kein Verhalten geändert.
