@@ -135,6 +135,23 @@ PRAEFIXE_DATEI = os.path.join(CONFIG_DIR, "mqtt_praefixe_alt.json") if CONFIG_DI
 PRAEFIX_MUSTER = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
+def praefix_aus(cfg):
+    """Das Themenpraefix aus der Konfiguration - NUR ein brauchbares (seit 1.2.18, E16).
+
+    Bis 1.2.17 pruefte nur die Oberflaeche das Praefix und nur fuer die vorgemerkten
+    frueheren Praefixe auch dieses Modul. Eine von Hand verdorbene Konfiguration mit
+    "a/b" liess den Dienst unter "a/b/..." senden und die Deinstallation dort abraeumen.
+    Rueckgabe (praefix, falsch): falsch ist der unbrauchbare Rohwert, sonst "". Leer
+    bleibt wie bisher still "ultraschall".
+    """
+    roh = str(cfg.get("themenpraefix") or "").strip()
+    if roh == "":
+        return "ultraschall", ""
+    if PRAEFIX_MUSTER.match(roh):
+        return roh, ""
+    return "ultraschall", roh
+
+
 def praefixe_vorgemerkt():
     """Die vorgemerkten frueheren Praefixe - nur brauchbare, ohne Doppel."""
     if not PRAEFIXE_DATEI:
@@ -528,7 +545,15 @@ def miniserver_liste():
     return out
 
 
+# U24 (seit 1.2.18): ein Brokerport, der keine Zahl ist, endete bis 1.2.17 in einem
+# ValueError - der Dienst startete nicht, und der Waechter versuchte es alle fuenf
+# Minuten erneut. Jetzt gilt 1883, und Mqtt.start() sagt es einmal (dieses Modul hat
+# keinen Logger).
+MQTT_PORT_HINWEIS = ""
+
+
 def mqtt_zugangsdaten():
+    global MQTT_PORT_HINWEIS
     # Ohne Wurzel kein relativer Pfad, der ein fremdes general.json trifft
     # (seit 1.2.8).
     if not HOME_DIR:
@@ -553,8 +578,16 @@ def mqtt_zugangsdaten():
         host = hole("Brokerhost", "brokerhost")
         if not host:
             continue
+        roh_port = hole("Brokerport", "brokerport") or 1883
+        try:
+            port = int(str(roh_port).strip() or 1883)
+            MQTT_PORT_HINWEIS = ""
+        except ValueError:
+            port = 1883
+            MQTT_PORT_HINWEIS = ("Brokerport in general.json ist keine Zahl ({0!r}) - 1883 "
+                                 "angenommen.".format(str(roh_port)[:20]))
         return {"host": str(host),
-                "port": int(hole("Brokerport", "brokerport") or 1883),
+                "port": port,
                 "user": hole("Brokeruser", "brokeruser"),
                 "pass": hole("Brokerpass", "brokerpass")}
     return None
@@ -729,6 +762,18 @@ def median(werte):
     return (werte[n // 2 - 1] + werte[n // 2]) / 2.0
 
 
+def hinweis(k, a, t, stufe="warning"):
+    """Ein Hinweis zur Konfiguration (seit 1.2.18, E3).
+
+    Bis 1.2.17 kamen hier fertige deutsche Saetze heraus, und der Reiter Test zeigte
+    sie auch in der englischen Oberflaeche. Jetzt: Schluessel k (Abschnitt [HINWEIS]
+    der Sprachdateien), Werte a fuer die Platzhalter (immer Zeichenketten) und der
+    deutsche Satz t fuer das Protokoll des Dienstes. stufe sagt dem Dienst, wie er
+    es ins Protokoll schreibt.
+    """
+    return {"k": k, "a": [str(x) for x in a], "t": t, "stufe": stufe}
+
+
 # Laenger als das darf ein Durchgang nicht dauern - siehe messplan().
 MESSDAUER_MAX = 180.0
 
@@ -757,15 +802,17 @@ def messplan(cfg, unlesbar=None):
     abstand = max(0.05, zahl(cfg, "messabstand", 0.2, float, unlesbar))
     hinweise = []
     for k, w in unlesbar:
-        hinweise.append("Der Wert fuer '{0}' ist keine Zahl: '{1}'. "
-                        "Gerechnet wurde mit der Vorgabe.".format(k, str(w)[:40]))
+        hinweise.append(hinweis("KEINE_ZAHL", [k, str(w)[:40]],
+                                "Der Wert fuer '{0}' ist keine Zahl: '{1}'. "
+                                "Gerechnet wurde mit der Vorgabe.".format(k, str(w)[:40])))
     if (anzahl - 1) * abstand > MESSDAUER_MAX:
         gekuerzt = anzahl
         anzahl = max(1, int(MESSDAUER_MAX / abstand) + 1)
-        hinweise.append("Es waren {0} Messungen im Abstand von {1:.2f} s "
-                        "eingetragen - laenger als {2:.0f} s. Gemessen wird "
-                        "mit {3}.".format(gekuerzt, abstand, MESSDAUER_MAX,
-                                          anzahl))
+        hinweise.append(hinweis(
+            "ZU_LANG", [gekuerzt, "{0:.2f}".format(abstand), "{0:.0f}".format(MESSDAUER_MAX), anzahl],
+            "Es waren {0} Messungen im Abstand von {1:.2f} s "
+            "eingetragen - laenger als {2:.0f} s. Gemessen wird "
+            "mit {3}.".format(gekuerzt, abstand, MESSDAUER_MAX, anzahl)))
     return anzahl, abstand, hinweise
 
 
@@ -787,9 +834,10 @@ def messen(cfg, sensor=None):
     # Was messplan() noch nicht kennen konnte, kommt hier dazu - in
     # derselben Form, damit der Anwender nicht zwei Sorten Satz liest.
     for k, w in unlesbar[schon:]:
-        hinweise.append("Der Wert fuer '{0}' ist keine Zahl: '{1}'. "
-                        "Gerechnet wurde mit der Vorgabe."
-                        .format(k, str(w)[:40]))
+        hinweise.append(hinweis("KEINE_ZAHL", [k, str(w)[:40]],
+                                "Der Wert fuer '{0}' ist keine Zahl: '{1}'. "
+                                "Gerechnet wurde mit der Vorgabe."
+                                .format(k, str(w)[:40])))
     # Die Kalibrierwerte werden hier nur GEMELDET (C7): fuellstand() rechnet
     # mit einem unbrauchbaren Wert keinen Fuellstand bzw. keine Liter. Ohne
     # diese Zeilen fiele das still aus.
@@ -856,7 +904,14 @@ def messen(cfg, sensor=None):
             fehler = ("Sensorfehler bei {0} von {1} Messungen; der Wert stammt "
                       "aus den {2} gueltigen: {3}"
                       .format(gescheitert, anzahl, len(roh), fehler))
-    entfernung = round(mitte + offset, 1) if mitte is not None else None
+    # V2 (seit 1.2.18): feste Temperatur der Luft im Behaelter. Der Faktor wirkt auf den
+    # MEDIAN vor der Korrektur offset_cm; der Plausibilitaetsbereich bleibt auf dem
+    # Rohwert (siehe unten). Ab Werk leer: Faktor 1.0, also byte-gleich zu 1.2.17.
+    k_temp, _temp = temperatur_faktor(cfg)
+    if k_temp == 1.0:
+        entfernung = round(mitte + offset, 1) if mitte is not None else None
+    else:
+        entfernung = round(mitte * k_temp + offset, 1) if mitte is not None else None
     # EIN NEGATIVES ERGEBNIS IST KEIN MESSWERT (seit 1.2.2).
     #
     # Bis 1.2.1 stand hier
@@ -899,6 +954,65 @@ def messen(cfg, sensor=None):
             "hinweise": hinweise}
 
 
+# ---------------------------------------------------------------------------
+# V1 Behaelterform und V2 feste Temperatur (seit 1.2.18, Entscheidung 3 Gruppe 17)
+# ---------------------------------------------------------------------------
+#
+# Beide ab Werk ohne Wirkung: behaelter_form=linear rechnet wie bis 1.2.17,
+# temperatur_c leer gibt den Faktor 1.0. Dieselbe Rechnung steht in
+# webfrontend/html/us_lib.php (us_fuellstand) - die beiden muessen gleich
+# bleiben (Probe: Tabelle aus beiden Funktionen, Vergleich auf 0,1).
+
+FORMEN = ("linear", "zylinder_liegend", "kugel")
+TEMP_MIN = -40.0
+TEMP_MAX = 60.0
+
+
+def form_anteil(x, form):
+    """Volumenanteil aus dem Hoehenanteil x (0..1, wird begrenzt).
+
+    zylinder_liegend: Kreissegment A = r^2*acos((r-h)/r) - (r-h)*sqrt(2rh-h^2),
+                      geteilt durch pi*r^2; mit c = 1-2x ist das
+                      (acos(c) - c*sqrt(1-c^2)) / pi.
+    kugel:            Kugelkappe pi*h^2*(3r-h)/3 geteilt durch 4/3*pi*r^3 = x^2*(3-2x).
+    Die Begrenzung steht VOR der Formrechnung: acos ausserhalb [-1;1] waere ein Fehler.
+    """
+    x = max(0.0, min(1.0, x))
+    if form == "zylinder_liegend":
+        c = 1.0 - 2.0 * x
+        return (math.acos(c) - c * math.sqrt(max(0.0, 1.0 - c * c))) / math.pi
+    if form == "kugel":
+        return x * x * (3.0 - 2.0 * x)
+    return x
+
+
+def temperatur_wert(cfg):
+    """temperatur_c als Zahl (Komma erlaubt), None = leer oder unbrauchbar."""
+    roh = str(cfg.get("temperatur_c", "") or "").strip().replace(",", ".")
+    if roh == "":
+        return None
+    try:
+        t = float(roh)
+    except ValueError:
+        return None
+    if not math.isfinite(t) or t < TEMP_MIN or t > TEMP_MAX:
+        return None
+    return t
+
+
+def temperatur_faktor(cfg):
+    """(Faktor, Temperatur) - d_korr = d_roh * sqrt(273,15 + T) / sqrt(293,15).
+
+    Bezug 20 Grad: gpiozero rechnet laut seiner Dokumentation mit 343,26 m/s, der
+    SRF02 nennt keinen Bezug (angenommen 20 Grad). Leer oder unbrauchbar: 1.0 -
+    ein unbrauchbarer Wert wird gemeldet (kalibrierung_hinweise), nie still benutzt.
+    """
+    t = temperatur_wert(cfg)
+    if t is None:
+        return 1.0, None
+    return math.sqrt(273.15 + t) / math.sqrt(293.15), t
+
+
 def fuellstand(cfg, entfernung):
     """Aus der Entfernung Fuellstand und Inhalt berechnen.
 
@@ -906,6 +1020,12 @@ def fuellstand(cfg, entfernung):
     also der groesste Abstand), voll_cm der bei vollem. Fehlt eines von
     beiden, wird nichts berechnet - dann liefert das Plugin nur die
     Entfernung, wie die Originalfassung.
+
+    Seit 1.2.18 (V1) rechnet behaelter_form den Hoehenanteil in einen
+    VOLUMENanteil um (linear wie bisher, zylinder_liegend, kugel). Prozent und
+    Liter bleiben zueinander stimmig; die Hoehe steht weiter in der Entfernung.
+    Eine unbekannte Form ergibt keinen Wert (und einen Hinweis) - wie eine
+    unbrauchbare Kalibrierung.
     """
     leer = cfg.get("leer_cm", "")
     voll = cfg.get("voll_cm", "")
@@ -936,9 +1056,15 @@ def fuellstand(cfg, entfernung):
     # nicht - lieber kein Wert als eine Zahl, die richtig aussieht.
     if leer - voll < 0.001:
         return None, None
+    form = str(cfg.get("behaelter_form", "") or "linear").strip()
+    if form not in FORMEN:
+        return None, None
 
     anteil = (leer - entfernung) / (leer - voll)
-    prozent = max(0.0, min(100.0, anteil * 100.0))
+    if form == "linear":
+        prozent = max(0.0, min(100.0, anteil * 100.0))
+    else:
+        prozent = max(0.0, min(100.0, form_anteil(anteil, form) * 100.0))
 
     liter = None
     volumen = cfg.get("volumen_liter", "")
@@ -955,7 +1081,8 @@ def fuellstand(cfg, entfernung):
 
 
 def kalibrierung_hinweise(cfg):
-    """Was an leer_cm, voll_cm und volumen_liter nicht brauchbar ist (C7).
+    """Was an leer_cm, voll_cm, volumen_liter, behaelter_form und temperatur_c
+    nicht brauchbar ist (C7; seit 1.2.18 als Schluessel, E3).
 
     Gemeldet wird nur, was eingetragen ist: ein leeres Feld heisst "keine
     Umrechnung" und ist kein Fehler.
@@ -968,13 +1095,43 @@ def kalibrierung_hinweise(cfg):
         try:
             f = float(w)
         except ValueError:
-            aus.append("Der Wert fuer '{0}' ist keine Zahl: '{1}'. Ein Fuellstand "
-                       "bzw. Inhalt wird nicht berechnet.".format(k, w[:40]))
+            aus.append(hinweis("KAL_KEINE_ZAHL", [k, w[:40]],
+                               "Der Wert fuer '{0}' ist keine Zahl: '{1}'. Ein Fuellstand "
+                               "bzw. Inhalt wird nicht berechnet.".format(k, w[:40])))
             continue
         if not math.isfinite(f):
-            aus.append("Der Wert fuer '{0}' ist keine endliche Zahl: '{1}'. Ein "
-                       "Fuellstand bzw. Inhalt wird nicht berechnet.".format(k, w[:40]))
+            aus.append(hinweis("KAL_NICHT_ENDLICH", [k, w[:40]],
+                               "Der Wert fuer '{0}' ist keine endliche Zahl: '{1}'. Ein "
+                               "Fuellstand bzw. Inhalt wird nicht berechnet.".format(k, w[:40])))
         elif k == "volumen_liter" and f <= 0:
-            aus.append("Das Gesamtvolumen muss groesser als 0 sein, eingetragen ist "
-                       "'{0}'. Liter werden nicht berechnet.".format(w[:40]))
+            aus.append(hinweis("KAL_VOLUMEN", [w[:40]],
+                               "Das Gesamtvolumen muss groesser als 0 sein, eingetragen ist "
+                               "'{0}'. Liter werden nicht berechnet.".format(w[:40])))
+    # U25 (seit 1.2.18): der SRF02 misst erst ab etwa 16 cm. Ein "voll" darunter ist
+    # nie erreichbar - 100 Prozent kaemen nie, und "Fuellstand hoch" nie.
+    if str(cfg.get("sensor", "srf02") or "srf02").strip().lower() == "srf02":
+        w = str(cfg.get("voll_cm", "") or "").strip()
+        try:
+            f = float(w) if w != "" else None
+        except ValueError:
+            f = None
+        if f is not None and math.isfinite(f) and f < 16:
+            aus.append(hinweis("SRF02_TOTZONE", [w[:40]],
+                               "Der SRF02 misst erst ab etwa 16 cm - 'voll' ({0} cm) ist so nie "
+                               "erreichbar; Sensor hoeher setzen oder voll_cm >= 16.".format(w[:40])))
+    form = str(cfg.get("behaelter_form", "") or "linear").strip()
+    if form not in FORMEN:
+        aus.append(hinweis("FORM_UNBEKANNT", [form[:40]],
+                           "Behaelterform '{0}' gibt es nicht (linear, zylinder_liegend, kugel) - "
+                           "ein Fuellstand wird nicht berechnet.".format(form[:40])))
+    elif form != "linear":
+        aus.append(hinweis("FORM_SOHLE_SCHEITEL", [],
+                           "Bei liegendem Zylinder und Kugel muss 'leer' der Abstand zum tiefsten "
+                           "Punkt (Sohle) und 'voll' der zum hoechsten Punkt (Scheitel) sein; "
+                           "Gesamtvolumen ist der Inhalt bis zum Scheitel.", "info"))
+    t = str(cfg.get("temperatur_c", "") or "").strip()
+    if t != "" and temperatur_wert(cfg) is None:
+        aus.append(hinweis("TEMP_UNBRAUCHBAR", [t[:40]],
+                           "Die Temperatur '{0}' ist keine Zahl von -40 bis 60 - gemessen wird "
+                           "ohne Temperaturkorrektur.".format(t[:40])))
     return aus

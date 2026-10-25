@@ -12,6 +12,11 @@ PVERSION=$4   # Forth argument is Plugin version
 PWORKDIR=$6   # Arbeitsordner des Installers (absolut), neuere Fassungen
 
 US_PDIR="${3:-ultraschall}"
+# U4 (seit 1.2.18): der Ordnername darf keinen Pfadtrenner tragen - dieselbe
+# Schranke wie in preinstall.sh. Bis 1.2.17 stand sie nur dort.
+case "$US_PDIR" in
+    ''|*/*|*..*) echo "<WARNING> Ordnername '$US_PDIR' unbrauchbar - nichts getan."; exit 0 ;;
+esac
 
 # ---------------------------------------------------------------------------
 # DIE WURZEL - NUR EINE, DIE NACHWEISLICH EINE IST (seit 1.2.8)
@@ -317,13 +322,16 @@ fi
 if [ ! -s "$NETZ_CFG/ultraschall.cfg" ]; then
     echo "<INFO> Keine Einstellungen vorhanden - keine Zweitschrift noetig."
     [ "$US_ALT_DA" = "1" ] && echo "<INFO> Die Zweitschrift aus einem frueheren Vorgang wird nicht eingespielt; sie liegt als $NETZ_ZWEIT.alt daneben."
-elif cp -p "$NETZ_CFG/ultraschall.cfg" "$NETZ_ZWEIT" 2>/dev/null \
+# U4 (seit 1.2.18): ueber eine Nebendatei, mit Vergleich, 0600 VOR dem Umbenennen.
+elif cp -p "$NETZ_CFG/ultraschall.cfg" "$NETZ_ZWEIT.neu" 2>/dev/null \
+     && cmp -s "$NETZ_CFG/ultraschall.cfg" "$NETZ_ZWEIT.neu" \
+     && chmod 0600 "$NETZ_ZWEIT.neu" 2>/dev/null \
+     && mv -f "$NETZ_ZWEIT.neu" "$NETZ_ZWEIT" 2>/dev/null \
      && [ -s "$NETZ_ZWEIT" ]; then
-    chmod 0600 "$NETZ_ZWEIT" 2>/dev/null
     [ "$US_ALT_DA" = "1" ] && rm -f "$NETZ_ZWEIT.alt" 2>/dev/null
     echo "<INFO> Zweitschrift der Einstellungen angelegt."
 else
-    rm -f "$NETZ_ZWEIT" 2>/dev/null
+    rm -f "$NETZ_ZWEIT" "$NETZ_ZWEIT.neu" 2>/dev/null
     echo "<WARNING> Die Zweitschrift der Einstellungen liess sich nicht anlegen."
     [ "$US_ALT_DA" = "1" ] && echo "<WARNING> Die Zweitschrift aus einem frueheren Vorgang wird nicht eingespielt; sie liegt als $NETZ_ZWEIT.alt daneben."
 fi

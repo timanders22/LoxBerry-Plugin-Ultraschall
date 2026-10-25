@@ -49,6 +49,42 @@ function us_tz($schluessel, $wert)
     return str_pad(us_t($schluessel), 17) . $wert . "\n";
 }
 
+/**
+ * Ein Hinweis des Messlaufs in der Sprache der Oberflaeche (seit 1.2.18, E3).
+ *
+ * us_common liefert seit 1.2.18 Eintraege {k, a, t}: Schluessel, Werte, deutscher
+ * Satz. Gezeigt wird [HINWEIS] k mit den Werten; fehlt der Schluessel oder passen
+ * die Platzhalter nicht, der deutsche Satz. Ein blosser Text (aeltere Fassung) wie
+ * bisher.
+ */
+function us_hinweis_text($h)
+{
+    if (!is_array($h)) {
+        return (string) $h;
+    }
+    $t = isset($h['t']) ? (string) $h['t'] : '';
+    if (!isset($h['k']) || !is_string($h['k']) || preg_match('/^[A-Z0-9_]+$/', $h['k']) !== 1) {
+        return $t;
+    }
+    $muster = us_t('HINWEIS.' . $h['k']);
+    if ($muster === 'HINWEIS.' . $h['k']) {
+        return $t;
+    }
+    /* Platzhalter {1}, {2} ... statt %s: die Werte kommen aus einer Konfiguration, und
+     * eine falsche Anzahl darf keinen ArgumentCountError ausloesen - passt die Zahl
+     * nicht, gilt der deutsche Satz. */
+    $ersatz = array();
+    $n = 0;
+    foreach ((isset($h['a']) && is_array($h['a'])) ? $h['a'] : array() as $w) {
+        $n++;
+        $ersatz['{' . $n . '}'] = is_scalar($w) ? (string) $w : '';
+    }
+    if (preg_match_all('/\{[0-9]+\}/', $muster) !== $n) {
+        return $t;
+    }
+    return strtr($muster, $ersatz);
+}
+
 /** So lange darf eine Messung aus dem Webfrontend hoechstens dauern. */
 define('US_MESSEN_GRENZE', 12);
 
@@ -207,6 +243,12 @@ function us_test_ausfuehren($was)
             } else {
                 $t .= us_tz('TEST.L_INHALT', us_t('TEST.INHALT_NICHT'));
             }
+            // V1/V2 (seit 1.2.18): mit welcher Form und Temperatur gerechnet wird.
+            $us_formen = us_behaelterformen();
+            $us_fk = us_cfg($cfg, 'behaelter_form', 'linear');
+            $t .= us_tz('TEST.L_FORM', isset($us_formen[$us_fk]) ? $us_formen[$us_fk] : $us_fk);
+            $t .= us_tz('TEST.L_TEMP', us_roh($cfg, 'temperatur_c') === '' ? us_t('TEST.TEMP_AUS')
+                : sprintf(us_t('TEST.TEMP_WERT'), us_roh($cfg, 'temperatur_c')));
             $t .= "\n" . us_test_werte($s);
             if (!empty($s['fehler'])) {
                 $t .= "\n" . us_tz('TEST.L_FEHLER', (string) $s['fehler']);
@@ -231,7 +273,7 @@ function us_test_ausfuehren($was)
             if (isset($j['hinweise']) && is_array($j['hinweise']) && count($j['hinweise']) > 0) {
                 $t .= us_t('TEST.ZUR_KONFIG') . "\n";
                 foreach ($j['hinweise'] as $us_hw) {
-                    $t .= '- ' . (string) $us_hw . "\n";
+                    $t .= '- ' . us_hinweis_text($us_hw) . "\n";
                 }
             }
             $t .= "\n";
@@ -293,7 +335,13 @@ function us_test_ausfuehren($was)
         case 'konfig':
             $t = us_tz('TEST.L_DATEI', $p['config']) . "\n";
             if (is_file($p['config'])) {
-                $t .= (string) @file_get_contents($p['config']);
+                /* U9 (seit 1.2.18): ein Pruefknopf darf die Form beurteilen, nie den Wert
+                 * zeigen (Regeln/05) - das Aktionstoken erscheint als "(gesetzt, N Zeichen)".
+                 * Bildschirmfotos dieses Reiters landen in Foren. */
+                $t .= preg_replace_callback('/^([ \t]*aktionstoken[ \t]*=[ \t]*)(.*)$/m', function ($m) {
+                    $w = trim($m[2]);
+                    return $m[1] . ($w === '' ? us_t('TEST.TOKEN_LEER') : sprintf(us_t('TEST.TOKEN_GESETZT'), strlen($w)));
+                }, (string) @file_get_contents($p['config']));
             } else {
                 $t .= us_t('TEST.KONFIG_FEHLT') . "\n\n";
                 foreach (us_defaults() as $k => $v) {

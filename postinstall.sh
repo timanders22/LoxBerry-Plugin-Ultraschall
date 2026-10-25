@@ -10,6 +10,11 @@ PVERSION=$4   # Forth argument is Plugin version
               # Base folder of LoxBerry
 
 US_PDIR="${3:-ultraschall}"
+# U4 (seit 1.2.18): der Ordnername darf keinen Pfadtrenner tragen - dieselbe
+# Schranke wie in preinstall.sh. Bis 1.2.17 stand sie nur dort.
+case "$US_PDIR" in
+    ''|*/*|*..*) echo "<WARNING> Ordnername '$US_PDIR' unbrauchbar - nichts getan."; exit 0 ;;
+esac
 
 # ---------------------------------------------------------------------------
 # DIE WURZEL - NUR EINE, DIE NACHWEISLICH EINE IST (seit 1.2.8)
@@ -57,10 +62,8 @@ PLOG=""
 # da, und ein blankes "mkdir" schrieb bei JEDEM Upgrade eine rote Zeile
 # ins Installationsprotokoll ("File exists"). Folgenlos - aber eine
 # Fehlerzeile, die immer dasteht, stumpft gegen die ab, die zaehlt.
-# Das chown ist ein Nichtstuer: dieses Skript laeuft bereits als
-# loxberry (plugininstall.pl ruft es ueber "sudo -n -u loxberry"), und
-# ein Eigentuemerwechsel braucht root. Die Datei gehoert ohnehin
-# loxberry, weil loxberry sie anlegt.
+# Dieses Skript laeuft als loxberry (plugininstall.pl, "sudo -n -u loxberry");
+# die Datei gehoert deshalb ohnehin loxberry.
 if [ -n "$PLOG" ]; then
     mkdir -p "$PLOG"
     touch "$PLOG/$PSHNAME.log"
@@ -81,13 +84,17 @@ fi
 if [ -n "$US_BASE" ]; then
     US_BIN="$US_BASE/bin/plugins/$US_PDIR"
     chmod 755 "$US_BIN/ultraschall.py" "$US_BIN/us_messen.py" 2>/dev/null
-    chmod 644 "$US_BIN/us_common.py" 2>/dev/null
+    chmod 644 "$US_BIN/us_common.py" "$US_BIN/us_start.sh" 2>/dev/null
 fi
 
-# I2C einschalten. Der SRF02 haengt am I2C-Bus; ohne dtparam gibt es kein
-# /dev/i2c-1. Seit Bookworm liegt die Datei unter /boot/firmware/config.txt -
-# die Originalfassung schrieb noch nach /boot/config.txt, was dort ins Leere
-# ging beziehungsweise eine Datei anlegte, die niemand liest.
+# I2C, Kernelmodul und Gruppen - SEIT 1.2.18 NUR NOCH PRUEFEN (U2).
+#
+# Bis 1.2.17 versuchte dieses Skript, sie einzurichten: dtparam in die
+# config.txt, /etc/modules-load.d/ultraschall.conf, ein Eintrag aus /etc/modules
+# heraus, modprobe und usermod. Es laeuft aber als loxberry (plugininstall.pl,
+# "sudo -n -u loxberry") - alles davon scheiterte immer, mit ehrlicher Meldung.
+# Eingerichtet wird jetzt in postroot.sh, das der Installer gleich im Anschluss
+# als root ausfuehrt. Hier steht nur noch, was schon da ist und was fehlt.
 BOOTCFG=""
 for kandidat in /boot/firmware/config.txt /boot/config.txt; do
     if [ -f "$kandidat" ]; then
@@ -95,104 +102,32 @@ for kandidat in /boot/firmware/config.txt /boot/config.txt; do
         break
     fi
 done
-if [ -n "$BOOTCFG" ]; then
-    if grep -qE '^[[:space:]]*dtparam=i2c_arm=on' "$BOOTCFG"; then
-        echo "<OK> I2C ist in $BOOTCFG bereits eingeschaltet."
-    elif echo "dtparam=i2c_arm=on" >> "$BOOTCFG" 2>/dev/null; then
-        echo "<INFO> I2C in $BOOTCFG eingeschaltet. Wirksam nach einem Neustart."
-    else
-        # DIE MELDUNG HAENGT AN DER WIRKUNG (seit 1.2.2).
-        #
-        # Bis 1.2.1 standen Umleitung und Erfolgsmeldung als zwei
-        # getrennte Befehle untereinander - die zweite lief also auch
-        # dann, wenn die erste scheiterte. Und sie scheitert hier im
-        # Regelfall: dieses Skript laeuft als loxberry, und
-        # /boot/firmware/config.txt gehoert root. Der Anwender las
-        # "I2C eingeschaltet, wirksam nach einem Neustart", startete neu
-        # und fand weiterhin kein /dev/i2c-1 - und suchte den Fehler
-        # beim Sensor, bei der Verkabelung, bei der Adresse.
-        #
-        # Die drei Nachbarbloecke (modules-load.d, /etc/modules,
-        # usermod) machen es seit jeher richtig und nennen den Grund.
-        echo "<WARNING> I2C ist in $BOOTCFG NICHT eingeschaltet - die Datei"
-        echo "<WARNING> ist fuer den Benutzer loxberry nicht schreibbar."
-        echo "<WARNING> Von Hand nachholen und danach neu starten:"
-        echo "<WARNING>   sudo raspi-config nonint do_i2c 0"
-        echo "<WARNING> oder die Zeile dtparam=i2c_arm=on selbst eintragen."
-    fi
-else
+if [ -z "$BOOTCFG" ]; then
     echo "<INFO> Keine config.txt gefunden - kein Raspberry Pi? I2C bitte selbst einrichten."
-fi
-
-# Module beim Start laden - ueber eine eigene Datei unter modules-load.d
-#
-# Bis 1.1.1 wurde an /etc/modules angehaengt. Der Einwand, dabei entstuenden
-# bei wiederholten Laeufen Duplikate, hat sich NICHT bestaetigt: nachgestellt
-# mit je zehn Laeufen und fuenf Ausgangslagen (leer, Eintrag vorhanden,
-# Eintrag mit Leerraum, auskommentiert, Teilwort "i2c-dev-alt") blieb es in
-# jedem Fall bei genau einem Eintrag - der Ausdruck traegt.
-#
-# Umgestellt wurde trotzdem, aus einem anderen Grund: eine eigene Datei ist
-# unteilbar richtig. Sie wird geschrieben, nicht angehaengt; damit KANN kein
-# Duplikat entstehen, egal wie oft die Installation laeuft. Und beim
-# Deinstallieren laesst sich genau diese Datei wieder entfernen, ohne in
-# einer fremden Systemdatei herumzuschneiden.
-#
-# i2c-bcm2708 ist bewusst nicht mehr dabei: der Treiber heisst seit Jahren
-# i2c-bcm2835, und geladen wird er ohnehin ueber den Geraetebaum. Ein Modul
-# einzutragen, das es nicht gibt, erzeugt bei jedem Start eine Fehlermeldung
-# im Systemprotokoll.
-if [ -d /etc/modules-load.d ]; then
-    printf '# LoxBerry-Plugin Ultraschall Entfernung\n# Wird beim Deinstallieren wieder entfernt.\ni2c-dev\n' \
-        > /etc/modules-load.d/ultraschall.conf 2>/dev/null \
-        && echo "<OK> /etc/modules-load.d/ultraschall.conf angelegt." \
-        || echo "<INFO> /etc/modules-load.d/ultraschall.conf nicht schreibbar (nicht als root?)."
-    # Alten Eintrag aus /etc/modules zuruecknehmen, damit das Modul nicht an
-    # zwei Stellen steht.
-    if [ -f /etc/modules ] && grep -qE '^[[:space:]]*i2c-(dev|bcm2708)([[:space:]]|$)' /etc/modules; then
-        sed -i -E '/^[[:space:]]*i2c-(dev|bcm2708)[[:space:]]*$/d' /etc/modules 2>/dev/null \
-            && echo "<INFO> Alte Eintraege aus /etc/modules entfernt." \
-            || echo "<INFO> /etc/modules nicht schreibbar (nicht als root?) - der alte Eintrag bleibt stehen. Er schadet nicht: er meint dasselbe Modul wie modules-load.d."
-    fi
-elif [ -f /etc/modules ]; then
-    # Sehr altes System ohne modules-load.d: dann eben wie bisher.
-    if ! grep -qE "^[[:space:]]*i2c-dev([[:space:]]|$)" /etc/modules; then
-        # Gemeldet wird, was nachher dasteht. postinstall.sh laeuft als
-        # loxberry (Regeln/06) und darf /etc/modules nicht schreiben; bis
-        # 1.2.4 stand die Erfolgsmeldung trotzdem da. Der Zweig greift nur
-        # auf sehr alten Systemen ohne /etc/modules-load.d - deshalb ist es
-        # nie aufgefallen.
-        if echo "i2c-dev" >> /etc/modules 2>/dev/null \
-           && grep -qE "^[[:space:]]*i2c-dev([[:space:]]|$)" /etc/modules; then
-            echo "<INFO> Modul i2c-dev in /etc/modules eingetragen."
-        else
-            echo "<INFO> /etc/modules ist nicht schreibbar (nicht als root?) -"
-            echo "<INFO> i2c-dev wurde NICHT eingetragen. Von Hand nachtragen:"
-            echo "<INFO>   echo i2c-dev | sudo tee -a /etc/modules"
-        fi
-    fi
-fi
-# modprobe braucht root; als loxberry scheitert es. Das ist kein Fehler
-# - das Modul laedt beim naechsten Start ueber modules-load.d -, aber
-# es gehoert gesagt, sonst sucht jemand /dev/i2c-1 noch heute.
-if modprobe i2c-dev >/dev/null 2>&1; then
-    echo "<OK> Modul i2c-dev geladen."
-elif [ -e /dev/i2c-1 ]; then
-    echo "<OK> /dev/i2c-1 ist vorhanden."
+elif grep -qE '^[[:space:]]*dtparam=i2c_arm=on' "$BOOTCFG"; then
+    echo "<OK> I2C ist in $BOOTCFG eingeschaltet."
+elif grep -qE '^[[:space:]]*dtparam=i2c_arm=off' "$BOOTCFG"; then
+    echo "<INFO> I2C ist in $BOOTCFG ausdruecklich ausgeschaltet - postroot.sh aendert das nicht."
 else
-    echo "<INFO> Modul i2c-dev noch nicht geladen (dafuer braucht es root)."
-    echo "<INFO> Es laedt beim naechsten Neustart von selbst."
+    echo "<INFO> I2C ist in $BOOTCFG noch nicht eingeschaltet - postroot.sh richtet es gleich im Anschluss als root ein."
 fi
-
-# Der Dienst laeuft als loxberry. Fuer den I2C-Bus braucht er die Gruppe i2c,
-# fuer die GPIO-Pins des HC-SR04 die Gruppe gpio.
+if grep -qsE '^[[:space:]]*i2c-dev([[:space:]]|$)' /etc/modules /etc/modules-load.d/*.conf; then
+    echo "<OK> i2c-dev ist fuer den Start eingetragen."
+else
+    echo "<INFO> i2c-dev ist fuer den Start noch nicht eingetragen - postroot.sh richtet es gleich im Anschluss ein."
+fi
+if ls /dev/i2c-* >/dev/null 2>&1; then
+    echo "<OK> $(ls /dev/i2c-* 2>/dev/null | head -n 1) ist vorhanden."
+else
+    echo "<INFO> Noch kein /dev/i2c-* - postroot.sh laedt das Modul; nach dem Einschalten von I2C ist ein Neustart noetig."
+fi
 for gruppe in i2c gpio; do
-    if getent group "$gruppe" >/dev/null 2>&1; then
-        usermod -a -G "$gruppe" loxberry 2>/dev/null && \
-            echo "<OK> Benutzer loxberry zur Gruppe $gruppe hinzugefuegt." || \
-            echo "<INFO> Gruppenzuordnung $gruppe nicht moeglich (nicht als root?)."
+    if ! getent group "$gruppe" >/dev/null 2>&1; then
+        echo "<INFO> Gruppe $gruppe gibt es auf diesem System nicht."
+    elif id -nG loxberry 2>/dev/null | tr ' ' '\n' | grep -qx "$gruppe"; then
+        echo "<OK> loxberry ist in der Gruppe $gruppe."
     else
-        echo "<INFO> Gruppe $gruppe nicht vorhanden - wird erst mit den Paketen angelegt."
+        echo "<INFO> loxberry ist noch nicht in der Gruppe $gruppe - postroot.sh nimmt ihn gleich im Anschluss auf."
     fi
 done
 
@@ -219,7 +154,8 @@ fi
 echo "<INFO> Naechster Schritt: Reiter Einstellungen -> Sensor waehlen,"
 echo "<INFO> einschalten und speichern. Der Reiter Test zeigt, ob der"
 echo "<INFO> Sensor antwortet."
-echo "<INFO> Wurde I2C gerade erst eingeschaltet, ist ein Neustart noetig."
+echo "<INFO> Hat postroot.sh gleich I2C eingeschaltet oder eine Gruppe gesetzt, sagt es das -"
+echo "<INFO> dann ist ein Neustart des LoxBerry noetig."
 
 
 # ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
@@ -272,9 +208,13 @@ netz_zurueck() {
         verloren=1
     fi
     if [ "$verloren" = "1" ]; then
-        if cp -p "$zweit" "$ziel" 2>/dev/null; then
+        # U4 (seit 1.2.18): ueber eine Nebendatei, mit Vergleich, dann umbenennen. Bis
+        # 1.2.17 kopierte "cp -p" direkt - bei voller Platte blieb eine gekappte Datei.
+        if cp -p "$zweit" "$ziel.neu" 2>/dev/null && cmp -s "$zweit" "$ziel.neu" \
+           && mv -f "$ziel.neu" "$ziel" 2>/dev/null; then
             echo "<OK> $datei aus der Zweitschrift wiederhergestellt."
         else
+            rm -f "$ziel.neu" 2>/dev/null
             echo "<WARNING> $datei liess sich nicht zurueckspielen. Die Sicherung"
             echo "<WARNING> liegt unter $zweit und kann von Hand kopiert werden."
         fi
@@ -301,6 +241,35 @@ elif [ -e "$NETZ_ZWEIT" ] || [ -L "$NETZ_ZWEIT" ]; then
         echo "<WARNING> Neuinstallation: Einstellungen einer frueheren Installation werden NICHT eingespielt. Beiseitegelegt: $NETZ_ZWEIT.alt (die Deinstallation raeumt sie ab)."
     else
         echo "<WARNING> Neuinstallation: die Zweitschrift $NETZ_ZWEIT einer frueheren Installation liess sich nicht beiseitelegen - sie wird NICHT eingespielt; bitte von Hand entfernen."
+    fi
+fi
+
+# DAS AKTIONSTOKEN BEI DER ERSTEN EINRICHTUNG (seit 1.2.18, Hausherr 25.10.2026).
+#
+# Bis 1.2.17 entstand es erst beim ersten Aufruf der Oberflaeche; bis dahin war der
+# Endpunkt ohne Token, und eine Pruefung (Reiter Test, Messskript) meldete "Merkmal
+# LEER" (am Geraet gemessen 25.10.2026). Jetzt hier - aber NUR bei einer
+# Neuinstallation (keine Upgrade-Marke: bei einem Update kommt die Konfiguration samt
+# Token aus Zweitschrift bzw. Sicherung zurueck und wird nie angefasst) und nur, wenn
+# kein Token darin steht. Ein vorhandenes Token wird nie geaendert. Ueber eine
+# Nebendatei, 0600 vor dem Umbenennen, Gegenprobe: genau eine Tokenzeile, alle
+# anderen Zeilen unveraendert. Zufall aus /dev/urandom (24 Hexzeichen wie die
+# Oberflaeche); ohne brauchbaren Zufall legt die Oberflaeche es spaeter an.
+US_TOKCFG="$NETZ_CFG/ultraschall.cfg"
+if [ ! -f "$NETZ_MARKE" ] && [ -f "$US_TOKCFG" ] \
+   && ! grep -qE '^[[:space:]]*aktionstoken[[:space:]]*=[[:space:]]*[0-9a-fA-F]{16,64}[[:space:]]*$' "$US_TOKCFG"; then
+    US_TOK=$(od -An -N12 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+    if [ "${#US_TOK}" = 24 ] \
+       && grep -vE '^[[:space:]]*aktionstoken[[:space:]]*=' "$US_TOKCFG" > "$US_TOKCFG.neu" 2>/dev/null \
+       && echo "aktionstoken=$US_TOK" >> "$US_TOKCFG.neu" \
+       && chmod 600 "$US_TOKCFG.neu" 2>/dev/null \
+       && [ "$(grep -c '^aktionstoken=' "$US_TOKCFG.neu")" = 1 ] \
+       && [ "$(grep -vE '^[[:space:]]*aktionstoken[[:space:]]*=' "$US_TOKCFG" | md5sum)" = "$(grep -v '^aktionstoken=' "$US_TOKCFG.neu" | md5sum)" ] \
+       && mv -f "$US_TOKCFG.neu" "$US_TOKCFG" 2>/dev/null; then
+        echo "<OK> Aktionstoken angelegt (24 Zeichen) - Adressen im Miniserver ggf. eintragen (Reiter Einbindung, Bestehende Anlagen)."
+    else
+        rm -f "$US_TOKCFG.neu" 2>/dev/null
+        echo "<INFO> Das Aktionstoken wurde hier nicht angelegt - die Oberflaeche legt es beim ersten Aufruf an."
     fi
 fi
 
@@ -342,111 +311,14 @@ fi
 # faellt darunter: dort steht enabled=0, und erst sollen Sensor und Masse
 # eingetragen werden.
 # ---------------------------------------------------------------------------
-US_CFG="$NETZ_CFG/ultraschall.cfg"
-US_SKRIPT="$US_BASE/bin/plugins/$US_PDIR/ultraschall.py"
-
-# DIENST ARGUMENTWEISE ERKENNEN (seit 1.2.8) - dieselbe Bauart wie
-# daemon/daemon: GENAU zwei Argumente, argv[0] ein Python-Interpreter,
-# argv[1] Zeichen fuer Zeichen US_SKRIPT. Hier stand "pgrep -u loxberry -f":
-# eine Teilstringsuche ueber die ganze Befehlszeile, die "tail <skript> -f"
-# als gelungenen Start meldete (gemessen in WSL, Pruefung-Ultraschall-1.2.8,
-# Fall I1b). Ohne Benutzerfilter: ein Dienst unter anderem Benutzer ist
-# trotzdem ein laufender Dienst.
-us_ist_dienst() {
-    [ -r "/proc/$1/cmdline" ] || return 1
-    us_n=0
-    us_a0=""
-    us_a1=""
-    while IFS= read -r us_arg; do
-        us_n=$((us_n + 1))
-        [ "$us_n" = 1 ] && us_a0="$us_arg"
-        [ "$us_n" = 2 ] && us_a1="$us_arg"
-    done <<US_ARGUMENTE
-$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null)
-US_ARGUMENTE
-    [ "$us_n" = 2 ] || return 1
-    [ "$us_a1" = "$US_SKRIPT" ] || return 1
-    case "${us_a0##*/}" in
-        python|python3|python3.*) return 0 ;;
-    esac
-    return 1
-}
-us_dienste() {
-    for us_d in /proc/[0-9]*; do
-        grep -qaF "$US_SKRIPT" "$us_d/cmdline" 2>/dev/null || continue
-        us_ist_dienst "${us_d#/proc/}" && echo "${us_d#/proc/}"
-    done
-}
-
-# EINE STARTSPERRE FUER ALLE STARTWEGE (Durchgang 02.10.2026, I3).
-#
-# Waechter, daemon, dieses Skript und der Knopf der Oberflaeche sperren auf
-# dieselbe Datei (flock auf ultraschall.py, Deskriptor 9) und fragen erst
-# DANACH, ob schon einer laeuft. Gemessen bis 1.2.10: zwei gleichzeitige
-# Startwege ergaben in 10 von 10 Runden zwei Dienste (Installer-Pruefer
-# D1/D2). Der Dienst erbt die Sperre NICHT (9<&- beim Start). Ohne flock
-# (kein util-linux) bleibt es beim Verhalten bis 1.2.10; der Dienst sperrt
-# ausserdem selbst (dienst.lock).
-US_GESPERRT=1
-if command -v flock >/dev/null 2>&1 && [ -r "$US_SKRIPT" ]; then
-    exec 9<"$US_SKRIPT"
-    flock -w 15 9 || US_GESPERRT=0
-fi
-US_LAEUFT=$(us_dienste)
-if [ "$US_GESPERRT" = "0" ]; then
-    echo "<INFO> Ein anderer Startweg haelt gerade die Startsperre - der Waechter"
-    echo "<INFO> (cron.05min) startet den Messdienst nach, falls noetig."
-elif [ -n "$US_LAEUFT" ]; then
-    # KEIN ZWEITER DIENST (seit 1.2.8). Bis 1.2.7 startete dieses Skript
-    # ohne zu fragen - lief schon einer (erneutes Einspielen, ein Dienst,
-    # den preupgrade.sh nicht fand), liefen danach zwei am selben Sensor
-    # (Fall I2).
-    echo "<OK> Der Messdienst laeuft bereits (PID $(echo $US_LAEUFT)) - kein zweiter Start."
-elif [ -r "$US_CFG" ] \
-   && grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*1[[:space:]]*$' "$US_CFG" \
-   && [ -x "$US_SKRIPT" ]; then
-    # OHNE "su" (seit 1.2.2).
-    #
-    # Dieses Skript laeuft bereits als loxberry - plugininstall.pl ruft
-    # es ueber "sudo -n -u loxberry" auf; genau deshalb kann hier auch
-    # kein apt-get gelingen. Ein "su loxberry" von loxberry aus verlangt
-    # trotzdem eine PAM-Anmeldung (nur root ist ueber pam_rootok davon
-    # befreit), und stdin ist hier kein Terminal. Die Zeile lief also
-    # nach JEDEM Upgrade ins Leere, die Pruefung darunter fand keinen
-    # Prozess, und ausgegeben wurde "Messdienst noch nicht gestartet -
-    # der Waechter holt ihn nach". Das las sich wie ein seltener
-    # Ausnahmefall und war der Regelfall: der Fuellstand fror nach jedem
-    # Auto-Update bis zu fuenf Minuten ein. Der ganze Begruendungsblock
-    # darueber beschrieb damit eine Wirkung, die nie eintrat.
-    #
-    # daemon/daemon braucht das "su", weil es als root laeuft. Hier ist
-    # es falsch - us_lib.php startet denselben Dienst aus demselben
-    # Grund ohne.
-    # EIGENE STARTDATEI, NICHT DAS PROTOKOLL (seit 1.2.6).
-    #
-    # Bis 1.2.5 ging die Ausgabe des Dienstes anhaengend in dieselbe
-# Protokolldatei -
-    # in dieselbe Datei, die der Dienst selbst ueber seinen Handler fuehrt.
-    # Wird log/plugins geleert (Ramdisk) oder raeumt die Logwartung auf,
-    # schreibt dieser von der SCHALE gehaltene Deskriptor bis zum Prozessende
-    # in einen geloeschten Inode. Der Handler im Programm faengt sich wieder,
-    # die Umleitung nie. Am Geraet gemessen am 13.09.2026: drei Deskriptoren
-    # des laufenden Dienstes zeigten auf eine geloeschte Datei.
-    #
-    # ">" statt ">>": die Datei faengt auf, was VOR dem Protokoll passiert,
-    # und wird bei jedem Start geleert, statt zu wachsen.
-    # 9<&-: der Dienst erbt die Startsperre nicht (I3).
-    nohup "$US_SKRIPT" > "$PLOG/ultraschall_start.log" 2>&1 9<&- &
-    sleep 2
-    # Die Wirkung pruefen, nicht den Rueckgabewert des Starts.
-    if [ -n "$(us_dienste)" ]; then
-        echo "<OK> Messdienst wieder gestartet."
-    else
-        echo "<INFO> Messdienst noch nicht gestartet - der Waechter"
-        echo "<INFO> (cron.05min) holt ihn binnen fuenf Minuten nach."
-    fi
+# Der Startblock steht seit 1.2.18 in bin/us_start.sh (U1) - postupgrade.sh
+# laedt dieselbe Datei nach dem Zurueckspielen der Sicherung.
+US_START="$US_BASE/bin/plugins/$US_PDIR/us_start.sh"
+if [ -r "$US_START" ]; then
+    . "$US_START"
+    us_dienst_starten "$US_BASE" "$US_PDIR" "$PLOG"
 else
-    echo "<INFO> Das Plugin ist ausgeschaltet - der Messdienst wird nicht gestartet."
+    echo "<INFO> us_start.sh fehlt - der Waechter startet den Messdienst binnen fuenf Minuten."
 fi
 
 exit 0

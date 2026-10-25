@@ -4,6 +4,37 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.18
+
+Werte über das **MQTT-Gateway in einfache Virtuelle Eingänge** (Gruppe 17, Entscheidungen vom 25.10.2026), ein
+neues `postroot.sh` für I2C, dazu Behälterform und feste Temperatur – beide ab Werk ohne Wirkung.
+
+* **Namenstabelle statt Vorlage:** Die Vorlage „Eingänge (MQTT)“ (ein Virtueller HTTP-Eingang mit
+  `http://localhost`) ist entfallen. Im Reiter „Einbindung in Loxone“ steht je Thema der Name, den das
+  MQTT-Gateway vergibt (`ultraschall_level` usw.), mit Kopierknopf, Fehlwert, Retain und Haken für Gateway V2
+  (sieben Haken, `valid` und `online` mit „Noncached“). Die UDP-Vorlage bleibt.
+* **−1 = keine Aussage:** `level`/`liter` ohne Kalibrierung bzw. ohne Gesamtvolumen sind künftig −1 statt nicht
+  gesendet; `distance`/`level`/`liter` −1, solange seit dem Start nie gültig gemessen wurde. Bei einer einzelnen
+  ungültigen Messung bleibt der letzte gültige Wert stehen, `valid=0` sagt es (Trockenlaufschutz und
+  Verbrauchsrechnung im Musterprojekt). Der Endpunkt meldet `LEVEL=-1`/`LITER=-1` statt leerer Felder.
+* **Lebenszeichen in Hausform:** neu `status/zaehler`, `status/ok`, `status/ts` je Lauf des Plugins – auch bei
+  ausgeschaltetem Plugin, solange der Dienst läuft; dann einmal `valid=0` und `last_error` „Plugin
+  ausgeschaltet“. `zaehler`, `ts` und `online` gehen für bestehende Anlagen weiter hinaus.
+* **Endpunkt abschaltbar:** Haken `endpunkt_ein` (Reiter Einbindung, zugeklappt „Bestehende Anlagen“).
+  Neuinstallation aus; nach dem Update bleibt er bei bestehenden Anlagen an (Lese-Regel und `postupgrade.sh`).
+* **`postroot.sh` (neu, als root):** I2C in `config.txt` (eine ausdrückliche Abschaltung bleibt), `i2c-dev`
+  nur, wenn es nirgends eingetragen ist (`/etc/modules` wird nie angefasst), Modul laden, Gruppen `i2c`/`gpio`;
+  nur was fehlt, mit ehrlichem Neustarthinweis. `postinstall.sh` prüft nur noch. Die Deinstallation lässt I2C
+  und die Gruppen stehen und sagt es.
+* **Behälterform** (linear / liegender Zylinder / Kugel) und **feste Temperatur** im Reiter Einstellungen.
+* **Korrekturen:** Start auch nach dem Zurückspielen (`bin/us_start.sh`), atomares Kopieren und Ordnerschutz
+  in allen Haken, Token-Ausnahme nur noch für „Neues Token“, Reiterklick ohne Neuladen, Token in „Konfiguration
+  anzeigen“ maskiert, Hilfelink auf die eigene Wiki-Seite, Wächter mit Neustart- und Meldungsbremse, −300-Toleranz
+  der Upgrade-Marke, Prüfzeilen (Leiste, Themen mit „/“), SUBACK beim Abräumen, Client-Kennung, Brokerport ohne
+  Absturz, Protokoll kappen über eine Nebendatei, Hinweise des Messlaufs übersetzt, SRF02-Totzone, Präfixschutz
+  beim Abräumen. „Jetzt messen“ im Reiter Test ist grün (liest nur).
+* Gerendert unter PHP 7.4, 8.4 und 8.5 (deutsch und englisch), nicht am Gerät angesehen.
+
 ## Neu in 1.2.17
 
 Einbindung in Loxone: Eingang En der Analogwertvalidierung nicht negieren (Hinweis und Bild); ohne diese
@@ -287,9 +318,9 @@ Zwischen `preupgrade.sh` und dem letzten Hakenskript liegt eine Lücke, in der
 der Installer `config/plugins/<ordner>/` und `data/plugins/<ordner>/` abräumt
 und die Cron-Datei neu einbaut. `preupgrade.sh` legt jetzt als **Erstes**
 `data/plugins/<ordner>.upgrade_laeuft` mit der Unixzeit an — neben dem
-Datenordner, sonst nähme `purge_installation` sie mit. `postupgrade.sh`, das
-letzte Hakenskript dieser Linie (ein `postroot.sh` gibt es hier nicht),
-entfernt sie **nach** dem Start; `uninstall` räumt sie weg.
+Datenordner, sonst nähme `purge_installation` sie mit. `postupgrade.sh` entfernt
+sie **nach** dem Start (danach läuft seit 1.2.18 nur noch `postroot.sh` als
+root; es startet nichts und braucht die Marke nicht); `uninstall` räumt sie weg.
 
 Solange die Marke gilt, startet keiner der drei Startwege: `daemon/daemon`,
 `cron/cron.05min` und der Knopf „Dienst neu starten" in der Oberfläche. Sie
@@ -507,12 +538,14 @@ berichtigt (`haelt` → `hält`).
 Grundlage ist das Plugin **Ultraschall Entfernung** von **Dietmar Wimmer**,
 Version 0.30 aus dem Jahr 2015
 ([LoxBerry-Wiki](https://wiki.loxberry.de/plugins/ultraschall_entfernung/start)).
+Wiki-Seite dieser Fassung: [plugins/ultraschall_ng/start](https://wiki.loxberry.de/plugins/ultraschall_ng/start).
 
-**Die Urheberschaft bleibt bei ihm** — die Autorenangabe in `plugin.cfg` ist
-unverändert. Das ist nicht nur eine Frage der Zuordnung: LoxBerry identifiziert
-ein Plugin über genau die Felder `NAME` und `EMAIL` im Abschnitt `[AUTHOR]`. Wer
-sie ändert, macht daraus für LoxBerry ein anderes Plugin, und jedes Update
-schlägt fehl.
+**Die Urheberschaft bleibt bei ihm** — genannt in dieser README und in den
+Quelltexten. Die Autorenangabe in `plugin.cfg` ist dagegen bewusst eine eigene:
+LoxBerry unterscheidet Plugins über die Felder `NAME` und `EMAIL` im Abschnitt
+`[AUTHOR]`; mit dem fremden Namen wäre diese Abspaltung für LoxBerry dasselbe
+Plugin wie das Original. Nach der ersten Veröffentlichung bleibt sie, sonst
+schlägt jedes Update fehl.
 
 > **Zur Lizenz — bitte lesen.** Die Originalfassung enthält **keine
 > Lizenzdatei**, nur den Vermerk `#C Dietmar Wimmer 2015` in den Quelltexten.

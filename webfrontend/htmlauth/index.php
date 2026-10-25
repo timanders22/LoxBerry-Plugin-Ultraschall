@@ -166,6 +166,17 @@ if ($us_ist_post) {
      * abgewiesen. */
     $us_ohne_token_erlaubt = ($us_fmt_soll === '' && isset($_POST['token_neu'])
                               && count($_POST) <= 3);
+    /* U6 (seit 1.2.18): im Ausnahmezweig zaehlte nur die ANZAHL der Felder, nicht
+     * welche. "token_neu=1&kalibrieren=voll" oder "&test=stop" liefen durch die
+     * Handler davor (Pruefbericht, Probe u6). Jetzt bleibt nur, was der Weg aus der
+     * Sackgasse braucht. */
+    if ($us_ohne_token_erlaubt) {
+        $_POST = array_intersect_key($_POST, array('token_neu' => 1, 'activetab' => 1));
+    }
+    /* Seit 1.2.18 legt us_config_read(true) oben ein leeres Token selbst an; diese
+     * Ausnahme greift damit nur noch, wenn die Konfigurationsdatei nicht schreibbar
+     * ist - dann ist "Neues Token erzeugen" der einzige Weg, und er bleibt auf genau
+     * diesen Knopf beschraenkt (U6). */
     if (!$us_ohne_token_erlaubt
         && ($us_fmt_soll === '' || !hash_equals($us_fmt_soll, $us_fmt_ist))) {
         $us_behalten = (isset($_POST['activetab']) && is_string($_POST['activetab']))
@@ -246,7 +257,10 @@ if ($us_ist_post && isset($_POST['download']) && is_string($_POST['download'])) 
      * else-Zweig und bekam die MQTT-Vorlage - eine Antwort auf eine Frage,
      * die niemand gestellt hat. Was nicht ins Muster passt, wird abgewiesen
      * und gemeldet, nicht zurechtgebogen. */
-    if (!in_array($art, array('mqtt_in', 'udp_in'), true)) {
+    if ($art === 'mqtt_in') {
+        // Seit 1.2.18 entfallen (E1) - die Namenstabelle steht im Reiter Einbindung.
+        us_prg('tab-loxone', array('fehler' => us_t('FEHLER.VORLAGE_ENTFALLEN')));
+    } elseif (!in_array($art, array('udp_in'), true)) {
         us_prg('tab-loxone', array('fehler' => us_t('FEHLER.VORLAGE_UNBEKANNT')));
     } elseif ($art === 'udp_in' && trim(us_roh($us_cfg, 'udp_port')) === '') {
         us_prg('tab-loxone', array('fehler' => us_t('FEHLER.UDP_VORLAGE_PORT')));
@@ -331,11 +345,16 @@ function us_formularfelder($name)
                              'gpio_echo', 'messungen', 'messabstand', 'min_cm',
                              'max_cm', 'offset_cm', 'leer_cm', 'voll_cm',
                              'volumen_liter', 'intervall', 'aktualisierung',
-                             'udp_miniserver', 'udp_port'),
+                             'udp_miniserver', 'udp_port', 'behaelter_form', 'temperatur_c'),
         ),
         'mqtt' => array(
             'haken' => array('mqtt'),
             'werte' => array('themenpraefix'),
+        ),
+        // Seit 1.2.18 (E6): der Haken fuer den HTTP-Endpunkt im Reiter Einbindung.
+        'endpunkt' => array(
+            'haken' => array('endpunkt_ein'),
+            'werte' => array(),
         ),
     );
     return isset($f[$name]) ? $f[$name] : null;
@@ -348,7 +367,7 @@ if ($us_ist_post && isset($_POST['save'])) {
     if ($us_feldsatz === null) {
         us_prg('tab-settings', array('fehler' => us_t('FEHLER.FORMULAR_UNBEKANNT')));
     }
-    $us_tabziel = ($us_form === 'mqtt') ? 'tab-mqtt' : 'tab-settings';
+    $us_tabziel = ($us_form === 'mqtt') ? 'tab-mqtt' : (($us_form === 'endpunkt') ? 'tab-loxone' : 'tab-settings');
     // Grundlage ist der GESPEICHERTE Stand; darueber kommen ausschliesslich
     // die Felder DIESES Formulars.
     $us_roh = $us_cfg;
@@ -388,9 +407,25 @@ if ($us_ist_post && isset($_POST['save'])) {
     if ($us_praefix_alt !== '' && $us_praefix_alt !== $us_neuwerte['themenpraefix']) {
         us_praefix_vormerken($us_praefix_alt);
     }
+    if ($us_form === 'endpunkt') {
+        /* Der Endpunkt liest die Konfiguration bei jedem Aufruf - kein Dienstneustart.
+         * Der Zwischenspeicher der Endpunkt-Probe wird geloescht, sonst zeigte der
+         * Reiter Test bis zu 300 s den alten Stand. */
+        @unlink(us_endpunkt_speicher());
+        us_prg($us_tabziel, array('gespeichert' => 1, 'hinweis' => us_t(
+            $us_neuwerte['endpunkt_ein'] === '1' ? 'MELD.ENDPUNKT_AN' : 'MELD.ENDPUNKT_AUS')));
+    }
+    /* V2 (seit 1.2.18): eine GEAENDERTE Temperatur bei gesetzter Kalibrierung - die
+     * per Knopf aufgenommenen Werte stammen aus der alten Einstellung. Kein stilles
+     * Umrechnen: ob leer/voll per Knopf oder von Hand entstanden, weiss das Plugin nicht. */
+    $us_fl_extra = array();
+    if ($us_form === 'einstellungen' && us_roh($us_cfg, 'temperatur_c') !== $us_neuwerte['temperatur_c']
+        && trim($us_neuwerte['leer_cm']) !== '' && trim($us_neuwerte['voll_cm']) !== '') {
+        $us_fl_extra['warnung'] = us_t('HINWEIS.TEMP_KALIBRIERUNG');
+    }
     us_dienst('restart');
     us_prg($us_tabziel, array('gespeichert' => 1,
-        'hinweis' => us_dienst_pid() ? us_t('MELD.DIENST_NEUSTART') : us_t('MELD.DIENST_LAEUFT_NICHT')));
+        'hinweis' => us_dienst_pid() ? us_t('MELD.DIENST_NEUSTART') : us_t('MELD.DIENST_LAEUFT_NICHT')) + $us_fl_extra);
 }
 
 /* ============ Neues Aktionstoken ============
@@ -540,7 +575,7 @@ if ($us_ist_post && isset($_POST['us_zurueck'])) {
 // WICHTIG: LBWeb::lbheader() setzt SDK-Globale - deshalb ueberall us_-Praefix.
 $us_frame = class_exists('LBWeb', false);
 if ($us_frame) {
-    LBWeb::lbheader(us_t('TEXT.TITEL'), 'https://wiki.loxberry.de/plugins/ultraschall_entfernung/start', 'help.html');
+    LBWeb::lbheader(us_t('TEXT.TITEL'), 'https://wiki.loxberry.de/plugins/ultraschall_ng/start', 'help.html');
 }
 
 
@@ -639,6 +674,10 @@ if ($us_frame) {
     padding-top: 10px; border-top: 1px solid #e0e0e0; }
 .sm-schritte { margin: 6px 0 0 18px; padding: 0; }
 .sm-schritte li { margin: 3px 0; }
+/* 1.2.18: Kopierknopf der Namenstabelle und der zugeklappte Abschnitt "Bestehende Anlagen". */
+.sm-wrap .sm-btn.sm-kopie { margin: 0 0 0 6px; padding: 2px 8px; font-size: 0.78em; font-weight: 400; }
+.sm-alt { margin: 18px 0; padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; background: #fafafa; }
+.sm-alt summary { cursor: pointer; color: #4f7d17; }
 
 </style>
 <div class="sm-wrap">
@@ -653,6 +692,9 @@ if ($us_frame) {
 <?php } ?>
 <?php if (!empty($us_lage['ergaenzt'])) { ?>
 <div class="sm-alert sm-info"><?php printf(us_t('TEXT.LAGE_ERGAENZT'), us_e(implode(', ', $us_lage['ergaenzt']))); ?></div>
+<?php } ?>
+<?php if (!empty($us_lage['token_angelegt'])) { ?>
+<div class="sm-alert sm-info"><?php echo us_t('TEXT.TOKEN_ANGELEGT'); ?></div>
 <?php } ?>
 <?php if (!empty($us_lage['fremd'])) { ?>
 <div class="sm-alert sm-info"><?php printf(us_t('TEXT.LAGE_FREMD'), us_e(implode(', ', $us_lage['fremd']))); ?></div>
@@ -836,6 +878,23 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <div class="sm-small"><?php echo us_t('TEXT.NUR_BEI_SENKRECHTEN_WNDEN_VERLSSLI'); ?></div>
 </div>
 </div>
+<!-- V1 Behaelterform und V2 feste Temperatur (seit 1.2.18) - beide ab Werk ohne Wirkung. -->
+<div class="sm-row">
+<div>
+<label><?php echo us_t('EINST.BEHAELTER_FORM'); ?></label>
+<select data-role="none" name="behaelter_form"<?= us_mark('behaelter_form') ?>>
+<?php foreach (us_behaelterformen() as $k => $bez) { ?>
+<option value="<?= us_e($k) ?>"<?= us_eingabe('behaelter_form', us_cfg($us_cfg, 'behaelter_form', 'linear')) === $k ? ' selected' : '' ?>><?= us_e($bez) ?></option>
+<?php } ?>
+</select>
+<div class="sm-small"><?php echo us_t('EINST.FORM_HINWEIS'); ?></div>
+</div>
+<div>
+<label><?php echo us_t('EINST.TEMPERATUR'); ?></label>
+<input data-role="none" type="text" name="temperatur_c"<?= us_mark('temperatur_c') ?> value="<?= us_e(us_eingabe('temperatur_c', us_roh($us_cfg, 'temperatur_c'))) ?>" placeholder="<?php echo us_e(us_t('EINST.TEMP_PLATZ')); ?>">
+<div class="sm-small"><?php echo us_t('EINST.TEMP_HINWEIS'); ?></div>
+</div>
+</div>
 
 <h2><?php echo us_t('TEXT.ZEITEN'); ?></h2>
 <div class="sm-row">
@@ -966,13 +1025,15 @@ if ($us_m_jetzt) { ?>
 <h2><?php echo us_t('TEXT.WAS_VERFFENTLICHT_WIRD'); ?></h2>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th style="width:22%;"><?php echo us_t('TEXT.THEMA'); ?></th><th style="width:9%;"><?php echo us_t('TEXT.ART'); ?></th><th style="width:9%;"><?php echo us_t('MQTT.EINHEIT'); ?></th><th style="width:10%;"><?php echo us_t('TEXT.RETAINED'); ?></th><th><?php echo us_t('TEXT.BEDEUTUNG'); ?></th></tr>
-<?php foreach (us_felder() as $us_n => $us_f) { ?>
-<tr><td><span class="sm-mono"><?= us_e($us_praefix . '/' . $us_n) ?></span></td>
-    <td><?= us_e($us_f['art']) ?></td>
-    <td><?= us_e($us_f['einheit']) ?></td>
-    <td><?= empty($us_f['retain']) ? us_e(us_t('PRUEF.NEIN')) : us_e(us_t('PRUEF.JA')) ?></td>
-    <td><?php echo us_thema_lang($us_n); ?></td></tr>
+<tr><th style="width:20%;"><?php echo us_t('TEXT.THEMA'); ?></th><th style="width:20%;"><?php echo us_t('LOX.N_NAME'); ?></th><th style="width:8%;"><?php echo us_t('TEXT.ART'); ?></th><th style="width:7%;"><?php echo us_t('MQTT.EINHEIT'); ?></th><th style="width:8%;"><?php echo us_t('LOX.N_FEHLWERT'); ?></th><th style="width:8%;"><?php echo us_t('TEXT.RETAINED'); ?></th><th><?php echo us_t('TEXT.BEDEUTUNG'); ?></th></tr>
+<?php foreach (us_mqtt_namen($us_cfg) as $us_x) { ?>
+<tr><td><span class="sm-mono"><?= us_e($us_x['thema']) ?></span></td>
+    <td><span class="sm-mono"><?= us_e($us_x['name']) ?></span></td>
+    <td><?= us_e($us_x['text'] ? 'text' : (us_felder()[$us_x['kurz']]['art'])) ?></td>
+    <td><?= us_e($us_x['einheit']) ?></td>
+    <td><?= $us_x['fehlwert'] === null ? '&ndash;' : '<span class="sm-mono">' . us_e($us_x['fehlwert']) . '</span>' ?></td>
+    <td><?= $us_x['retain'] ? us_e(us_t('PRUEF.JA')) : us_e(us_t('PRUEF.NEIN')) ?></td>
+    <td><?php echo us_thema_lang($us_x['kurz']); ?></td></tr>
 <?php } ?>
 </table>
 </div>
@@ -986,25 +1047,59 @@ if ($us_m_jetzt) { ?>
 <span><i class="sm-punkt sm-b-technik"></i> <?php echo us_t('LEGENDE.TECHNIK_DATEI'); ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?php echo us_t('LEGENDE.AKTION'); ?></span>
 </div>
-
+<?php
+/* SEIT 1.2.18 (Gruppe 17): Werte ueber das MQTT-Gateway in Virtuelle Eingaenge mit dem Namen, den das Gateway
+ * vergibt (Namenstabelle, Entscheidung 2, E1). Die VirtualInHttp-Vorlage mit http://localhost ist entfallen (der
+ * verbotene Kunstgriff, R2_078). Der HTTP-Endpunkt steht als "Bestehende Anlagen" zugeklappt darunter, mit dem
+ * Haken endpunkt_ein (E6). Namen, Haken und Bausteinliste kommen aus us_mqtt_namen() - EINE Quelle. */
+$us_namen = us_mqtt_namen($us_cfg);
+$us_haken = us_v2_haken($us_cfg);
+$us_nm = array();
+foreach ($us_namen as $us_x) { $us_nm[$us_x['kurz']] = $us_x['name']; }
+$us_bs_m = function ($s) { return '<span class="sm-mono">' . us_e($s) . '</span>'; };
+$us_bs_i = function ($s) { return '<i>' . us_e($s) . '</i>'; };
+?>
 <h2><?php echo us_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
 <div class="sm-small"><?php echo us_t('TEXT.DER_SENSOR_MISST_DEN_ABSTAND_ZUR_O'); ?></div>
 <div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_1_SENSOR_EINRICHTEN'); ?></b><br><br>
 <?php echo us_t('TEXT.IM_REITER'); ?> <i><?php echo us_t('REITER.EINSTELLUNGEN'); ?></i><?php echo us_t('TEXT.DANN_IM_REITER'); ?> <i><?php echo us_t('REITER.TEST'); ?></i> <?php echo us_t('TEXT.MIT'); ?> <i><?php echo us_t('TEXT.JETZT_MESSEN'); ?></i> <?php echo us_t('TEXT.PRFEN_OB_EIN_PLAUSIBLER_WERT_HERAU'); ?></div>
 <div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_2_ABO_IM_MQTT_GATEWAY_EINT'); ?></b><br><br>
-
 <?php $us_gw2 = us_mqtt_gateway_info(); if ($us_gw2 !== null && !$us_gw2['autostart']) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo us_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
 <b><?php echo us_abo_text(); ?></b> <?php echo us_t('TEXT.EINZUTRAGEN_UNTER'); ?>
 <i><?php echo us_t('TEXT.SYSTEM_EINSTELLUNGEN_MQTT_GATEWAY_'); ?></i>:
-<div class="sm-mono" style="background:#f4f4f4;border:1px solid #ccc;padding:8px;margin-top:6px;"><?= us_e($us_praefix) ?>/#</div></div>
-<div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_3_VORLAGE_EINLESEN'); ?></b><br><br>
-<?php echo us_t('TEXT.VORLAGE_HERUNTERLADEN_UNTEN_UND_IN'); ?>
-<i><?php echo us_t('TEXT.VORLAGE_EINFGEN'); ?></i><?php echo us_t('TEXT.SIE_LEGT_DIE_VIRTUELLEN_EINGNGE_MI'); ?> <i><?php echo us_t('TEXT.INCOMING_OVERVIEW'); ?></i> <?php echo us_t('TEXT.ERSCHEINEN_DIE_THEMEN_SOBALD_DER_D'); ?> <b><?php echo us_t('TEXT.WER_LIEBER_VON_HAND_ANLEGT'); ?></b><?php echo us_t('TEXT.FINDET_DIE_NAMEN_WEITER_UNTEN_IN_S'); ?> <span class="sm-mono"><?= us_e($us_praefix) ?><?php echo us_t('TEXT.DISTANCE'); ?></span> <?php echo us_t('TEXT.WIRD_ALSO'); ?>
-<span class="sm-mono"><?= us_e($us_praefix) ?><?php echo us_t('TEXT.DISTANCE_2'); ?></span>.</div>
-<div class="sm-step"><b><?php echo us_t('TEXT.SCHRITT_4_KACHEL_IN_DER_APP'); ?></b><br><br>
-<?php /* 1.2.15 (Welle Bild 12 VOLL): die Kachel ist der Status "Behaelter" (#12) der Baustein-Liste
-       * in Schritt 5 - hier nur der Verweis; die Bauanleitung stand bis 1.2.14 doppelt. */ ?>
-<?php echo us_t('LOX.S4_KACHEL'); ?></div>
+<div class="sm-mono" style="background:#f4f4f4;border:1px solid #ccc;padding:8px;margin-top:6px;"><?= us_e($us_praefix) ?>/#</div>
+<div class="sm-small" style="margin-top:8px;"><?php printf(us_t('LOX.V2_HAKENLISTE'), count($us_haken)); ?></div>
+<ul class="sm-schritte">
+<?php foreach ($us_haken as $us_x) { ?>
+<li><span class="sm-mono"><?= us_e($us_x['thema']) ?></span><?= $us_x['v2'] === 'haken_n' ? ' &mdash; ' . us_e(us_t('LOX.NONCACHED')) : '' ?></li>
+<?php } ?>
+</ul>
+<div class="sm-small"><?php echo us_t('LOX.V2_RECONNECT'); ?></div></div>
+<div class="sm-step"><b><?php echo us_t('LOX.S3_TITEL'); ?></b><br><br>
+<?php echo us_t('LOX.S3_TEXT'); ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?php echo us_t('LOX.N_NAME'); ?></th><th><?php echo us_t('TEXT.THEMA'); ?></th><th><?php echo us_t('LOX.N_BAUFORM'); ?></th><th><?php echo us_t('MQTT.EINHEIT'); ?></th><th><?php echo us_t('LOX.GRENZEN'); ?></th><th><?php echo us_t('LOX.N_FEHLWERT'); ?></th><th><?php echo us_t('TEXT.RETAINED'); ?></th><th><?php echo us_t('LOX.N_V2'); ?></th><th><?php echo us_t('LOX.N_MUSTER'); ?></th><th><?php echo us_t('TEXT.BEDEUTUNG'); ?></th></tr>
+<?php foreach ($us_namen as $us_x) { ?>
+<tr><td><span class="sm-mono"><?= us_e($us_x['name']) ?></span> <button data-role="none" class="sm-btn sm-b-technik sm-kopie" type="button" data-name="<?= us_e($us_x['name']) ?>"><?php echo us_t('LOX.K_KOPIEREN'); ?></button></td>
+    <td><span class="sm-mono"><?= us_e($us_x['thema']) ?></span></td>
+    <td><?php echo us_t($us_x['text'] ? 'LOX.N_TEXTEINGANG' : 'LOX.N_EINGANG'); ?></td>
+    <td><?= us_e($us_x['einheit']) ?></td>
+    <td><?= $us_x['text'] ? '&ndash;' : us_e(sprintf(us_t('TEXT.VON_BIS'), $us_x['min'], $us_x['max'])) ?></td>
+    <td><?= $us_x['fehlwert'] === null ? '&ndash;' : '<span class="sm-mono">' . us_e($us_x['fehlwert']) . '</span>' ?></td>
+    <td><?= $us_x['retain'] ? us_e(us_t('PRUEF.JA')) : us_e(us_t('PRUEF.NEIN')) ?></td>
+    <td><?php echo us_t('LOX.V2_' . strtoupper($us_x['v2'] === '' ? 'nein' : $us_x['v2'])); ?></td>
+    <td><?= $us_x['muster'] > 0 ? '#' . (int) $us_x['muster'] : '&ndash;' ?></td>
+    <td><?php echo us_thema_lang($us_x['kurz']); ?><?= $us_x['bestand'] ? ' <i>' . us_e(us_t('LOX.N_BESTAND')) . '</i>' : '' ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?php echo us_t('LOX.FEHLWERT_ERKL'); ?></div>
+<div class="sm-small"><?php echo us_t('MQTT.RETAIN_ERKLAERT'); ?></div></div>
+<div class="sm-step"><b><?php echo us_t('LOX.S4_TITEL'); ?></b><br><br>
+<?php echo us_t('LOX.S4_TEXT'); ?></div>
+<div class="sm-step"><b><?php echo us_t('LOX.S5_TITEL'); ?></b><br><br>
+<?php printf(us_t('LOX.S5_TEXT'), $us_bs_m($us_nm['status/zaehler']), $us_bs_m($us_nm['valid']), $us_bs_m($us_nm['online'])); ?></div>
 
 <div class="sm-small" style="margin-top:10px;">
 <?php echo us_t('TEXT.BROKER'); ?> <span class="sm-mono"><?= $us_broker !== '' ? us_e($us_broker) : us_e(us_t('MQTT.GATEWAY_FEHLT')) ?></span>
@@ -1014,166 +1109,19 @@ if ($us_m_jetzt) { ?>
 <?php if (us_cfg($us_cfg, 'mqtt', '1') !== '1') { ?>
 <div class="sm-alert sm-err"><?php echo us_t('TEXT.MQTT_IST_IM_REITER_EINSTELLUNGEN_A'); ?></div>
 <?php } ?>
-
-
-<h2><?php echo us_t('LOX.H_ENDPUNKT'); ?></h2>
-<div class="sm-small"><?php echo us_t('LOX.ENDPUNKT_ERKLAERT'); ?></div>
-<?php
-/* Eine angezeigte Adresse traegt JEDEN Parameter, den der eigene Endpunkt
- * verlangt - sonst weist das Plugin die eigene Anleitung ab. Und sie wird
- * aus DEMSELBEN Bauteil gebildet wie die Adresse, die das Plugin selbst
- * benutzt: zwei Stellen, die dasselbe zusammensetzen, laufen auseinander. */
-$us_tok = us_roh($us_cfg, 'aktionstoken');
-$us_host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : 'loxberry';
-?>
-<?php if ($us_tok === '') { ?>
-<div class="sm-warnung"><?php echo us_t('LOX.KEIN_TOKEN'); ?></div>
-<?php } else { ?>
-<div class="sm-breit">
-<table class="sm-tbl">
-<tr><th style="width:22%;"><?php echo us_t('LOX.WOFUER'); ?></th><th><?php echo us_t('LOX.ADRESSE'); ?></th></tr>
-<tr><td><?php echo us_t('LOX.STATUSZEILE'); ?></td>
-    <td><span class="sm-mono">http://<?= us_e($us_host) . us_e(us_endpunkt_pfad('status', $us_tok)) ?></span></td></tr>
-<tr><td><?php echo us_t('LOX.SELBSTTEST'); ?></td>
-    <td><span class="sm-mono">http://<?= us_e($us_host) . us_e(us_endpunkt_pfad('status', $us_tok)) ?>&amp;selftest=1</span></td></tr>
-</table>
-</div>
-<?php
-/* Die Beispielzeile wird GENAUSO gebaut wie die echte Antwort.
- *
- * Bis 1.2.1 stand hier us_zeile() allein. Der Endpunkt haengt aber OK vorn
- * und ALTER hinten an (webfrontend/html/index.php) - gemessen:
- *
- *   angezeigt : ULTRA;DISTANCE=123.4;...;ZAEHLER=418
- *   gesendet  : ULTRA;OK=1;DISTANCE=123.4;...;ZAEHLER=418;ALTER=7
- *
- * Es fehlten also ausgerechnet die beiden Felder, ueber die die
- * Ausfallerkennung laeuft. Wer die Zeile abschrieb, baute eine Anlage ohne
- * sie. Die Zusammensetzung steht jetzt in us_zeile_beispiel() - an
- * derselben Stelle wie die des Endpunkts. */
-?>
-<div class="sm-small"><?php echo us_t('LOX.ZEILE_BEISPIEL'); ?>
-<span class="sm-mono"><?= us_e(us_zeile_beispiel()) ?></span></div>
-
-<h2><?php echo us_t('LOX.H_BEFEHLE'); ?></h2>
-<div class="sm-breit">
-<table class="sm-tbl">
-<tr><th><?php echo us_t('TEXT.THEMA'); ?></th><th><?php echo us_t('MQTT.EINHEIT'); ?></th><th><?php echo us_t('LOX.SUCHTEXT'); ?></th><th><?php echo us_t('LOX.GRENZEN'); ?></th></tr>
-<?php
-/* OK und ALTER stehen MIT in dieser Tabelle (seit 1.2.2).
- *
- * Sie kommen nicht aus us_felder() - daraus entstehen die Importvorlagen,
- * und auf dem MQTT- und dem UDP-Weg gibt es beide nicht; sie rechnet erst
- * der Endpunkt beim Abruf. In der Antwortzeile stehen sie aber, und zwar
- * als erstes und letztes Feld. Bis 1.2.1 fehlten sie hier: wer die Tabelle
- * abarbeitete, baute eine Anlage ohne Ausfallerkennung - ausgerechnet die
- * beiden Felder, die dafuer da sind. */
-foreach (array_merge(us_felder_zeile(), us_felder_endpunkt()) as $us_n => $us_f) { ?>
-<tr><td class="sm-mono"><?= us_e(strtoupper($us_n)) ?></td>
-    <td><?= us_e($us_f['einheit']) ?></td>
-    <td class="sm-mono"><?= us_e(us_check($us_n)) ?></td>
-    <td><?= us_e(sprintf(us_t('TEXT.VON_BIS'), $us_f['min'], $us_f['max'])) ?></td></tr>
-<?php } ?>
-</table>
-</div>
-<div class="sm-small"><?php echo us_t('LOX.SUCHTEXT_ERKLAERT'); ?></div>
-<!-- Die Schwelle fuer OK steht hier ausdruecklich (Durchgang 02.10.2026,
-     C5, Entscheidung Nr. 4: "Hilfetext und Feldtabelle sagen es"). -->
-<div class="sm-small"><?php printf(us_t('LOX.OK_GRENZE'), us_ok_grenze($us_cfg)); ?></div>
-<?php } ?>
-
-<?php
-/* DER KNOPF STEHT AUSSERHALB DES else-ZWEIGES (seit 1.2.2).
- *
- * Bis 1.2.1 lag der ganze Abschnitt im Zweig "es gibt schon ein Token".
- * Bei leerem Token sah der Anwender nur den Satz LOX.KEIN_TOKEN - und
- * keinen Weg zurueck: ohne Token gibt es kein Formularmerkmal, der
- * Wachposten weist jeden POST ab, und der einzige Knopf, der geholfen
- * haette, war ausgeblendet. Ein Zustand, den die Oberflaeche selbst
- * ausdruecklich vorsieht ("wurde es bewusst geleert, waechst es nicht
- * nach"), war damit eine Sackgasse.
- *
- * Der Knopf laeuft ueber denselben Wachposten wie alles andere. Ist gar
- * kein Token da, kann er nicht greifen - deshalb steht bei leerem Token
- * der Satz darueber, was zu tun ist. */
-?>
-<h2><?php echo us_t('LOX.H_TOKEN_NEU'); ?></h2>
-<div class="sm-warnung"><?php echo us_t('LOX.TOKEN_NEU_WARNUNG'); ?></div>
-<?php if ($us_tok === '') { ?>
-<div class="sm-alert sm-info"><?php echo us_t('LOX.TOKEN_LEER_WEG'); ?></div>
-<?php } ?>
-<div class="sm-knopfreihe">
-<form method="post" action="index.php" onsubmit="return confirm(<?= us_e(json_encode(us_t('LOX.TOKEN_NEU_FRAGE'))) ?>);">
-<input data-role="none" type="hidden" name="activetab" value="tab-loxone"><?php echo us_fmt($us_cfg); ?>
-<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?php echo us_t('LOX.K_TOKEN_NEU'); ?></button>
-</form>
-</div>
-
-<h2><?php echo us_t('TEXT.VORLAGEN'); ?></h2>
-<form method="post" action="index.php">
-<input data-role="none" type="hidden" name="activetab" value="tab-loxone"><?php echo us_fmt($us_cfg); ?>
-<div class="sm-knopfreihe">
-<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="mqtt_in"><?php echo us_t('TEXT.VORLAGE_EINGNGE_MQTT'); ?></button>
-<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="udp_in"><?php echo us_t('TEXT.VORLAGE_EINGANG_UDP'); ?></button>
-</div>
-</form>
-<!-- Sichtbar im Reiter, nicht nur im Kommentar der XML-Datei (O11,
-     Regeln/04): zweimal eingelesen ergibt doppelte Objekte. -->
-<div class="sm-small"><?php echo us_t('LOX.VORLAGE_IMPORT'); ?></div>
-<div class="sm-small"><?php echo us_t('TEXT.DIE_MQTT_VORLAGE_LEGT'); ?> <?= count(us_felder_vorlage()) ?> <?php echo us_t('TEXT.VIRTUELLE_EINGNGE_AN_DIE_UDP_VORLA'); ?></div>
-
-<h2><?php echo us_t('TEXT.WAS_VERFFENTLICHT_WIRD'); ?></h2>
-<table class="sm-tbl">
-<tr><th style="width:24%;"><?php echo us_t('TEXT.THEMA'); ?></th><th style="width:12%;"><?php echo us_t('TEXT.ART'); ?></th><th style="width:12%;"><?php echo us_t('TEXT.RETAINED'); ?></th><th><?php echo us_t('TEXT.BEDEUTUNG'); ?></th></tr>
-<?php foreach (us_status_themen() as $k => $info) { ?>
-<tr><td><span class="sm-mono"><?= us_e($us_praefix . '/' . $k) ?></span></td><td><?= us_e($info[1]) ?></td><td><?= empty($info[2]) ? us_e(us_t('PRUEF.NEIN')) : us_e(us_t('PRUEF.JA')) ?></td><td><?= $info[0] ?></td></tr>
-<?php } ?>
-</table>
-<div class="sm-small"><?php echo us_t('MQTT.RETAIN_ERKLAERT'); ?></div>
-
 <?php if (!$us_hat_kalibrierung) { ?>
-<div class="sm-alert sm-info"><b><?php echo us_t('TEXT.HINWEIS'); ?></b> <?php echo us_t('TEXT.OHNE_EINGETRAGENE_KALIBRIERUNG_LEE'); ?>
-<span class="sm-mono">level</span> <?php echo us_t('TEXT.UND_KLEIN'); ?> <span class="sm-mono">liter</span> <?php echo us_t('TEXT.LEER_DIE_VORLAGE_LEGT_SIE_TROTZDEM'); ?></div>
+<div class="sm-alert sm-info"><b><?php echo us_t('TEXT.HINWEIS'); ?></b> <?php echo us_t('LOX.OHNE_KALIBRIERUNG'); ?></div>
 <?php } ?>
 
 <h2><?php echo us_t('TEXT.SCHRITT_5_KOMPLETTE_BAUSTEIN_LISTE'); ?></h2>
 <div class="sm-small"><?php echo us_t('TEXT.SO_SIEHT_DIE_VOLLSTNDIGE_LOGIK_AUF'); ?></div>
 <?php
-/* Welle Bild 12 VOLL (1.2.15, Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das
- * Maximum leicht uebernehmen koennen): die Seite "Ultraschall" aus dem LoxBerry-Plugins
- * Musterprojekt, dort in Loxone Config gebaut und mit leitungen_setzen.py verbunden
- * (Musterprojekt/baustein_listen.txt, Abschnitt "Ultraschall", 36 Zeilen; bis 1.2.14 15).
- * Ueberschrift, Kasten "So uebernehmen Sie diese Seite", Tabelle, Hinweise, Bild, Link - immer
- * sichtbar.
- * Die Namen der Eingaenge kommen aus DEMSELBEN XML wie der Knopf "Vorlage: Eingaenge (MQTT)"
- * (us_vorlage('mqtt_in')); fehlt einer dort, steht ein "?" davor. Die Vorlagentitel aus den
- * XML-Koepfen. Den Virtuellen Texteingang legt keine Vorlage an (Regeln/07); sein Name ist der
- * Gateway-Name <Praefix>_last_error (das Praefix traegt keinen Schraegstrich, us_lib.php).
- * Texte aus [BAUSTEIN]; Zellen sind fertiges HTML, eingesetzte Namen maskiert.
- * Zeile: array(Nr, Art, Feld) - Art vi = Eingang aus der Vorlage, tx = Texteingang, zl = Baustein. */
-list(, $us_bs_vxml) = us_vorlage($us_cfg, 'mqtt_in');
-list(, $us_bs_uxml) = us_vorlage($us_cfg, 'udp_in');
-$us_bs_titel = function ($xml, $wurzel) {
-    return preg_match('/<' . $wurzel . ' [^>]*?Title="([^"]*)"/', $xml, $m)
-        ? html_entity_decode($m[1], ENT_QUOTES | ENT_XML1, 'UTF-8') : '';
-};
-$us_bs_vtitel = $us_bs_titel($us_bs_vxml, 'VirtualInHttp');
-$us_bs_utitel = $us_bs_titel($us_bs_uxml, 'VirtualInUdp');
-preg_match_all('/<VirtualInHttpCmd Title="([^"]*)"/', $us_bs_vxml, $us_bs_t);
-$us_bs_vnamen = array();
-foreach ($us_bs_t[1] as $us_bs_x) { $us_bs_vnamen[] = html_entity_decode($us_bs_x, ENT_QUOTES | ENT_XML1, 'UTF-8'); }
-$us_bs_vi = function ($feld) use ($us_praefix, $us_bs_vnamen) {
-    $n = $us_praefix . '_' . $feld;
-    return in_array($n, $us_bs_vnamen, true) ? $n : '?' . $n;
-};
-$us_bs_tx = $us_praefix . '_last_error';
-$us_bs_i = function ($s) { return '<i>' . us_e($s) . '</i>'; };
-$us_bs_m = function ($s) { return '<span class="sm-mono">' . us_e($s) . '</span>'; };
-/* Sprachtext einer Zeile (B<n>_TYP/_NAME/_PARAM/_VERB) - fertiges HTML ohne Platzhalter. */
+/* Die Seite "Ultraschall" aus dem LoxBerry-Plugins Musterprojekt (Musterprojekt/baustein_listen.txt, Abschnitt
+ * "Ultraschall", 37 Zeilen seit Gruppe 17). Die Namen der Eingaenge kommen aus us_mqtt_namen() - der Name, den das
+ * Gateway vergibt (Praefix + "_" + Thema, "/" wird "_"). Texte aus [BAUSTEIN]; Zellen sind fertiges HTML,
+ * eingesetzte Namen maskiert. Zeile: array(Nr, Art, Thema) - vi = Virtueller Eingang, tx = Texteingang,
+ * zl = Baustein. */
 $us_bs_k = function ($schluessel) { return (string) us_t('BAUSTEIN.' . $schluessel); };
-/* Texte mit Platzhaltern als ausgeschriebenes sprintf um us_t mit festem Schluessel, damit
- * Werkzeuge/sprachplatzhalter_pruefen.py die Aufrufstelle sieht; Argumente maskiert. */
-$us_bs_vi_typ = sprintf(us_t('BAUSTEIN.TYP_VI'), us_e($us_bs_vtitel));
 $us_bs_zeilen = array(
     array(1, 'vi', 'level'),
     array(2, 'vi', 'liter'),
@@ -1191,7 +1139,7 @@ $us_bs_zeilen = array(
     array(14, 'zl', ''),
     array(15, 'zl', ''),
     array(16, 'vi', 'distance'),
-    array(17, 'vi', 'zaehler'),
+    array(17, 'vi', 'status/zaehler'),
     array(18, 'zl', ''),
     array(19, 'zl', ''),
     array(20, 'zl', ''),
@@ -1211,30 +1159,32 @@ $us_bs_zeilen = array(
     array(34, 'zl', ''),
     array(35, 'zl', ''),
     array(36, 'zl', ''),
+    array(37, 'zl', ''),
 );
 $us_bs_schritte = array(
     sprintf(us_t('BAUSTEIN.S1'), $us_bs_i(us_t('REITER.EINSTELLUNGEN')), $us_bs_i(us_t('TEXT.PLUGIN_EINGESCHALTET')), $us_bs_i(us_t('TEXT.JETZT_MESSEN_LEER')), $us_bs_i(us_t('TEXT.JETZT_MESSEN_VOLL')), $us_bs_i(us_t('TEXT.GESAMTVOLUMEN_LITER')), $us_bs_i(us_t('REITER.TEST')), $us_bs_i(us_t('TEXT.JETZT_MESSEN'))),
     sprintf(us_t('BAUSTEIN.S2'), $us_bs_m($us_praefix . '/#'), $us_bs_m($us_praefix)),
-    sprintf(us_t('BAUSTEIN.S3'), $us_bs_i(us_t('TEXT.VORLAGEN')), $us_bs_i(us_t('TEXT.VORLAGE_EINGNGE_MQTT')), $us_bs_i(us_t('TEXT.VORLAGE_EINGANG_UDP')), us_e($us_bs_utitel)),
-    sprintf(us_t('BAUSTEIN.S4'), $us_bs_m($us_bs_tx)),
-    sprintf(us_t('BAUSTEIN.S5'), us_e($us_bs_vtitel), $us_bs_m($us_bs_vi('level')), $us_bs_m($us_bs_vi('liter')), $us_bs_m($us_bs_vi('valid')), $us_bs_m($us_bs_vi('online')), $us_bs_m($us_bs_vi('distance')), $us_bs_m($us_bs_vi('zaehler')), $us_bs_m($us_bs_tx), $us_bs_m($us_bs_vi('level')), $us_bs_m($us_bs_vi('liter'))),
+    sprintf(us_t('BAUSTEIN.S3'), $us_bs_m($us_nm['level']), $us_bs_m($us_nm['liter']), $us_bs_m($us_nm['valid']), $us_bs_m($us_nm['online']), $us_bs_m($us_nm['distance']), $us_bs_m($us_nm['status/zaehler'])),
+    sprintf(us_t('BAUSTEIN.S4'), $us_bs_m($us_nm['last_error'])),
+    sprintf(us_t('BAUSTEIN.S5'), $us_bs_m($us_nm['level']), $us_bs_m($us_nm['liter'])),
     us_t('BAUSTEIN.S6'),
     us_t('BAUSTEIN.S7'),
     us_t('BAUSTEIN.S8'),
-    sprintf(us_t('BAUSTEIN.S9'), $us_bs_m($us_bs_vi('zaehler')), $us_bs_i(us_t('REITER.TEST')), $us_bs_i(us_t('TEXT.LETZTER_MESSWERT'))),
+    sprintf(us_t('BAUSTEIN.S9'), $us_bs_m($us_nm['status/zaehler']), $us_bs_i(us_t('REITER.TEST')), $us_bs_i(us_t('TEXT.LETZTER_MESSWERT'))),
 );
 $us_bs_hinweise = array(
     us_t('BAUSTEIN.H_ZU5'),
     us_t('BAUSTEIN.H_ZU6'),
     us_t('BAUSTEIN.H_ZU7_10'),
     us_t('BAUSTEIN.H_ZU8_11'),
-    sprintf(us_t('BAUSTEIN.H_SCHWELLEN'), $us_bs_m($us_bs_vi('valid'))),
+    us_t('BAUSTEIN.H_SCHWELLEN'),
+    us_t('BAUSTEIN.H_MINUS1'),
     us_t('BAUSTEIN.H_TAGESBEGINN'),
     us_t('BAUSTEIN.H_VERBRAUCH'),
     sprintf(us_t('BAUSTEIN.H_TAKT'), $us_bs_i(us_t('TEXT.MESSEN_ALLE_SEKUNDEN'))),
     us_t('BAUSTEIN.H_ZU19'),
     us_t('BAUSTEIN.H_AUSFALL'),
-    sprintf(us_t('BAUSTEIN.H_TOKEN'), $us_bs_i(us_t('LOX.K_TOKEN_NEU'))),
+    us_t('BAUSTEIN.H_ENDPUNKT'),
 );
 ?>
 <h4 class="sm-h4"><?= us_e($us_bs_k('UE_TITEL')) ?></h4>
@@ -1248,7 +1198,7 @@ $us_bs_hinweise = array(
 <table class="sm-tbl">
 <tr><th>#</th><th><?php echo us_t('TEXT.BAUSTEIN_TYP'); ?></th><th><?php echo us_t('TEXT.NAME_VORSCHLAG'); ?></th><th><?php echo us_t('TEXT.PARAMETER'); ?></th><th><?php echo us_t('TEXT.EINGNGE_VERBINDEN_MIT'); ?></th></tr>
 <?php foreach ($us_bs_zeilen as $us_bs_z) { $us_bs_n = (int) $us_bs_z[0]; ?>
-<tr><td><?= $us_bs_n ?></td><td><?= $us_bs_z[1] === 'vi' ? $us_bs_vi_typ : $us_bs_k('B' . $us_bs_n . '_TYP') ?></td><td><?= $us_bs_z[1] === 'vi' ? $us_bs_m($us_bs_vi($us_bs_z[2])) : ($us_bs_z[1] === 'tx' ? $us_bs_m($us_bs_tx) : us_e($us_bs_k('B' . $us_bs_n . '_NAME'))) ?></td>
+<tr><td><?= $us_bs_n ?></td><td><?= $us_bs_z[1] === 'vi' ? $us_bs_k('TYP_VI') : $us_bs_k('B' . $us_bs_n . '_TYP') ?></td><td><?= $us_bs_z[1] === 'zl' ? us_e($us_bs_k('B' . $us_bs_n . '_NAME')) : $us_bs_m($us_nm[$us_bs_z[2]]) ?></td>
     <td><?= $us_bs_k('B' . $us_bs_n . '_PARAM') ?></td><td><?= $us_bs_k('B' . $us_bs_n . '_VERB') ?></td></tr>
 <?php } ?>
 </table>
@@ -1263,6 +1213,7 @@ $us_bs_hinweise = array(
 <img src="einbindung_loxone.png" alt="<?= us_e(us_t('LOX.BILD_ALT')) ?>" loading="lazy">
 <figcaption><?= us_e(us_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
 </figure>
+<div class="sm-small"><?php echo us_t('LOX.S4_KACHEL'); ?></div>
 <div class="sm-small"><?php echo us_t('LOX.MUSTERPROJEKT'); ?></div>
 
 <h2><?php echo us_t('TEXT.WORAUF_MAN_SICH_NICHT_VERLASSEN_KA'); ?></h2>
@@ -1271,6 +1222,93 @@ $us_bs_hinweise = array(
 <br><br>
 <?php echo us_t('TEXT.DIE_SCHALLGESCHWINDIGKEIT_HNGT_VON'); ?>
 </div>
+
+<h2><?php echo us_t('TEXT.VORLAGEN'); ?></h2>
+<form method="post" action="index.php">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone"><?php echo us_fmt($us_cfg); ?>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="udp_in"><?php echo us_t('TEXT.VORLAGE_EINGANG_UDP'); ?></button>
+</div>
+</form>
+<!-- Sichtbar im Reiter, nicht nur im Kommentar der XML-Datei (O11,
+     Regeln/04): zweimal eingelesen ergibt doppelte Objekte. -->
+<div class="sm-small"><?php echo us_t('LOX.VORLAGE_IMPORT'); ?></div>
+<div class="sm-small"><?php echo us_t('LOX.UDP_VORLAGE'); ?></div>
+
+<?php
+/* BESTEHENDE ANLAGEN: DER HTTP-ENDPUNKT (seit 1.2.18 zugeklappt, E6). Er antwortet nur mit endpunkt_ein=1 - ab Werk
+ * (Neuinstallation) aus; eine bestehende Anlage hat ihn nach dem Update an (Lese-Regel und postupgrade.sh). Eine
+ * angezeigte Adresse traegt JEDEN Parameter, den der eigene Endpunkt verlangt, und wird aus DEMSELBEN Bauteil
+ * gebildet wie die Adresse, die das Plugin selbst benutzt (us_endpunkt_pfad). */
+$us_tok = us_roh($us_cfg, 'aktionstoken');
+$us_host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : 'loxberry';
+$us_ep_an = us_eingabe('endpunkt_ein', us_cfg($us_cfg, 'endpunkt_ein', '0')) === '1';
+?>
+<details class="sm-alt"<?= $us_ep_an || $us_eing['formular'] === 'endpunkt' ? ' open' : '' ?>>
+<summary><b><?php echo us_t('LOX.ALT_TITEL'); ?></b></summary>
+<div class="sm-small"><?php echo us_t('LOX.ENDPUNKT_ERKLAERT'); ?></div>
+<form method="post" action="index.php">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone"><?php echo us_fmt($us_cfg); ?>
+<input data-role="none" type="hidden" name="formular" value="endpunkt">
+<label class="sm-check" style="margin-top:10px;"><input data-role="none" type="checkbox" name="endpunkt_ein"<?= us_mark('endpunkt_ein') ?> value="1"<?= us_haken_an('endpunkt_ein', us_cfg($us_cfg, 'endpunkt_ein', '0') === '1') ?>> <b><?php echo us_t('LOX.ENDPUNKT_EIN'); ?></b></label>
+<div class="sm-small"><?php echo us_t('LOX.ENDPUNKT_EIN_HINWEIS'); ?></div>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="1"><?php echo us_t('TEXT.SPEICHERN'); ?></button>
+</form>
+<?php if (!$us_ep_an) { ?>
+<div class="sm-alert sm-info"><?php echo us_t('LOX.ENDPUNKT_AUS'); ?></div>
+<?php } ?>
+
+<h2><?php echo us_t('LOX.H_ENDPUNKT'); ?></h2>
+<?php if ($us_tok === '') { ?>
+<div class="sm-warnung"><?php echo us_t('LOX.KEIN_TOKEN'); ?></div>
+<?php } else { ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:22%;"><?php echo us_t('LOX.WOFUER'); ?></th><th><?php echo us_t('LOX.ADRESSE'); ?></th></tr>
+<tr><td><?php echo us_t('LOX.STATUSZEILE'); ?></td>
+    <td><span class="sm-mono">http://<?= us_e($us_host) . us_e(us_endpunkt_pfad('status', $us_tok)) ?></span></td></tr>
+<tr><td><?php echo us_t('LOX.SELBSTTEST'); ?></td>
+    <td><span class="sm-mono">http://<?= us_e($us_host) . us_e(us_endpunkt_pfad('status', $us_tok)) ?>&amp;selftest=1</span></td></tr>
+</table>
+</div>
+<div class="sm-small"><?php echo us_t('LOX.ZEILE_BEISPIEL'); ?>
+<span class="sm-mono"><?= us_e(us_zeile_beispiel()) ?></span></div>
+
+<h2><?php echo us_t('LOX.H_BEFEHLE'); ?></h2>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?php echo us_t('TEXT.THEMA'); ?></th><th><?php echo us_t('MQTT.EINHEIT'); ?></th><th><?php echo us_t('LOX.SUCHTEXT'); ?></th><th><?php echo us_t('LOX.GRENZEN'); ?></th></tr>
+<?php
+/* OK und ALTER stehen MIT in dieser Tabelle (seit 1.2.2) - sie rechnet erst der Endpunkt beim Abruf. */
+foreach (array_merge(us_felder_zeile(), us_felder_endpunkt()) as $us_n => $us_f) { ?>
+<tr><td class="sm-mono"><?= us_e(strtoupper($us_n)) ?></td>
+    <td><?= us_e($us_f['einheit']) ?></td>
+    <td class="sm-mono"><?= us_e(us_check($us_n)) ?></td>
+    <td><?= us_e(sprintf(us_t('TEXT.VON_BIS'), $us_f['min'], $us_f['max'])) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?php echo us_t('LOX.SUCHTEXT_ERKLAERT'); ?></div>
+<!-- Die Schwelle fuer OK steht hier ausdruecklich (Durchgang 02.10.2026,
+     C5, Entscheidung Nr. 4: "Hilfetext und Feldtabelle sagen es"). -->
+<div class="sm-small"><?php printf(us_t('LOX.OK_GRENZE'), us_ok_grenze($us_cfg)); ?></div>
+<?php } ?>
+
+<?php
+/* DER KNOPF STEHT AUSSERHALB DES else-ZWEIGES (seit 1.2.2): bei leerem Token ist er der einzige Weg zurueck. */
+?>
+<h2><?php echo us_t('LOX.H_TOKEN_NEU'); ?></h2>
+<div class="sm-warnung"><?php echo us_t('LOX.TOKEN_NEU_WARNUNG'); ?></div>
+<?php if ($us_tok === '') { ?>
+<div class="sm-alert sm-info"><?php echo us_t('LOX.TOKEN_LEER_WEG'); ?></div>
+<?php } ?>
+<div class="sm-knopfreihe">
+<form method="post" action="index.php" onsubmit="return confirm(<?= us_e(json_encode(us_t('LOX.TOKEN_NEU_FRAGE'))) ?>);">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone"><?php echo us_fmt($us_cfg); ?>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?php echo us_t('LOX.K_TOKEN_NEU'); ?></button>
+</form>
+</div>
+</details>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
@@ -1313,6 +1351,9 @@ $us_offen = 0;
 <div class="sm-knopfreihe">
 <form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="status"><?php echo us_t('TEXT.ZUSTAND_DES_DIENSTES'); ?></button></form>
 <form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="messwert"><?php echo us_t('TEXT.LETZTER_MESSWERT'); ?></button></form>
+<!-- N6 (seit 1.2.18): "Jetzt messen" liest nur (Stand des Dienstes oder ein Einmallauf, nichts wird
+     geschrieben) - gruen, in der Reihe Ansehen (Regeln/04). Bis 1.2.17 orange unter "Loest etwas aus". -->
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="messen"><?php echo us_t('TEXT.JETZT_MESSEN'); ?></button></form>
 <form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="mqttinfo"><?php echo us_t('TEXT.MQTT_GATEWAY'); ?></button></form>
 <form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="udpinfo"><?php echo us_t('TEXT.UDP_AN_DEN_MINISERVER'); ?></button></form>
 </div>
@@ -1327,7 +1368,6 @@ $us_offen = 0;
 <h3 class="sm-h3"><?php echo us_t('TEXT.LST_ETWAS_AUS'); ?></h3>
 <div class="sm-small"><?php echo us_t('TEXT.WAECHTER_HINWEIS'); ?></div>
 <div class="sm-knopfreihe">
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="messen"><?php echo us_t('TEXT.JETZT_MESSEN'); ?></button></form>
 <form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="udptest"><?php echo us_t('TEXT.UDP_TESTPAKET_SENDEN'); ?></button></form>
 <form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="restart"><?php echo us_t('TEXT.DIENST_NEU_STARTEN'); ?></button></form>
 <form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><?php echo us_fmt($us_cfg); ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="stop"><?php echo us_t('TEXT.DIENST_ANHALTEN'); ?></button></form>
@@ -1375,7 +1415,19 @@ $us_offen = 0;
     }
     for (var i = 0; i < tabs.length; i++) {
         (function (t) {
-            t.addEventListener('click', function () { zeige(t.getAttribute('data-pane')); });
+            /* U8 (seit 1.2.18): ohne Neuladen umschalten (Regeln/04) - nur der Reiter Test
+             * laedt neu, seine Pruefzeilen entstehen serverseitig. Ohne Skript bleibt die
+             * Seite ueber die Verweise bedienbar. */
+            t.addEventListener('click', function (e) {
+                var id = t.getAttribute('data-pane');
+                if (id !== 'tab-test') {
+                    e.preventDefault();
+                    zeige(id);
+                    if (window.history && history.replaceState) {
+                        history.replaceState(null, '', t.getAttribute('href'));
+                    }
+                }
+            });
         })(tabs[i]);
     }
     zeige(start);
@@ -1394,6 +1446,24 @@ $us_offen = 0;
     }
     if (wahl) { wahl.addEventListener('change', sensorfelder); }
     sensorfelder();
+
+    // Namenstabelle (seit 1.2.18): Name in die Zwischenablage; ohne Zwischenablage markieren.
+    var kopie = document.querySelectorAll('.sm-kopie');
+    for (var j = 0; j < kopie.length; j++) {
+        (function (k) {
+            k.addEventListener('click', function () {
+                var n = k.getAttribute('data-name');
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(n);
+                } else {
+                    var f = document.createElement('textarea');
+                    f.value = n; document.body.appendChild(f); f.select();
+                    try { document.execCommand('copy'); } catch (x) { /* nichts */ }
+                    document.body.removeChild(f);
+                }
+            });
+        })(kopie[j]);
+    }
 })();
 </script>
 <?php

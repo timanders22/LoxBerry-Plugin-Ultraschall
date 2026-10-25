@@ -30,6 +30,11 @@ PVERSION=$4
 PWORKDIR=$6   # Arbeitsordner des Installers (absolut)
 
 US_PDIR="${3:-ultraschall}"
+# U4 (seit 1.2.18): der Ordnername darf keinen Pfadtrenner tragen - dieselbe
+# Schranke wie in preinstall.sh. Bis 1.2.17 stand sie nur dort.
+case "$US_PDIR" in
+    ''|*/*|*..*) echo "<WARNING> Ordnername '$US_PDIR' unbrauchbar - nichts getan."; exit 0 ;;
+esac
 
 # ---------------------------------------------------------------------------
 # DIE WURZEL - NUR EINE, DIE NACHWEISLICH EINE IST (seit 1.2.8)
@@ -94,8 +99,19 @@ fi
 mkdir -p "$PCONFIG" 2>/dev/null
 if [ -d "$SICHERUNG" ] && [ -s "$SICHERUNG/ultraschall.cfg" ]; then
     echo "<INFO> Spiele gesicherte Konfiguration zurueck aus $SICHERUNG"
-    cp -a "$SICHERUNG/." "$PCONFIG/" 2>/dev/null
-    if [ -s "$PCONFIG/ultraschall.cfg" ]; then
+    # U4 (seit 1.2.18): die Konfiguration ueber eine Nebendatei, mit Vergleich, dann
+    # umbenennen; der uebrige Ordner (Praefixliste) danach wie bisher mit cp -a. Bis
+    # 1.2.17 kopierte ein einziges "cp -a" alles direkt - bei voller Platte blieb eine
+    # gekappte Konfiguration.
+    if cp -p "$SICHERUNG/ultraschall.cfg" "$PCONFIG/ultraschall.cfg.neu" 2>/dev/null \
+       && cmp -s "$SICHERUNG/ultraschall.cfg" "$PCONFIG/ultraschall.cfg.neu" \
+       && mv -f "$PCONFIG/ultraschall.cfg.neu" "$PCONFIG/ultraschall.cfg" 2>/dev/null; then
+        find "$SICHERUNG" -mindepth 1 -maxdepth 1 ! -name ultraschall.cfg \
+            -exec cp -a {} "$PCONFIG/" \; 2>/dev/null
+    else
+        rm -f "$PCONFIG/ultraschall.cfg.neu" 2>/dev/null
+    fi
+    if [ -s "$PCONFIG/ultraschall.cfg" ] && cmp -s "$SICHERUNG/ultraschall.cfg" "$PCONFIG/ultraschall.cfg"; then
         echo "<OK> Konfiguration wiederhergestellt."
     else
         echo "<ERROR> Die Konfiguration liess sich NICHT zurueckspielen."
@@ -128,15 +144,74 @@ rm -f /run/shm/ultraschall_status.json /run/shm/ultraschall.pid \
       /tmp/ultraschall_status.json /tmp/ultraschall.pid 2>/dev/null
 
 # ---------------------------------------------------------------------------
+# ENDPUNKT FUER BESTEHENDE ANLAGEN AN (seit 1.2.18, E6, Uebergang wie Gruppen 9-16)
+#
+# Seit 1.2.18 antwortet der Endpunkt webfrontend/html/index.php nur mit
+# endpunkt_ein=1; die Paketvorgabe ist 0 (Neuinstallation: aus). Eine bestehende
+# Anlage hatte den Endpunkt bis 1.2.17 immer offen - fehlt der Schluessel in ihrer
+# Konfiguration, kommt er hier ausdruecklich mit 1 dazu, in die Konfiguration UND in
+# die Zweitschrift. Ueber eine Nebendatei, mit Gegenprobe (die alte Datei ist Byte
+# fuer Byte der Anfang der neuen), 0600. Scheitert es, gilt die Lese-Regel in
+# us_config_read() (dieselbe Wirkung). Warum hier: das Zurueckspielen macht dieses
+# Skript, NACH postinstall.sh (plugininstall.pl :1336 vor :1362).
+# ---------------------------------------------------------------------------
+us_ep_ergaenzen() {
+    us_d=$1
+    [ -f "$us_d" ] || return 1
+    grep -q '^[[:space:]]*\[ultraschall\]' "$us_d" || return 1
+    grep -qE '^[[:space:]]*endpunkt_ein[[:space:]]*=' "$us_d" && return 2
+    if {
+           cat "$us_d"
+           [ -n "$(tail -c 1 "$us_d")" ] && echo
+           echo "endpunkt_ein=1"
+       } > "$us_d.neu" 2>/dev/null \
+       && head -c "$(wc -c < "$us_d")" "$us_d.neu" | cmp -s - "$us_d" \
+       && [ "$(tail -n 1 "$us_d.neu")" = "endpunkt_ein=1" ] \
+       && chmod 600 "$us_d.neu" 2>/dev/null \
+       && mv -f "$us_d.neu" "$us_d" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$us_d.neu" 2>/dev/null
+    return 1
+}
+us_ep_ergaenzen "$PCONFIG/ultraschall.cfg"; US_EP1=$?
+us_ep_ergaenzen "$US_BASE/config/plugins/$US_PDIR.backup.ultraschall.cfg"; US_EP2=$?
+if [ "$US_EP1" = 0 ]; then
+    echo "<INFO> Konfiguration ergaenzt: endpunkt_ein=1 (bestehende Anlage - der Endpunkt fuer Loxone bleibt erreichbar; abschalten im Reiter Einbindung)."
+    [ "$US_EP2" = 0 ] && echo "<INFO> Die Zweitschrift traegt endpunkt_ein=1 ebenfalls."
+elif [ "$US_EP1" = 1 ] && [ -s "$PCONFIG/ultraschall.cfg" ]; then
+    echo "<INFO> endpunkt_ein liess sich nicht eintragen - es gilt die Lese-Regel der Oberflaeche (Endpunkt bleibt an)."
+fi
+
+# ---------------------------------------------------------------------------
+# DEN DIENST NACH DEM ZURUECKSPIELEN STARTEN (seit 1.2.18, U1)
+#
+# postinstall.sh startet ihn schon - mit der Konfiguration, die es zu dem
+# Zeitpunkt gab. Fehlte die Zweitschrift, kam enabled=1 erst hier zurueck, und bis
+# 1.2.17 startete niemand (der Waechter nach bis zu fuenf Minuten). Dieselbe Datei
+# wie in postinstall.sh; laeuft der Dienst schon, sagt sie es.
+# ---------------------------------------------------------------------------
+PLOG="$US_BASE/log/plugins/$US_PDIR"
+US_START="$US_BASE/bin/plugins/$US_PDIR/us_start.sh"
+if [ -r "$US_START" ]; then
+    . "$US_START"
+    us_dienst_starten "$US_BASE" "$US_PDIR" "$PLOG"
+else
+    echo "<INFO> us_start.sh fehlt - der Waechter startet den Messdienst binnen fuenf Minuten."
+fi
+
+# ---------------------------------------------------------------------------
 # DIE MARKE AUS preupgrade.sh - ALS LETZTES (seit 1.2.7)
 #
-# Dieses Skript ist das letzte Hakenskript dieser Linie: es gibt kein
-# postroot.sh, und der Installer ruft preroot, preinstall, preupgrade,
-# postinstall, postupgrade, postroot in dieser Reihenfolge (Regeln/06).
+# Nach diesem Skript laeuft nur noch postroot.sh (seit 1.2.18, als root,
+# plugininstall.pl :1389); es startet nichts und braucht die Marke nicht -
+# deshalb wird sie hier entfernt. Der Installer ruft preroot, preinstall,
+# preupgrade, postinstall, postupgrade, postroot in dieser Reihenfolge
+# (Regeln/06).
 #
-# Erst NACH dem Start. Den Dienst startet postinstall.sh, und das laeuft
-# VOR diesem Skript - die Marke liegt also waehrend des ganzen Starts und
-# weist jeden anderen Starter ab. Die umgekehrte Reihenfolge - Marke weg,
+# Erst NACH dem Start. Den Dienst starten postinstall.sh und der Block
+# darueber - die Marke liegt also waehrend des ganzen Starts und weist jeden
+# anderen Starter ab. Die umgekehrte Reihenfolge - Marke weg,
 # dann starten - hat an der Vorlage Chromecast4lox 1.3.10 in WSL gemessen
 # vier Dienste erzeugt: zwischen dem Entfernen und dem Augenblick, in dem
 # der neue Dienst dasteht, sieht ein Waechterlauf weder die Marke noch

@@ -77,7 +77,8 @@ if [ -f "$MARKE" ]; then
     [ -z "$JETZT" ] && exit 0
     if [ -n "$SEIT" ]; then
         ALTER=$(( JETZT - SEIT ))
-        if [ "$ALTER" -ge 0 ] && [ "$ALTER" -lt 3600 ]; then
+        # U15 (seit 1.2.18): -300 statt 0 (Uhrsprung waehrend der Aktualisierung).
+        if [ "$ALTER" -ge -300 ] && [ "$ALTER" -lt 3600 ]; then
             exit 0
         fi
     fi
@@ -204,6 +205,61 @@ fi
 # Meldung wert - in einem Protokoll, das alle fuenf Minuten dasselbe ruft,
 # findet niemand mehr die Zeile, die zaehlt.
 [ "$LAEUFT" -eq 1 ] && exit 0
+
+# NEUSTART- UND MELDUNGSBREMSE (seit 1.2.18, U13; Bauart BLE 1.3.29).
+#
+# Bis 1.2.17 startete dieser Waechter bei JEDEM Lauf ohne Dienst neu und schrieb
+# jedes Mal eine WARNING-Zeile. Ein Dienst, der sofort wieder stirbt, ergab 12
+# Startversuche und bis zu 24 Zeilen je Stunde - das Rauschen verdeckte die erste,
+# eigentliche Fehlerzeile. Jetzt: hoechstens drei Starts je Stunde; danach EINE
+# Zeile je Stunde und kein Start. Die Zustandsdatei liegt im Datenordner
+# (purge_installation leert sie beim Upgrade - gewollt). Gilt auch fuer den
+# Herzschlag-Neustart oben, weil er in denselben Start muendet. Ohne lesbare Uhr
+# wird nicht gebremst.
+ZUSTAND=REPLACELBPDATADIR/waechter_zustand
+B_JETZT=$(date +%s 2>/dev/null)
+case "$B_JETZT" in
+    ''|*[!0-9]*) B_JETZT="" ;;
+esac
+if [ -n "$B_JETZT" ]; then
+    B_STARTS=0
+    B_MELDUNG=0
+    B_NEU=""
+    if [ -r "$ZUSTAND" ]; then
+        while read -r B_A B_B; do
+            case "$B_A" in
+                M)
+                    case "${B_B:-}" in
+                        ''|*[!0-9]*) ;;
+                        *) if [ $((B_JETZT - B_B)) -ge -300 ] && [ $((B_JETZT - B_B)) -lt 3600 ]; then
+                               B_MELDUNG=$B_B
+                           fi ;;
+                    esac ;;
+                ''|*[!0-9]*) ;;
+                *) if [ $((B_JETZT - B_A)) -ge -300 ] && [ $((B_JETZT - B_A)) -lt 3600 ]; then
+                       B_STARTS=$((B_STARTS + 1))
+                       B_NEU="$B_NEU$B_A
+"
+                   fi ;;
+            esac
+        done < "$ZUSTAND"
+    fi
+    if [ "$B_STARTS" -ge 3 ]; then
+        if [ "$B_MELDUNG" = 0 ]; then
+            mkdir -p "$LOG" 2>/dev/null
+            echo "$(date '+%Y-%m-%d %H:%M:%S') WARNING Der Waechter setzt aus - der Messdienst wurde in der letzten Stunde dreimal gestartet und lief nicht weiter. Im Plugin Reiter Test 'Zustand des Dienstes' und das Protokoll ansehen." >> "$LOG/ultraschall.log"
+            B_MELDUNG=$B_JETZT
+        fi
+        { printf '%s' "$B_NEU"; echo "M $B_MELDUNG"; } > "$ZUSTAND.neu" 2>/dev/null \
+            && mv -f "$ZUSTAND.neu" "$ZUSTAND" 2>/dev/null
+        exit 0
+    fi
+    {
+        printf '%s' "$B_NEU"
+        echo "$B_JETZT"
+        if [ "$B_MELDUNG" != 0 ]; then echo "M $B_MELDUNG"; fi
+    } > "$ZUSTAND.neu" 2>/dev/null && mv -f "$ZUSTAND.neu" "$ZUSTAND" 2>/dev/null
+fi
 
 mkdir -p "$LOG" 2>/dev/null
 DATUM=$(date '+%Y-%m-%d %H:%M:%S')

@@ -90,6 +90,19 @@ if (isset($us_cfg['aktionstoken'])) {
 }
 $us_token_ist = us_par('token');
 
+/* DER ENDPUNKT IST ABSCHALTBAR (seit 1.2.18, E6; Muster Gruppen 9-16).
+ *
+ * Der Regelweg ist seit 1.2.18 das MQTT-Gateway; dieser Endpunkt bleibt fuer
+ * bestehende Anlagen. Er antwortet nur mit endpunkt_ein=1 - geprueft VOR dem
+ * Token und ohne die Zustandsdatei anzufassen: ein abgeschalteter Endpunkt soll
+ * nicht erst das Token beurteilen, und der Schalter verraet nichts. Gilt fuer den
+ * GANZEN Endpunkt, auch Selbsttest und json. Eine Konfiguration OHNE den
+ * Schluessel (bis 1.2.17) liest us_config_read() als 1 (Lese-Regel), ohne Datei
+ * gilt die Vorgabe 0. */
+if (us_cfg($us_cfg, 'endpunkt_ein', '0') !== '1') {
+    us_ende(403, ((us_par('selftest') === '1') ? 'SELFTEST' : 'ULTRA') . ';OK=0;ERR=ENDPUNKT_AUS');
+}
+
 /* Der Selbsttest steht VOR jeder Wirkung, aber HINTER derselben Tokenpruefung
  * wie alles andere - er darf keine Abkuerzung an der Sicherheit vorbei sein.
  *
@@ -174,8 +187,11 @@ $us_frisch = ($us_roh_alter !== null && $us_roh_alter >= -5 && $us_alter >= 0
 
 $us_werte = array(
     'distance' => $us_zahl('entfernung'),
-    'level'    => $us_zahl('prozent'),
-    'liter'    => $us_zahl('liter'),
+    // -1 STATT LEER (seit 1.2.18, F-E5): ein gueltiger Abstand ohne Kalibrierung bzw.
+    // ohne Gesamtvolumen ergab bis 1.2.17 ein leeres Feld - Loxone liest es als 0,
+    // also "Behaelter leer" (dieselbe Begruendung wie M5 oben). -1 = keine Aussage.
+    'level'    => $us_zahl('prozent') !== null ? $us_zahl('prozent') : -1,
+    'liter'    => $us_zahl('liter') !== null ? $us_zahl('liter') : -1,
     'valid'    => $us_gueltig ? 1 : 0,
     'online'   => $us_frisch ? 1 : 0,
     'ts'       => ($us_st && isset($us_st['zeit'])) ? (int) $us_st['zeit'] : 0,

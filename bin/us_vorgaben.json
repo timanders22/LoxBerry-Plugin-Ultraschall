@@ -19,7 +19,11 @@
   "min": "MinVal der Vorlage. NICHT pauschal +-2147483647 - Loxone zieht daraus die Reglergrenzen",
   "max": "MaxVal der Vorlage",
   "zeile": "1 = steht in der Statuszeile des Endpunkts. Textfelder gehoeren dort NICHT hinein: ein ; oder = darin zerlegt die Zeile, die Loxone liest",
-  "retain": "true = das Thema wird zurueckbehalten. false = fluechtig. Hausstandard seit 03.09.2026, entschieden 18./19.09.2026 (Regeln/07): Messwerte mit Zeitbezug, das Lebenszeichen und jede Aussage des Dienstes ueber sich selbst (valid, last_error) sind fluechtig. Einzige Ausnahme ist online: 1 beim Verbinden und 0 als Letzter Wille auf DEMSELBEN Thema, beide retained, und uninstall raeumt es ab. Ein LEERER Wert geht nie retained hinaus - eine leere Nutzlast loescht das Thema im Broker."
+  "retain": "true = das Thema wird zurueckbehalten. false = fluechtig. Hausstandard seit 03.09.2026, entschieden 18./19.09.2026 (Regeln/07): Messwerte mit Zeitbezug, das Lebenszeichen und jede Aussage des Dienstes ueber sich selbst (valid, last_error) sind fluechtig. Einzige Ausnahme ist online: 1 beim Verbinden und 0 als Letzter Wille auf DEMSELBEN Thema, beide retained, und uninstall raeumt es ab. Ein LEERER Wert geht nie retained hinaus - eine leere Nutzlast loescht das Thema im Broker.",
+  "fehlwert": "Seit 1.2.18 (Gruppe 17, Entscheidung 2): der Wert OHNE Aussage. \"-1\" bei distance/level/liter: level/liter ohne Kalibrierung bzw. ohne Gesamtvolumen, alle drei, solange seit dem Dienststart (und laut Zustandsdatei) nie gueltig gemessen wurde. AUSNAHME: bei einer einzelnen ungueltigen Messung bleibt der letzte gueltige Wert stehen und valid=0 sagt es (Trockenlaufschutz und Verbrauchsrechnung im Musterprojekt). null = Dienstaussage, immer bekannt.",
+  "v2": "Gateway V2 im Musterprojekt: haken = anhaken, haken_n = anhaken und Noncached, n = wer es nimmt, setzt Noncached, leer = nicht anhaken.",
+  "muster": "Nummer des Eingangs auf der Musterprojekt-Seite Ultraschall, 0 = dort nicht verwendet.",
+  "bestand": "true = geht fuer Bestandsanlagen weiter hinaus; fuer neue Projekte gibt es status/zaehler (Lebenszeichen in Hausform)."
  },
  "vorgaben": {
   "enabled": "0",
@@ -43,32 +47,47 @@
   "udp": "0",
   "udp_miniserver": "1",
   "udp_port": "",
+  "endpunkt_ein": "0",
+  "behaelter_form": "linear",
+  "temperatur_c": "",
   "aktionstoken": ""
  },
  "felder": {
   "distance": {
    "art": "analog",
    "einheit": "cm",
-   "min": 0,
+   "min": -1,
    "max": 2000,
    "zeile": 1,
-   "retain": false
+   "retain": false,
+   "fehlwert": "-1",
+   "v2": "haken",
+   "muster": 16,
+   "bestand": false
   },
   "level": {
    "art": "analog",
    "einheit": "%",
-   "min": 0,
+   "min": -1,
    "max": 100,
    "zeile": 1,
-   "retain": false
+   "retain": false,
+   "fehlwert": "-1",
+   "v2": "haken",
+   "muster": 1,
+   "bestand": false
   },
   "liter": {
    "art": "analog",
    "einheit": "l",
-   "min": 0,
+   "min": -1,
    "max": 1000000,
    "zeile": 1,
-   "retain": false
+   "retain": false,
+   "fehlwert": "-1",
+   "v2": "haken",
+   "muster": 2,
+   "bestand": false
   },
   "valid": {
    "art": "digital",
@@ -76,7 +95,11 @@
    "min": 0,
    "max": 1,
    "zeile": 1,
-   "retain": false
+   "retain": false,
+   "fehlwert": null,
+   "v2": "haken_n",
+   "muster": 3,
+   "bestand": false
   },
   "online": {
    "art": "digital",
@@ -84,7 +107,11 @@
    "min": 0,
    "max": 1,
    "zeile": 1,
-   "retain": true
+   "retain": true,
+   "fehlwert": null,
+   "v2": "haken_n",
+   "muster": 4,
+   "bestand": false
   },
   "ts": {
    "art": "analog",
@@ -92,7 +119,11 @@
    "min": 0,
    "max": 2147483647,
    "zeile": 1,
-   "retain": false
+   "retain": false,
+   "fehlwert": null,
+   "v2": "",
+   "muster": 0,
+   "bestand": true
   },
   "zaehler": {
    "art": "analog",
@@ -100,7 +131,11 @@
    "min": -1,
    "max": 999,
    "zeile": 1,
-   "retain": false
+   "retain": false,
+   "fehlwert": null,
+   "v2": "",
+   "muster": 0,
+   "bestand": true
   },
   "last_error": {
    "art": "text",
@@ -108,7 +143,47 @@
    "min": 0,
    "max": 0,
    "zeile": 0,
-   "retain": false
+   "retain": false,
+   "fehlwert": null,
+   "v2": "haken",
+   "muster": 21,
+   "bestand": false
+  },
+  "status/zaehler": {
+   "art": "analog",
+   "einheit": "",
+   "min": 0,
+   "max": 999,
+   "zeile": 0,
+   "retain": false,
+   "fehlwert": null,
+   "v2": "haken",
+   "muster": 17,
+   "bestand": false
+  },
+  "status/ok": {
+   "art": "analog",
+   "einheit": "",
+   "min": -1,
+   "max": 1,
+   "zeile": 0,
+   "retain": false,
+   "fehlwert": null,
+   "v2": "n",
+   "muster": 0,
+   "bestand": false
+  },
+  "status/ts": {
+   "art": "analog",
+   "einheit": "s",
+   "min": 0,
+   "max": 2147483647,
+   "zeile": 0,
+   "retain": false,
+   "fehlwert": null,
+   "v2": "",
+   "muster": 0,
+   "bestand": false
   }
  }
 }

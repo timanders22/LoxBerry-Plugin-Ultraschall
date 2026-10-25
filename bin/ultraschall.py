@@ -49,11 +49,18 @@ def log_kappen(pfad=None):
     frisst dort ARBEITSSPEICHER, nicht Plattenplatz - bei einem Messtakt
     von 60 s sind das 1440 Zeilen am Tag.
 
-    Gekappt wird IN der Datei, nicht durch Umbenennen: daemon/daemon und
-    us_dienst('start') haengen mit ">>" an dieselbe Datei an. Ein solcher
-    Schreiber setzt immer ans aktuelle Ende auf und vertraegt das Kuerzen;
-    ein Umbenennen liesse ihn dagegen in der weggeraeumten Datei
-    weiterschreiben - der Platz bliebe belegt, ohne dass ihn jemand sieht.
+    SEIT 1.2.18 UEBER EINE NEBENDATEI (U23). Bis 1.2.17 wurde die Datei mit
+    "w" geoeffnet und neu beschrieben - bei voller Ramdisk blieb sie dann LEER
+    statt 200 Zeilen lang. Jetzt: lesen, die letzten Zeilen in
+    "<datei>.kappen.<pid>" schreiben, os.replace. Scheitert das Schreiben,
+    bleibt das Original unveraendert.
+
+    Wer schreibt sonst noch hinein? Die Startausgabe geht seit 1.2.6 nach
+    ultraschall_start.log; mit ">>" schreiben nur noch us_melden() im daemon
+    und die Zeilen des Waechters - beide oeffnen die Datei jedes Mal neu und
+    treffen damit die neue. Der WatchedFileHandler dieses Dienstes merkt den
+    Inode-Wechsel und oeffnet selbst neu (dieselbe Eigenschaft, die ihn nach
+    dem Leeren der Ramdisk rettet, siehe unten).
     """
     pfad = pfad or LOGDATEI
     if not pfad:
@@ -63,10 +70,19 @@ def log_kappen(pfad=None):
             return False
         with open(pfad, "r", encoding="utf-8", errors="replace") as fh:
             rest = fh.readlines()[-LOG_REST:]
-        with open(pfad, "w", encoding="utf-8") as fh:
+    except OSError:
+        return False
+    tmp = "{0}.kappen.{1}".format(pfad, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
             fh.writelines(rest)
+        os.replace(tmp, pfad)
         return True
     except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
         return False
 
 
@@ -264,7 +280,7 @@ def broker_leeren(praefix, namen, warten=2.0):
         return 2, [], [], "kein MQTT-Broker in general.json"
 
     gesehen = set()
-    antwort = {"code": None}
+    antwort = {"code": None, "suback": None}
 
     def bei_verbindung(_k, _d, _f, rc, *_rest):
         try:
@@ -276,16 +292,48 @@ def broker_leeren(praefix, namen, warten=2.0):
         if n.retain and n.payload and n.topic in soll:
             gesehen.add(n.topic)
 
+    # U21 (seit 1.2.18): DAS ABONNEMENT MUSS BESTAETIGT SEIN. Bis 1.2.17 wurde fest
+    # zwei Sekunden gewartet und ausgewertet, was ankam; ein abgewiesenes Abo (SUBACK
+    # 0x80) oder ein langsamer Broker ergab "nichts zurueckbehalten", und ein frueheres
+    # Praefix wurde vergessen, obwohl unter ihm noch online=0 stand. paho 1.x liefert
+    # die gewaehrten QoS als Zahlen, paho 2.x als ReasonCode-Objekte.
+    def bei_abo(_k, _d, _mid, *rest):
+        werte = []
+        for rc in (rest[0] if rest else []) or []:
+            try:
+                werte.append(int(rc))
+            except (TypeError, ValueError):
+                werte.append(int(getattr(rc, "value", 128)))
+        antwort["suback"] = werte
+
+    def abo_bestaetigt(filter_):
+        antwort["suback"] = None
+        k.subscribe(filter_)
+        for _ in range(50):
+            if antwort["suback"] is not None:
+                break
+            time.sleep(0.1)
+        if antwort["suback"] is None:
+            return "Broker bestaetigt das Abonnement nicht (SUBACK fehlt)"
+        if not antwort["suback"] or any(q >= 0x80 for q in antwort["suback"]):
+            return "Broker verweigert das Abonnement (SUBACK 0x80)"
+        return ""
+
+    # U26 (seit 1.2.18): eine Client-Kennung mit Ordner und PID, als SCHLUESSELWORT -
+    # paho 1.x nimmt client_id positionsweise an erster Stelle. Ohne PID wuerfen sich
+    # zwei Prozesse gegenseitig hinaus.
+    kennung = "ultraschall-{0}-leeren-{1}".format(gem.PLUGIN_NAME, os.getpid())
     try:
-        k = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        k = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=kennung)
     except AttributeError:
-        k = mqtt.Client()                       # paho-mqtt 1.x
+        k = mqtt.Client(client_id=kennung)      # paho-mqtt 1.x
     except (TypeError, ValueError):
-        k = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+        k = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=kennung)
     if zugang["user"]:
         k.username_pw_set(zugang["user"], zugang["pass"] or "")
     k.on_connect = bei_verbindung
     k.on_message = bei_nachricht
+    k.on_subscribe = bei_abo
     try:
         k.connect(zugang["host"], zugang["port"], keepalive=30)
     except OSError as fehler:
@@ -304,7 +352,9 @@ def broker_leeren(praefix, namen, warten=2.0):
             return 2, [], [], "Broker {0}:{1}: {2}".format(
                 zugang["host"], zugang["port"], grund)
         filter_ = [(t, 0) for t in sorted(soll)]
-        k.subscribe(filter_)
+        grund = abo_bestaetigt(filter_)
+        if grund:
+            return 2, [], [], grund
         time.sleep(warten)
         k.unsubscribe(sorted(soll))
         zu_leeren = sorted(gesehen)
@@ -316,7 +366,9 @@ def broker_leeren(praefix, namen, warten=2.0):
                 info.wait_for_publish()
         # NACHLESEN - ein neues Abonnement bekommt alles, was noch steht.
         gesehen.clear()
-        k.subscribe(filter_)
+        grund = abo_bestaetigt(filter_)
+        if grund:
+            return 2, zu_leeren, [], grund + " (beim Nachlesen)"
         time.sleep(warten)
         rest = sorted(gesehen)
     except Exception as fehler:  # noqa: BLE001
@@ -328,6 +380,9 @@ def broker_leeren(praefix, namen, warten=2.0):
         except Exception:  # noqa: BLE001
             pass
     return (1 if rest else 0), zu_leeren, rest, ""
+
+
+_PORT_GEMELDET = False
 
 
 class Mqtt:
@@ -384,6 +439,10 @@ class Mqtt:
             log.warning("Kein MQTT-Broker in general.json gefunden")
             self.client = None
             return False
+        global _PORT_GEMELDET
+        if gem.MQTT_PORT_HINWEIS and not _PORT_GEMELDET:
+            log.warning("MQTT: %s", gem.MQTT_PORT_HINWEIS)
+            _PORT_GEMELDET = True
         # paho-mqtt 2.x verlangt eine Angabe, welche Rueckruf-Schnittstelle
         # gemeint ist; 1.x kennt den Parameter nicht.
         #
@@ -397,16 +456,18 @@ class Mqtt:
         # WER HIER SPAETER on_connect ERGAENZT, muss die Form von Fassung 2
         # verwenden:
         #     on_connect(client, userdata, flags, reason_code, properties)
+        # U26 (seit 1.2.18): Client-Kennung mit Ordner und PID, als Schluesselwort.
+        kennung = "ultraschall-{0}-{1}".format(gem.PLUGIN_NAME, os.getpid())
         try:
-            self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+            self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=kennung)
         except AttributeError:
-            self.client = mqtt.Client()      # paho-mqtt 1.x
+            self.client = mqtt.Client(client_id=kennung)      # paho-mqtt 1.x
         except (TypeError, ValueError):
             # Sehr fruehe 2.0-Vorabfassungen kannten VERSION2 noch nicht.
             try:
-                self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+                self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=kennung)
             except Exception:  # noqa: BLE001
-                self.client = mqtt.Client()
+                self.client = mqtt.Client(client_id=kennung)
         if zugang["user"]:
             self.client.username_pw_set(zugang["user"], zugang["pass"] or "")
         self.connack = None
@@ -661,7 +722,10 @@ class Dienst:
         if alt:
             log.info("Konfiguration im alten Format erkannt - wird übernommen "
                      "und beim nächsten Speichern neu geschrieben")
-        self.praefix = self.cfg.get("themenpraefix") or "ultraschall"
+        self.praefix, falsch = gem.praefix_aus(self.cfg)
+        if falsch:
+            log.warning("Themenpraefix '%s' ist nicht brauchbar (erlaubt sind Buchstaben, "
+                        "Ziffern, - und _) - gesendet wird unter 'ultraschall'.", falsch[:40])
         self.mqtt = Mqtt(self.praefix)
         self.sensor = None
         self.laeuft = True
@@ -715,6 +779,11 @@ class Dienst:
         self.mqtt_naechster = 0.0
         self.mqtt_wartezeit = 60.0
         self.mqtt_soll = (self.cfg.get("mqtt", "1") == "1")
+        # Lebenszeichen in Hausform (seit 1.2.18, E4): status/ok ist -1, bis der erste
+        # Durchgang gelaufen ist; durchgang() setzt 1/0, _ausgeschaltet() 0.
+        self._ok = -1
+        # enabled != 1 wird EINMAL gemeldet (valid 0, last_error), danach nur Lebenszeichen.
+        self._aus_gemeldet = False
 
     def _einmal(self, schluessel, text, stufe="error", wieder_nach=3600):
         """Dieselbe Meldung nicht bei jedem Durchgang wiederholen.
@@ -923,8 +992,12 @@ class Dienst:
         except OSError as fehler:
             log.warning("Zustandsdatei nicht schreibbar: %s", fehler)
 
-    def durchgang(self, erzwingen=False, ausfall=None):
-        self.zaehler = 0 if self.zaehler < 0 else (self.zaehler + 1) % 1000
+    def durchgang(self, erzwingen=False, ausfall=None, gezaehlt=False):
+        # Seit 1.2.18 zaehlt schleifenlauf() den Zaehler je Lauf der Dienstschleife -
+        # auch bei ausgeschaltetem Plugin (status/zaehler). Ein einzelner Aufruf ohne
+        # schleifenlauf() zaehlt wie bisher selbst.
+        if not gezaehlt:
+            self.zaehler = 0 if self.zaehler < 0 else (self.zaehler + 1) % 1000
         if ausfall is not None:
             # DER SENSOR LIESS SICH NICHT OEFFNEN (Durchgang 02.10.2026, C1).
             #
@@ -944,8 +1017,14 @@ class Dienst:
         # Stunde und je Sache. Bis 1.2.1 fiel ein unlesbarer Wert still
         # auf die Vorgabe zurueck; gemessen wurde dann ohne Korrektur,
         # und im Protokoll stand nichts davon.
-        for nummer, satz in enumerate(ergebnis.get("hinweise") or []):
-            self._einmal("cfg%d" % nummer, satz, "warning")
+        # Seit 1.2.18 (E3) ist ein Hinweis ein Eintrag mit Schluessel, Werten und dem
+        # deutschen Satz t fuer dieses Protokoll; die Oberflaeche uebersetzt den Schluessel.
+        for nummer, eintrag in enumerate(ergebnis.get("hinweise") or []):
+            if isinstance(eintrag, dict):
+                self._einmal("cfg%d" % nummer, str(eintrag.get("t", "")),
+                             str(eintrag.get("stufe", "warning")))
+            else:
+                self._einmal("cfg%d" % nummer, str(eintrag), "warning")
         entfernung = ergebnis["entfernung"]
         prozent, liter = gem.fuellstand(self.cfg, entfernung)
 
@@ -954,6 +1033,22 @@ class Dienst:
                 self._einmal("messung", ergebnis["fehler"], "warning")
             self._senden("valid", "0", erzwingen)
             self._senden("last_error", ergebnis["fehler"], erzwingen)
+            # DIE -1-REGEL MIT DER ENTSCHIEDENEN AUSNAHME (seit 1.2.18, Entscheidung 2
+            # der Gruppe 17). Eine einzelne ungueltige Messung laesst den letzten
+            # gueltigen Wert STEHEN, valid=0 sagt es: ein -1 bei jedem Aussetzer sperrte
+            # im Musterprojekt ueber den Trockenlaufschutz (#30) die Pumpe und verfaelschte
+            # die Verbrauchsrechnung (#13/#14/#32/#33). -1 geht nur dort hinaus, wo es
+            # KEINE Aussage gibt: seit dem Dienststart (und laut Zustandsdatei) nie gueltig
+            # gemessen, oder level/liter ohne Kalibrierung bzw. ohne Gesamtvolumen - das ist
+            # eine feste Tatsache. Gefragt wird mit derselben Funktion, die rechnet.
+            kal_p, kal_l = gem.fuellstand(self.cfg, 0.0)
+            nie = self.letzte_gueltig["entfernung"] is None
+            if nie:
+                self._senden("distance", -1, erzwingen)
+            if nie or kal_p is None:
+                self._senden("level", -1, erzwingen)
+            if nie or kal_l is None:
+                self._senden("liter", -1, erzwingen)
             # NACH EINEM SENSORFEHLER WIRD DER SENSOR NEU AUFGEBAUT
             # (seit 1.2.2).
             #
@@ -979,10 +1074,11 @@ class Dienst:
                      "" if liter is None else "  {0:.1f} l".format(liter))
             self._senden("valid", "1", erzwingen)
             self._senden("distance", entfernung, erzwingen)
-            if prozent is not None:
-                self._senden("level", prozent, erzwingen)
-            if liter is not None:
-                self._senden("liter", liter, erzwingen)
+            # -1-Regel (seit 1.2.18): ohne Kalibrierung bzw. ohne Gesamtvolumen -1 -
+            # bis 1.2.17 ging dann gar nichts hinaus, und der Eingang in Loxone zeigte 0,
+            # also "Behaelter leer".
+            self._senden("level", -1 if prozent is None else prozent, erzwingen)
+            self._senden("liter", -1 if liter is None else liter, erzwingen)
             # Ein gueltiger Durchgang MIT Sensorfehlern (C2) traegt den Fehler
             # weiter in last_error - bis 1.2.10 ging hier immer "" hinaus,
             # waehrend die Zustandsdatei den Fehler trug.
@@ -1044,19 +1140,20 @@ class Dienst:
         # Ausfallerkennung baut, wird nur nach einem ERFOLGREICHEN Abruf
         # fortgeschrieben.
         #
-        # KEIN NEUES MQTT-THEMA. Dass der Dienst ueberhaupt noch arbeitet,
-        # beantwortet der umlaufende Zaehler, und der geht wie bisher in
-        # jedem Durchgang hinaus. Ein zweites Zeitthema waere ein weiteres
-        # Feld in Vorlage, Tabelle, Hilfe und beiden Sprachdateien, ohne
-        # eine Frage zu beantworten, die offen ist. "herzschlag" steht
-        # deshalb nur in der Zustandsdatei - dort liest es die Oberflaeche,
-        # um "laeuft, misst aber nicht" von "laeuft nicht" zu trennen.
+        # SEIT 1.2.18 GIBT ES DAZU DAS LEBENSZEICHEN IN HAUSFORM (E4):
+        # status/zaehler, status/ts und status/ok je Lauf der Dienstschleife,
+        # auch bei ausgeschaltetem Plugin (schleifenlauf(), _herzschlag()).
+        # ts, zaehler und online gehen fuer Bestandsanlagen weiter hinaus.
+        # "herzschlag" steht weiter nur in der Zustandsdatei - dort liest es
+        # die Oberflaeche, um "laeuft, misst aber nicht" von "laeuft nicht"
+        # zu trennen.
         jetzt = int(time.time())
         if entfernung is not None:
             self.letzte_messung = jetzt
         self._senden("ts", self.letzte_messung, True)
         self._senden("zaehler", self.zaehler, True)
         self._senden("online", "1", True)
+        self._ok = 1 if entfernung is not None else 0
 
         self.zustand_schreiben({
             "zeit": self.letzte_messung,
@@ -1080,6 +1177,39 @@ class Dienst:
             "mqtt_grund": ("" if self.mqtt.verbunden() or not self.mqtt_soll
                            else (self.mqtt_grund or self.mqtt.abgelehnt)),
         })
+
+    def _herzschlag(self):
+        """Das Lebenszeichen in Hausform (seit 1.2.18, E4; Regeln/07): je Lauf der
+        Dienstschleife status/zaehler (derselbe Zaehler wie zaehler), status/ts und
+        status/ok - mit erzwingen, also auch ohne Aenderung, und auch bei
+        ausgeschaltetem Plugin, solange der Dienst laeuft. Fluechtig (Feldtabelle)."""
+        self._senden("status/zaehler", self.zaehler, True)
+        self._senden("status/ts", int(time.time()), True)
+        self._senden("status/ok", self._ok, True)
+
+    def _ausgeschaltet(self):
+        """enabled != 1 bei laufendem Dienst (seit 1.2.18): EINMAL valid 0 und
+        last_error "Plugin ausgeschaltet", status/ok 0; danach nur das Lebenszeichen.
+        distance/level/liter bleiben stehen - ueber den Behaelter gibt es nichts Neues.
+        Bis 1.2.17 kam in diesem Fall gar nichts, und Loxone meldete nach fuenf
+        Minuten "kein Lebenszeichen" statt "Plugin ausgeschaltet"."""
+        if not self._aus_gemeldet:
+            self._senden("valid", "0", True)
+            self._senden("last_error", "Plugin ausgeschaltet", True)
+            self._aus_gemeldet = True
+        self._ok = 0
+
+    def schleifenlauf(self, erzwingen=False, ausfall=None):
+        """Ein Lauf der Dienstschleife (seit 1.2.18): Zaehler weiter, dann ein
+        Durchgang - oder bei ausgeschaltetem Plugin die einmalige Meldung -, dann
+        das Lebenszeichen."""
+        self.zaehler = 0 if self.zaehler < 0 else (self.zaehler + 1) % 1000
+        if self.cfg.get("enabled", "0") == "1":
+            self._aus_gemeldet = False
+            self.durchgang(erzwingen=erzwingen, ausfall=ausfall, gezaehlt=True)
+        else:
+            self._ausgeschaltet()
+        self._herzschlag()
 
     def start(self):
         log.info("Ultraschall Entfernung %s startet", gem.VERSION)
@@ -1109,8 +1239,8 @@ class Dienst:
         letzte_vollmeldung = 0
 
         while self.laeuft:
+            ausfall = None
             if self.cfg.get("enabled", "0") == "1":
-                ausfall = None
                 if self.sensor is None:
                     try:
                         self.sensor = gem.sensor_aufbauen(self.cfg)
@@ -1124,10 +1254,12 @@ class Dienst:
                 # C1: auch ohne offenen Sensor ein Durchgang - mit valid=0,
                 # Grund und Lebenszeichen; bei der Vollmeldung mit erzwingen
                 # (M7: valid/last_error gingen bis 1.2.10 nur einmal hinaus).
-                erzwingen = (time.time() - letzte_vollmeldung) >= vollmeldung_alle
-                self.durchgang(erzwingen=erzwingen, ausfall=ausfall)
-                if erzwingen:
-                    letzte_vollmeldung = time.time()
+            # Seit 1.2.18 laeuft das Lebenszeichen auch bei ausgeschaltetem Plugin
+            # (schleifenlauf); der Durchgang nur bei enabled=1.
+            erzwingen = (time.time() - letzte_vollmeldung) >= vollmeldung_alle
+            self.schleifenlauf(erzwingen=erzwingen, ausfall=ausfall)
+            if erzwingen:
+                letzte_vollmeldung = time.time()
 
             # Einmal je Takt nachsehen, ob das Protokoll zu gross wird.
             log_kappen()
@@ -1167,7 +1299,10 @@ class Dienst:
                 # dem ALTEN Praefix. Sechs Sendungen, keine einzige unter dem
                 # neuen. Wer eine Sicherung mit anderem Praefix zurueckspielt,
                 # bekam damit ein Plugin, das ins Leere sendet.
-                mqtt_neu = (neu.get("themenpraefix") or "ultraschall")
+                mqtt_neu, falsch = gem.praefix_aus(neu)
+                if falsch:
+                    log.warning("Themenpraefix '%s' ist nicht brauchbar - gesendet wird "
+                                "unter 'ultraschall'.", falsch[:40])
                 mqtt_an = neu.get("mqtt", "1") == "1"
                 # Entschieden wird am WUNSCH des Anwenders, nicht am Zustand
                 # des Clients (seit 1.2.2). Bis 1.2.1 stand hier
@@ -1355,11 +1490,23 @@ def mqtt_leeren():
               "Themen wurden nicht geleert.")
         return 2
     cfg, _ = gem.konfiguration_lesen()
-    praefix = (cfg.get("themenpraefix") or "ultraschall").strip("/") or "ultraschall"
+    # E16 (seit 1.2.18): auch das AKTUELLE Praefix muss brauchbar sein. Bis 1.2.17
+    # wurde es ungeprueft genommen; eine von Hand verdorbene Konfiguration mit "a/b"
+    # raeumte unter "a/b/..." ab.
+    roh = str(cfg.get("themenpraefix") or "").strip() or "ultraschall"
+    schlimmster = 0
+    if gem.PRAEFIX_MUSTER.match(roh):
+        praefix = roh
+        alle = [praefix]
+    else:
+        praefix = ""
+        alle = []
+        schlimmster = 2
+        print("<INFO> MQTT: Themenpraefix '{0}' ist nicht brauchbar - darunter wurde "
+              "nichts geleert.".format(roh[:40]))
     # M3 (Durchgang 02.10.2026): auch die vorgemerkten frueheren Praefixe -
     # bis 1.2.10 blieb unter ihnen online=0 fuer immer stehen.
-    alle = [praefix] + [p for p in gem.praefixe_vorgemerkt() if p != praefix]
-    schlimmster = 0
+    alle += [p for p in gem.praefixe_vorgemerkt() if p != praefix]
     for p in alle:
         code, geleert, rest, grund = broker_leeren(p, sorted(gem.FELDER))
         if code == 2:

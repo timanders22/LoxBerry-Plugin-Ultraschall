@@ -205,29 +205,6 @@ function us_felder()
 }
 
 /** Nur die Felder, die in die Statuszeile gehoeren. */
-/**
- * Die Felder, aus denen die MQTT-Vorlage virtuelle Eingaenge macht.
- *
- * Textthemen bleiben draussen: das nachgebaute Vorlagenformat ist nur fuer
- * Zahlenwerte belegt, und ein Eingang mit Analog="true" auf einen Text zeigt
- * dauerhaft 0. Das Gateway legt sie beim ersten Empfang selbst an.
- *
- * Es gibt diese Funktion seit 1.2.2, weil der Hinweistext daneben die Zahl
- * nennt. Bis dahin zaehlte er us_status_themen(), also ALLE acht Themen,
- * waehrend die Datei sieben Befehle enthielt - gemessen an der erzeugten
- * Vorlage. Wer sie einlas, zaehlte sieben Eingaenge und suchte den achten.
- */
-function us_felder_vorlage()
-{
-    $aus = array();
-    foreach (us_felder() as $name => $f) {
-        if ($f['art'] !== 'text') {
-            $aus[$name] = $f;
-        }
-    }
-    return $aus;
-}
-
 function us_felder_zeile()
 {
     $aus = array();
@@ -337,7 +314,7 @@ function us_config_read($erzeugen = false)
     $werte = $vorgaben;
     $alt = false;
     $lage = array('fehlend' => array(), 'fremd' => array(), 'ergaenzt' => array(),
-                  'quelle' => $vorgaben ? 'ok' : 'keine_datenquelle');
+                  'quelle' => $vorgaben ? 'ok' : 'keine_datenquelle', 'token_angelegt' => false);
     $file = us_paths()['config'];
     if (!$vorgaben) {
         return array($werte, $alt, $lage);
@@ -368,6 +345,7 @@ function us_config_read($erzeugen = false)
             if (us_config_write($werte)) {
                 $lage['ergaenzt'] = $lage['fehlend'];
                 $lage['fehlend'] = array();
+                $lage['token_angelegt'] = true;
             }
         }
         return array($werte, $alt, $lage);
@@ -415,6 +393,17 @@ function us_config_read($erzeugen = false)
             $lage['fremd'][] = $klein;
         }
     }
+    /* LESE-REGEL endpunkt_ein (seit 1.2.18, E6/N1). Bis 1.2.17 gab es den Schalter
+     * nicht, der Endpunkt war immer offen. Fehlt der Schluessel in einer VORHANDENEN
+     * Datei, gilt er als 1 - fuer die Oberflaeche UND den Endpunkt (beide lesen hier).
+     * Ohne diese Regel schriebe das Vervollstaendigen darunter die Vorgabe 0 in jede
+     * Bestandsdatei, und nach dem ersten Seitenaufbau waere jede Anlage stumm
+     * (gemessen: Entwurfsprobe probe_ep, Stand NUR_SPERRE). Ohne Datei gilt die
+     * Vorgabe 0 (Neuinstallation). Der Schluessel bleibt "fehlend", damit er mit 1
+     * hingeschrieben wird. */
+    if (!isset($gesehen['endpunkt_ein']) && array_key_exists('endpunkt_ein', $vorgaben)) {
+        $werte['endpunkt_ein'] = '1';
+    }
     $lage['fehlend'] = array_values(array_diff(array_keys($vorgaben), array_keys($gesehen)));
 
     if ($erzeugen && $lage['fehlend']) {
@@ -431,12 +420,38 @@ function us_config_read($erzeugen = false)
          * bewusst geleert; dann waechst er nicht nach. Fuer empty() sehen
          * beide Faelle gleich aus, und ein nachwachsendes Token laesst sich
          * nicht abschalten. */
+        $us_tok_neu = false;
         if (in_array('aktionstoken', $lage['fehlend'], true)) {
             $werte['aktionstoken'] = us_token_neu();
+            $us_tok_neu = true;
         }
         if (us_config_write($werte)) {
             $lage['ergaenzt'] = $lage['fehlend'];
             $lage['fehlend'] = array();
+            if ($us_tok_neu) {
+                $lage['token_angelegt'] = true;
+                us_zweitschrift_nachziehen();
+            }
+        }
+    }
+    /* EIN LEERES AKTIONSTOKEN WIRD BEIM SEITENAUFRUF ANGELEGT (seit 1.2.18, Hausherr
+     * 25.10.2026). Bis 1.2.17 entstand es hier nur, wenn der Schluessel FEHLTE; ein
+     * leerer Schluessel blieb leer ("bewusst geleert waechst nicht nach"), und jedes
+     * Formular wurde abgewiesen, bis jemand "Neues Token erzeugen" fand (am Geraet
+     * gemessen 25.10.2026). Leeren laesst sich das Token in der Oberflaeche nicht -
+     * nur von Hand in der Datei -, also gibt es keinen gewollten leeren Zustand, den
+     * diese Regel zerstoert. Ein VORHANDENES Token wird nie geaendert. postinstall.sh
+     * legt es bei einer Neuinstallation schon an; dies ist der Rueckfall. Schreiben
+     * atomar mit 0600 (us_config_write), die Zweitschrift zieht nach, der Hinweis kommt
+     * genau bei diesem einen Seitenaufbau. */
+    if ($erzeugen && array_key_exists('aktionstoken', $vorgaben)
+        && trim((string) $werte['aktionstoken']) === '') {
+        $werte['aktionstoken'] = us_token_neu();
+        if (us_config_write($werte)) {
+            $lage['token_angelegt'] = true;
+            us_zweitschrift_nachziehen();
+        } else {
+            $werte['aktionstoken'] = '';
         }
     }
     return array($werte, $alt, $lage);
@@ -502,12 +517,31 @@ function us_pruefen($roh)
     /* --- Haken. Sie kommen als '1'/'0' herein, nicht als isset(). Aus dem
      * Formular kann nichts anderes kommen - dort werden die drei vorher
      * ausdruecklich umgesetzt. Aus einer Datei sehr wohl. */
-    foreach (array('enabled', 'mqtt', 'udp') as $k) {
+    // endpunkt_ein seit 1.2.18 (E6) - ein Haken wie die drei anderen.
+    foreach (array('enabled', 'mqtt', 'udp', 'endpunkt_ein') as $k) {
         $w = $hol($k);
         if ($w !== '0' && $w !== '1') {
             $ruege($k, $w);
         }
         $v[$k] = $w;
+    }
+
+    // --- Behaelterform (V1, seit 1.2.18) ---------------------------------------
+    $form = $hol('behaelter_form');
+    if (!array_key_exists($form, us_behaelterformen())) {
+        $ruege('behaelter_form', $form);
+    }
+    $v['behaelter_form'] = $form;
+
+    // --- Feste Temperatur (V2, seit 1.2.18): leer = aus, sonst -40 bis 60 -------
+    $temp = str_replace(',', '.', $hol('temperatur_c'));
+    if ($temp === '') {
+        $v['temperatur_c'] = '';
+    } elseif (is_numeric($temp) && (float) $temp >= -40 && (float) $temp <= 60) {
+        $v['temperatur_c'] = $zahltext($temp);
+    } else {
+        $ruege('temperatur_c', $temp);
+        $v['temperatur_c'] = $temp;
     }
 
     // --- Themenpraefix ------------------------------------------------------
@@ -804,6 +838,41 @@ function us_config_write($werte)
     return true;
 }
 
+/**
+ * Die Zweitschrift <ordner>.backup.ultraschall.cfg nachziehen (seit 1.2.18), wenn es
+ * sie gibt - nach dem Anlegen eines Aktionstokens. Angelegt wird keine: sie entsteht in
+ * preupgrade.sh aus der laufenden Datei. Atomar: Nebendatei .neu, 0600 vor dem Inhalt,
+ * Laenge verglichen, rename. Rueckgabe: nachgezogen.
+ */
+function us_zweitschrift_nachziehen()
+{
+    $p = us_paths();
+    if ($p['home'] === '') {
+        return false;
+    }
+    $z = $p['home'] . '/config/plugins/' . $p['plugin'] . '.backup.ultraschall.cfg';
+    if (!is_file($z)) {
+        return false;
+    }
+    $inhalt = is_file($p['config']) ? (string) @file_get_contents($p['config']) : '';
+    if ($inhalt === '') {
+        return false;
+    }
+    $tmp = $z . '.neu';
+    $fh = @fopen($tmp, 'c');
+    if ($fh === false) {
+        return false;
+    }
+    @chmod($tmp, 0600);
+    $ok = (@ftruncate($fh, 0) !== false) && (@fwrite($fh, $inhalt) === strlen($inhalt));
+    @fclose($fh);
+    if (!$ok || !@rename($tmp, $z)) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
+}
+
 /** Zustandsdatei des Dienstes lesen. */
 function us_status()
 {
@@ -976,10 +1045,13 @@ function us_marke_alter()
         return -1;
     }
     $alter = time() - (int) $roh;
-    if ($alter < 0 || $alter >= 3600) {
+    /* U15 (seit 1.2.18): -300 Toleranz - springt die Uhr waehrend der Aktualisierung
+     * zurueck (NTP), gilt eine "leicht zukuenftige" Marke weiter. Und max(0, ...) (N8):
+     * die Aufrufer pruefen ">= 0"; ein negatives Alter hiesse dort wieder "gilt nicht". */
+    if ($alter < -300 || $alter >= 3600) {
         return -1;
     }
-    return $alter;
+    return max(0, $alter);
 }
 
 /** Dienst starten, stoppen, neu starten. */
@@ -1341,7 +1413,8 @@ function us_status_themen()
          * hinaus? Die Angabe kommt aus derselben Datei, aus der der
          * Dienst seine Entscheidung liest - eine zweite Liste in der
          * Oberflaeche waere die zweite Wahrheit. */
-        $aus[$name] = array(us_t('THEMA.' . strtoupper($name)), $f['art'],
+        // Themen mit "/" (status/zaehler, seit 1.2.18) haben Schluessel mit "_".
+        $aus[$name] = array(us_t('THEMA.' . strtoupper(str_replace('/', '_', $name))), $f['art'],
                             !empty($f['retain']));
     }
     return $aus;
@@ -1350,7 +1423,7 @@ function us_status_themen()
 /** Der lange Erklaertext zu einem Thema - fuer die Tabelle, nicht fuer Loxone. */
 function us_thema_lang($name)
 {
-    return us_t('THEMA_LANG.' . strtoupper($name));
+    return us_t('THEMA_LANG.' . strtoupper(str_replace('/', '_', $name)));
 }
 
 /**
@@ -1513,7 +1586,19 @@ function us_fuellstand($cfg, $entfernung)
     if (!is_finite($leer) || !is_finite($voll) || $leer - $voll < 0.001) {
         return array(null, null);
     }
-    $prozent = max(0.0, min(100.0, ($leer - $entfernung) / ($leer - $voll) * 100.0));
+    /* V1 (seit 1.2.18): die Behaelterform rechnet den Hoehenanteil in einen
+     * VOLUMENanteil um - dieselbe Rechnung wie us_common.fuellstand(). Eine
+     * unbekannte Form ergibt keinen Wert. */
+    $form = trim(us_cfg($cfg, 'behaelter_form', 'linear'));
+    if (!array_key_exists($form, us_behaelterformen())) {
+        return array(null, null);
+    }
+    $anteil = ($leer - $entfernung) / ($leer - $voll);
+    if ($form === 'linear') {
+        $prozent = max(0.0, min(100.0, $anteil * 100.0));
+    } else {
+        $prozent = max(0.0, min(100.0, us_form_anteil($anteil, $form) * 100.0));
+    }
     $liter = null;
     $vol = trim(us_roh($cfg, 'volumen_liter'));
     // Gesamtvolumen nur, wenn groesser als 0 (C7) - wie Python.
@@ -1637,67 +1722,125 @@ function us_xml_rumpf($wurzel, $typ, $kopf, $cmds, $adresse = false)
  */
 function us_vorlage($cfg, $art)
 {
-    $praefix = us_cfg($cfg, 'themenpraefix', 'ultraschall');
-    $fuss = us_t('VORLAGE.KOPF');
-
-    if ($art === 'udp_in') {
-        // Der UDP-Weg der Originalfassung: ein einziger Wert, die Entfernung
-        // in cm, ohne Namen davor. Deshalb nur ein Eintrag - und Address ist
-        // hier der ABSENDER, also der LoxBerry.
-        $port = us_roh($cfg, 'udp_port');
-        $f = us_felder();
-        $d = isset($f['distance']) ? $f['distance'] : array('min' => 0, 'max' => 2000,
-                                                            'einheit' => 'cm', 'art' => 'analog');
-        /* 1.2.15 (Hausherr 13.10.2026): eigener Geraetetitel "Ultraschall Entfernung UDP".
-         * Bis 1.2.14 trugen BEIDE Vorlagen den Titel "Ultraschall Entfernung" - wer beide
-         * einlas, hatte zwei Geraete gleichen Namens in Loxone Config. Der Befehl
-         * Ultraschall_Entfernung bleibt. Fest im Code, nicht ueber die Sprachdatei: Titel
-         * werden in Config zu Namen (Regeln/07, Sprache einer Loxone-Vorlage). */
-        return array('ultraschall_udp.xml', us_xml_rumpf('VirtualInUdp', '1', array(
-            'title'   => 'Ultraschall Entfernung UDP',
-            'address' => '',
-            'port'    => $port !== '' ? $port : '0',
-            'comment' => $fuss,
-        ), array(array(
-            'title'   => 'Ultraschall_Entfernung',
-            'comment' => us_t('THEMA.DISTANCE'),
-            'check'   => '\\v',
-            'art'     => 'analog',
-            'min'     => $d['min'],
-            'max'     => $d['max'],
-            'einheit' => $d['einheit'],
-        )), true));
+    /* SEIT 1.2.18 NUR NOCH DIE UDP-VORLAGE (E1). Die MQTT-Vorlage war ein
+     * VirtualInHttp mit http://localhost und einer Abfragezeit von einer Woche -
+     * der verbotene Kunstgriff (R2_078; Gedaechtnis gateway-werte-virtueller-
+     * eingang). An ihre Stelle tritt die Namenstabelle (us_mqtt_namen) im Reiter
+     * Einbindung: einfache Virtuelle Eingaenge mit dem Namen, den das Gateway
+     * vergibt. Rueckgabe null fuer jede andere Art. */
+    if ($art !== 'udp_in') {
+        return null;
     }
+    $fuss = us_t('VORLAGE.KOPF');
+    // Der UDP-Weg der Originalfassung: ein einziger Wert, die Entfernung
+    // in cm, ohne Namen davor. Deshalb nur ein Eintrag - und Address ist
+    // hier der ABSENDER, also der LoxBerry.
+    $port = us_roh($cfg, 'udp_port');
+    $f = us_felder();
+    $d = isset($f['distance']) ? $f['distance'] : array('min' => 0, 'max' => 2000,
+                                                        'einheit' => 'cm', 'art' => 'analog');
+    /* 1.2.15 (Hausherr 13.10.2026): eigener Geraetetitel "Ultraschall Entfernung UDP".
+     * Fest im Code, nicht ueber die Sprachdatei: Titel werden in Config zu Namen
+     * (Regeln/07, Sprache einer Loxone-Vorlage). Die Untergrenze bleibt 0: auf dem
+     * UDP-Weg geht nur ein gueltiger Abstand hinaus, nie -1. */
+    return array('ultraschall_udp.xml', us_xml_rumpf('VirtualInUdp', '1', array(
+        'title'   => 'Ultraschall Entfernung UDP',
+        'address' => '',
+        'port'    => $port !== '' ? $port : '0',
+        'comment' => $fuss,
+    ), array(array(
+        'title'   => 'Ultraschall_Entfernung',
+        'comment' => us_t('THEMA.DISTANCE'),
+        'check'   => '\\v',
+        'art'     => 'analog',
+        'min'     => 0,
+        'max'     => $d['max'],
+        'einheit' => $d['einheit'],
+    )), true));
+}
 
-    /* MQTT-Gateway-Eingaenge sind nackte VirtualIn; dafuer kennt Loxone
-     * Config kein Vorlagenformat. Der Kunstgriff des Hauses: ein
-     * VirtualInHttp mit Dummy-Adresse und einer Abfragezeit von einer Woche.
-     * Loxone legt die richtig benannten Eingaenge an, die Werte kommen vom
-     * Gateway. Check ist deshalb ein einzelnes Leerzeichen - Config macht
-     * daraus ein leeres Feld, genau wie gewollt.
-     *
-     * TEXTTHEMEN BLEIBEN DRAUSSEN. Das nachgebaute Format ist nur fuer
-     * Zahlenwerte belegt; ein Eingang mit Analog="true" auf einen Text zeigt
-     * dauerhaft 0. Das Gateway legt sie beim ersten Empfang selbst an, und
-     * der Hinweistext sagt, wie viele es sind. */
-    $cmds = array();
-    foreach (us_felder_vorlage() as $name => $f) {
-        $cmds[] = array(
-            'title'   => $praefix . '_' . $name,
-            'comment' => us_t('THEMA.' . strtoupper($name)),
-            'check'   => ' ',
-            'art'     => $f['art'],
-            'min'     => $f['min'],
-            'max'     => $f['max'],
-            'einheit' => $f['einheit'],
+/* ==================================================================
+ * Namenstabelle und Gateway V2 (seit 1.2.18, Gruppe 17, E1)
+ *
+ * Das MQTT-Gateway legt fuer jedes Thema einen Datenpunkt an, dessen Name aus
+ * dem Thema entsteht: "/" (und "%") werden zu "_" (Gedaechtnis
+ * mqtt-gateway-v2-verhalten, build_vi_name). In Loxone ist das der Name eines
+ * einfachen Virtuellen Eingangs - KEIN VirtualInHttp mit http://localhost (das
+ * war bis 1.2.17 die Vorlage "Eingaenge (MQTT)", der verbotene Kunstgriff,
+ * R2_078). Alles kommt aus der Feldtabelle bin/us_vorgaben.json: Fehlwert,
+ * Haken fuer Gateway V2, Nummer im Musterprojekt, Vermerk "Bestand".
+ * ================================================================== */
+
+/** Der Name, den das MQTT-Gateway einem Thema gibt - an EINER Stelle. */
+function us_gateway_name($praefix, $thema)
+{
+    return str_replace(array('/', '%'), '_', (string) $praefix . '_' . (string) $thema);
+}
+
+/** Die Namenstabelle: je Thema der Feldtabelle eine Zeile. */
+function us_mqtt_namen($cfg)
+{
+    $praefix = us_cfg($cfg, 'themenpraefix', 'ultraschall');
+    $aus = array();
+    foreach (us_felder() as $thema => $f) {
+        $aus[] = array(
+            'name'     => us_gateway_name($praefix, $thema),
+            'thema'    => $praefix . '/' . $thema,
+            'kurz'     => (string) $thema,
+            'text'     => ($f['art'] === 'text'),
+            'einheit'  => (string) $f['einheit'],
+            'min'      => $f['min'],
+            'max'      => $f['max'],
+            'fehlwert' => array_key_exists('fehlwert', $f) && $f['fehlwert'] !== null ? (string) $f['fehlwert'] : null,
+            'retain'   => !empty($f['retain']),
+            'v2'       => isset($f['v2']) ? (string) $f['v2'] : '',
+            'muster'   => isset($f['muster']) ? (int) $f['muster'] : 0,
+            'bestand'  => !empty($f['bestand']),
         );
     }
-    return array('ultraschall_eingaenge.xml', us_xml_rumpf('VirtualInHttp', '2', array(
-        'title'   => 'Ultraschall Entfernung',
-        'address' => 'http://localhost',
-        'polling' => '604800',
-        'comment' => $fuss,
-    ), $cmds));
+    return $aus;
+}
+
+/** Die Haken fuer Gateway V2 im Musterprojekt (haken, haken_n = mit Noncached). */
+function us_v2_haken($cfg)
+{
+    $aus = array();
+    foreach (us_mqtt_namen($cfg) as $z) {
+        if ($z['v2'] === 'haken' || $z['v2'] === 'haken_n') {
+            $aus[] = $z;
+        }
+    }
+    return $aus;
+}
+
+/** Die Behaelterformen (V1, seit 1.2.18) - Schluessel wie in us_common.FORMEN. */
+function us_behaelterformen()
+{
+    return array(
+        'linear'           => us_t('EINST.FORM_LINEAR'),
+        'zylinder_liegend' => us_t('EINST.FORM_ZYLINDER'),
+        'kugel'            => us_t('EINST.FORM_KUGEL'),
+    );
+}
+
+/** Volumenanteil aus dem Hoehenanteil - dieselbe Rechnung wie us_common.form_anteil(). */
+function us_form_anteil($x, $form)
+{
+    $x = max(0.0, min(1.0, (float) $x));
+    if ($form === 'zylinder_liegend') {
+        $c = 1.0 - 2.0 * $x;
+        return (acos($c) - $c * sqrt(max(0.0, 1.0 - $c * $c))) / M_PI;
+    }
+    if ($form === 'kugel') {
+        return $x * $x * (3.0 - 2.0 * $x);
+    }
+    return $x;
+}
+
+/** Der Zwischenspeicher der Endpunkt-Probe (us_endpunkt_probe) - an EINER Stelle. */
+function us_endpunkt_speicher()
+{
+    return dirname(us_paths()['status']) . '/endpunkt.json';
 }
 
 /* ==================================================================
@@ -1944,6 +2087,27 @@ function us_sicherung_lesen($roh, $bestand = null)
         }
     }
 
+    /* DIE NEUEN SCHLUESSEL VON 1.2.18 (N2): eine Sicherung aus 1.2.17 kennt
+     * endpunkt_ein, behaelter_form und temperatur_c nicht. us_pruefen() beginnt bei den
+     * Vorgaben - beim Zurueckspielen schaltete das den Endpunkt einer Bestandsanlage
+     * still AUS und setzte Form und Temperatur auf Werk. Fehlt einer, bleibt der
+     * geltende Stand, und der Hinweis nennt ihn. */
+    $us_behalten = array();
+    foreach (array('endpunkt_ein', 'behaelter_form', 'temperatur_c') as $us_k) {
+        if (!array_key_exists($us_k, $gelesen)) {
+            if ($bestand === null) {
+                list($bestand) = us_config_read(false);
+            }
+            if (is_array($bestand) && array_key_exists($us_k, $bestand)) {
+                $gelesen[$us_k] = (string) $bestand[$us_k];
+                $us_behalten[] = $us_k . '=' . $gelesen[$us_k];
+            }
+        }
+    }
+    if ($us_behalten) {
+        $hinweise[] = sprintf(us_t('TEXT.SICH_NEU_BEHALTEN'), us_e(implode(', ', $us_behalten)));
+    }
+
     /* Und jetzt DIESELBE Pruefung wie beim Speichern.
      *
      * Bis 1.1.11 endete die Pruefung hier: bekannter Schluessel, also
@@ -2022,7 +2186,7 @@ function us_dienst_datei()
  */
 function us_endpunkt_probe($token, $frisch = false)
 {
-    $speicher = dirname(us_paths()['status']) . '/endpunkt.json';
+    $speicher = us_endpunkt_speicher();
     if (!$frisch && is_file($speicher)) {
         $a = @json_decode((string) @file_get_contents($speicher), true);
         if (is_array($a) && isset($a['zeit']) && (time() - (int) $a['zeit']) < 300) {
@@ -2188,6 +2352,12 @@ function us_pruefzeilen($cfg, $lage, $netz = false)
 
     // --- Token und Endpunkt ------------------------------------------------
     $token = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
+    /* Ist der Endpunkt aus (seit 1.2.18, E6), sind beide Zeilen grau: ausgeschaltet
+     * ist eine Entscheidung, kein Fehler - und aufgerufen wird nichts. */
+    if (us_cfg($cfg, 'endpunkt_ein', '0') !== '1') {
+        $o(us_t('PRUEF.TOKEN'), us_t('PRUEF.EP_AUS'));
+        $o(us_t('PRUEF.ENDPUNKT'), us_t('PRUEF.EP_AUS'));
+    } else {
     $j(us_t('PRUEF.TOKEN'), $token !== '',
        $token !== '' ? sprintf(us_t('PRUEF.TOKEN_JA'), strlen($token))
                      : us_t('PRUEF.TOKEN_NEIN'));
@@ -2197,6 +2367,7 @@ function us_pruefzeilen($cfg, $lage, $netz = false)
         $z[] = array(us_t('PRUEF.ENDPUNKT'), $ep['zustand'], $ep['text']);
     } else {
         $o(us_t('PRUEF.ENDPUNKT'), us_t('PRUEF.ENDPUNKT_OFFEN'));
+    }
     }
 
     // --- Die eigene Oberflaeche gegen sich selbst ---------------------------
@@ -2220,16 +2391,22 @@ function us_pruefzeilen($cfg, $lage, $netz = false)
             }
             preg_match_all('/id="tab-([a-z]+)"/', $q, $m3);
             $flaechen = array_values(array_unique($m3[1]));
+            /* U17 (seit 1.2.18): die LEISTE ist die dritte Stelle (Regeln/04). */
+            preg_match_all('/data-pane="tab-([a-z]+)"/', $q, $m5);
+            $leiste = array_values(array_unique($m5[1]));
             sort($liste);
             sort($flaechen);
+            sort($leiste);
             $fehlt1 = array_diff($flaechen, $liste);   // Flaeche ohne Eintrag
             $fehlt2 = array_diff($liste, $flaechen);   // Eintrag ohne Flaeche
-            $j(us_t('PRUEF.REITER'), $liste && !$fehlt1 && !$fehlt2,
-               sprintf(us_t('PRUEF.REITER_TEXT'), count($liste), count($flaechen),
-                       ($fehlt1 || $fehlt2)
-                           ? implode(', ', array_merge($fehlt1, $fehlt2)) : '-'));
+            $fehlt3 = array_merge(array_diff($leiste, $liste), array_diff($liste, $leiste));
+            $j(us_t('PRUEF.REITER'), $liste && !$fehlt1 && !$fehlt2 && !$fehlt3,
+               sprintf(us_t('PRUEF.REITER_TEXT'), count($liste), count($flaechen), count($leiste),
+                       ($fehlt1 || $fehlt2 || $fehlt3)
+                           ? implode(', ', array_unique(array_merge($fehlt1, $fehlt2, $fehlt3))) : '-'));
 
-            $formulare = substr_count($q, '<form ');
+            // U17: auch ein <form mit Zeilenumbruch dahinter zaehlt.
+            $formulare = preg_match_all('/<form\b/', $q);
             $merkmale = substr_count($q, 'us_fmt($us_cfg)');
             /* DAS MERKMAL MUSS GEFUELLT SEIN (Durchgang 02.10.2026, O8). Bis
              * 1.2.10 zaehlte diese Zeile nur die Zeichenfolge im Quelltext und
@@ -2255,7 +2432,8 @@ function us_pruefzeilen($cfg, $lage, $netz = false)
         if ($q === '') {
             $o(us_t('PRUEF.THEMEN'), us_t('PRUEF.NICHTS_GELESEN'));
         } else {
-            preg_match_all('/_senden\(\s*"([a-z_]+)"/', $q, $m4);
+            // N3 (seit 1.2.18): Themennamen mit "/" (status/zaehler, status/ok, status/ts).
+            preg_match_all('/_senden\(\s*"([a-z_\/]+)"/', $q, $m4);
             $gesendet = array_values(array_unique($m4[1]));
             $bekannt = array_keys(us_felder());
             sort($gesendet);
@@ -2285,7 +2463,8 @@ function us_pruefzeilen($cfg, $lage, $netz = false)
     // --- Vorlagen wohlgeformt -------------------------------------------------
     $kaputt = array();
     $wieviel = 0;
-    foreach (array('mqtt_in', 'udp_in') as $art) {
+    // Seit 1.2.18 nur noch die UDP-Vorlage (die MQTT-Vorlage ist entfallen, E1).
+    foreach (array('udp_in') as $art) {
         list($name, $xml) = us_vorlage($cfg, $art);
         $wieviel++;
         $alt = libxml_use_internal_errors(true);
@@ -2297,6 +2476,39 @@ function us_pruefzeilen($cfg, $lage, $netz = false)
     }
     $j(us_t('PRUEF.VORLAGEN'), $wieviel > 0 && !$kaputt,
        $kaputt ? implode(', ', $kaputt) : sprintf(us_t('PRUEF.VORLAGEN_JA'), $wieviel));
+
+    // --- Namenstabelle (seit 1.2.18) -----------------------------------------------
+    /* Jeder Name entsteht aus einem gesendeten Thema (us_gateway_name), keiner
+     * doppelt, keiner mit "/"; Haken fuer Gateway V2 und Noncached gezaehlt. */
+    $us_nt = us_mqtt_namen($cfg);
+    $us_nn = array();
+    $us_nh = 0;
+    $us_nnc = 0;
+    foreach ($us_nt as $us_x) {
+        $us_nn[] = $us_x['name'];
+        if ($us_x['v2'] === 'haken' || $us_x['v2'] === 'haken_n') { $us_nh++; }
+        if ($us_x['v2'] === 'haken_n') { $us_nnc++; }
+    }
+    $us_nok = $us_nt && count(array_unique($us_nn)) === count($us_nn)
+        && !preg_grep('#[/%]#', $us_nn) && $us_nh > 0;
+    $j(us_t('PRUEF.NAMEN'), $us_nok, sprintf(us_t('PRUEF.NAMEN_TEXT'), count($us_nn), $us_nh, $us_nnc));
+
+    // --- Fuellstandsrechnung (V1, seit 1.2.18) -------------------------------------
+    $us_form = us_cfg($cfg, 'behaelter_form', 'linear');
+    $us_formen = us_behaelterformen();
+    $us_lc = trim(us_roh($cfg, 'leer_cm'));
+    $us_vc = trim(us_roh($cfg, 'voll_cm'));
+    if (!isset($us_formen[$us_form])) {
+        $j(us_t('PRUEF.FUELL'), false, sprintf(us_t('PRUEF.FUELL_FORM'), $us_form));
+    } elseif ($us_lc === '' || $us_vc === '') {
+        $o(us_t('PRUEF.FUELL'), sprintf(us_t('PRUEF.FUELL_OFFEN'), $us_formen[$us_form]));
+    } elseif (us_fuellstand_hinweis($cfg) !== '') {
+        $j(us_t('PRUEF.FUELL'), false, us_fuellstand_hinweis($cfg));
+    } else {
+        $us_vol = trim(us_roh($cfg, 'volumen_liter'));
+        $j(us_t('PRUEF.FUELL'), true, sprintf(us_t('PRUEF.FUELL_JA'), $us_formen[$us_form], $us_vc, $us_lc,
+            $us_vol !== '' ? $us_vol : '-'));
+    }
 
     // --- MQTT dieses Plugins (Durchgang 02.10.2026, O9) -------------------------
     /* Bis 1.2.10 gab es keine Zeile zum MQTT-Schalter des Plugins, und die

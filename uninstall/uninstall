@@ -23,6 +23,11 @@
 
 PDIR=$3
 [ -n "$PDIR" ] || PDIR="ultraschall"
+# U4 (seit 1.2.18): derselbe Pfadschutz wie in den Hakenskripten - hier mit
+# Rueckgabe 1 wie die fehlende Wurzel darunter.
+case "$PDIR" in
+    */*|*..*) echo "<WARNING> Ordnername '$PDIR' unbrauchbar - es wird NICHTS beendet und NICHTS geloescht."; exit 1 ;;
+esac
 
 # ---------------------------------------------------------------------------
 # DIE WURZEL - NUR EINE, DIE NACHWEISLICH EINE IST (seit 1.2.8)
@@ -247,6 +252,10 @@ if [ -f /etc/modules-load.d/ultraschall.conf ]; then
     rm -f /etc/modules-load.d/ultraschall.conf \
         && echo "<OK> /etc/modules-load.d/ultraschall.conf entfernt."
 fi
+# I2C in config.txt und die Gruppen i2c/gpio BLEIBEN (seit 1.2.18, U2): ob I2C vor
+# der Installation schon an war, weiss das Plugin nicht (am Geraet war es an), und
+# andere Geraete am selben Bus fielen sonst nach dem naechsten Neustart still aus.
+echo "<INFO> I2C in config.txt und die Gruppen i2c/gpio fuer loxberry bleiben - andere Geraete koennten sie brauchen; von Hand zuruecknehmen mit sudo raspi-config nonint do_i2c 1"
 
 # Die Zweitschrift, die preupgrade.sh NEBEN den Konfigurationsordner legt.
 #

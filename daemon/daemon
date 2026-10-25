@@ -117,7 +117,9 @@ if [ "${US_START_TROTZ_MARKE:-0}" != "1" ] && [ -f "$marke" ]; then
     fi
     if [ -n "$seit" ]; then
         alter=$(( jetzt - seit ))
-        if [ "$alter" -ge 0 ] && [ "$alter" -lt 3600 ]; then
+        # U15 (seit 1.2.18): -300 statt 0 - springt die Uhr waehrend der
+        # Aktualisierung zurueck (NTP), gilt eine "leicht zukuenftige" Marke weiter.
+        if [ "$alter" -ge -300 ] && [ "$alter" -lt 3600 ]; then
             us_melden "Start uebersprungen: eine Aktualisierung dieses Plugins laeuft."
             exit 0
         fi
@@ -195,7 +197,7 @@ if [ -n "$us_laeuft" ]; then
 fi
 
 # Der Dienst braucht keine Rootrechte: Lesen vom I2C-Bus erlaubt die Gruppe
-# i2c, die GPIO-Pins die Gruppe gpio. Beide setzt postinstall.sh.
+# i2c, die GPIO-Pins die Gruppe gpio. Beide setzt seit 1.2.18 postroot.sh (als root).
 # -s /bin/bash ausdruecklich: ist fuer loxberry keine oder eine
 # nicht-interaktive Anmeldeshell eingetragen (etwa /usr/sbin/nologin, was auf
 # abgesicherten Aufsetzungen vorkommt), fuehrt "su -c" den Befehl gar nicht
