@@ -4,6 +4,17 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.19
+
+Pflegefassung der Nachtwelle (29.10.2026), ohne neue Funktion und ohne Änderung an Messung, MQTT oder UDP:
+
+* **Selbsttest MQTT-Gateway V2:** Reiter *Test*, „Zustand des Dienstes“ und „MQTT-Gateway“, zeigen eine neue Zeile
+  „V2-Haken“. Sie liest `config/system/subscriptions.json` und nennt jedes Thema der Hakenliste (Reiter
+  *Einbindung in Loxone*, Schritt 2), das im Gateway nicht angehakt ist, und jedes, dem „Noncached“ fehlt
+  (`valid`, `online`; `status/ok`, wenn es angehakt ist). Unter Gateway V1 oder bei ausgeschaltetem MQTT „trifft nicht
+  zu“. Hakenliste und Prüfung kommen aus derselben Feldtabelle (`bin/us_vorgaben.json`).
+* Unverändert: kein Befehlsweg (Entscheidung Gruppe 17), kein Sprachmodul.
+
 ## Neu in 1.2.18
 
 Werte über das **MQTT-Gateway in einfache Virtuelle Eingänge** (Gruppe 17, Entscheidungen vom 25.10.2026), ein

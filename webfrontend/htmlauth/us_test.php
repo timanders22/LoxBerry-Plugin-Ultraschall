@@ -201,6 +201,9 @@ function us_test_ausfuehren($was)
             $t .= us_tz('TEST.L_TAKT', sprintf(us_t('TEST.TAKT_TEXT'), us_cfg($cfg, 'intervall', '60')));
             $t .= us_tz('TEST.L_MQTT', us_cfg($cfg, 'mqtt', '1') === '1' ? $ein : $aus);
             $t .= us_tz('TEST.L_MQTT_ZUSTAND', us_test_mqtt_zustand($cfg, $s, $pid));
+            /* Nachtwelle N3 (1.2.19): Haken unter Gateway V2 gegen config/system/subscriptions.json. */
+            $us_v2l = us_v2_haken_lage($cfg);
+            $t .= us_tz('TEST.L_V2_HAKEN', $us_v2l[1]);
             $t .= us_tz('TEST.L_UDP', us_cfg($cfg, 'udp', '0') === '1' ? $ein : $aus) . "\n";
             if ($alt) {
                 $t .= us_t('TEST.ALTFORMAT') . "\n\n";
@@ -379,6 +382,9 @@ function us_test_ausfuehren($was)
              * Ist sie nicht lesbar, werden BEIDE Faelle genannt. */
             $fassung = us_gateway_fassung();
             $t .= us_tz('TEST.L_GW_FASSUNG', $fassung > 0 ? 'V' . $fassung : us_t('TEST.GW_UNBEKANNT'));
+            /* Nachtwelle N3 (1.2.19): dieselbe Zeile wie im Zustand des Dienstes. */
+            $us_v2l = us_v2_haken_lage($cfg);
+            $t .= us_tz('TEST.L_V2_HAKEN', $us_v2l[1]);
             $t .= us_tz('TEST.L_MQTT_ZUSTAND', us_test_mqtt_zustand($cfg, us_status(), us_dienst_pid())) . "\n";
             if ($fassung === 1) {
                 $t .= us_t('TEST.GW_V1') . "\n\n";

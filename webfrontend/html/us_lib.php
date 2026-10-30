@@ -1813,6 +1813,95 @@ function us_v2_haken($cfg)
     return $aus;
 }
 
+/**
+ * Nachtwelle N3 (1.2.19): die angehakten Datenpunkte aus config/system/subscriptions.json des MQTT-Gateways V2
+ * (Subscriptions[].Id je Thema, Noncached; Form wie Govee gv_mqtt_v2_haken_lage(), MGiSmart mg_v2_abos()). Rein.
+ * Rueckgabe array(Thema => Noncached bool), null = keine JSON-Daten. Ohne Liste in der Datei: leer (nichts angehakt).
+ */
+function us_v2_abos($daten)
+{
+    if (!is_array($daten)) { return null; }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) { $liste = $daten[$s]; break; }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) { continue; }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) { $id = trim($e[$k]); break; }
+        }
+        if ($id === '') { continue; }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k]) && is_scalar($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+                break;
+            }
+        }
+        $abo[$id] = !empty($abo[$id]) || $nc;
+    }
+    return $abo;
+}
+
+/**
+ * Nachtwelle N3 (1.2.19): Soll gegen Ist (Rein). Soll ist die Namenstabelle aus us_mqtt_namen() (Feldtabelle
+ * bin/us_vorgaben.json, Spalte v2) - dieselbe Quelle wie die Hakenliste us_v2_haken(): haken und haken_n muessen
+ * angehakt sein, haken_n mit "Noncached"; n (wer es nimmt, setzt Noncached) zaehlt nur, wenn es angehakt ist und
+ * "Noncached" fehlt.
+ * Traegt ein Datenpunkt ohne Noncached-Bedarf "Noncached", steht er in nc_zuviel[] und ist ein Fehler
+ * (Hausform wie MGiSmart 1.1.28 mg_v2_haken_abgleich(), Vereinheitlichung 29.10.2026).
+ * Rueckgabe array(ok bool, fehlt[], ohne_nc[], angehakt, soll, davon Noncached, nc_zuviel[]).
+ */
+function us_v2_abgleich(array $namen, array $abo)
+{
+    $fehlt = array();
+    $ohne = array();
+    $zuviel = array();
+    $da = 0;
+    $soll = 0;
+    $nc = 0;
+    foreach ($namen as $z) {
+        $v2 = isset($z['v2']) ? (string) $z['v2'] : '';
+        if ($v2 === 'n') {
+            if (array_key_exists($z['thema'], $abo) && !$abo[$z['thema']]) { $ohne[] = $z['thema']; }
+            continue;
+        }
+        if ($v2 !== 'haken' && $v2 !== 'haken_n') { continue; }
+        $soll++;
+        if ($v2 === 'haken_n') { $nc++; }
+        if (!array_key_exists($z['thema'], $abo)) { $fehlt[] = $z['thema']; continue; }
+        $da++;
+        if ($v2 === 'haken_n' && !$abo[$z['thema']]) { $ohne[] = $z['thema']; }
+        elseif ($v2 === 'haken' && $abo[$z['thema']]) { $zuviel[] = $z['thema']; }
+    }
+    return array(!$fehlt && !$ohne && !$zuviel, $fehlt, $ohne, $da, $soll, $nc, $zuviel);
+}
+
+/**
+ * Nachtwelle N3 (1.2.19): die Zeile "V2-Haken" im Reiter Test (Zustand des Dienstes, MQTT-Gateway). Liest nur
+ * general.json (us_mqtt_gateway_info()) und config/system/subscriptions.json. Rueckgabe array(1|0|2, Text): 1 alle
+ * Datenpunkte der Hakenliste angehakt und "Noncached", wo es noetig ist; 0 es fehlt etwas (die Themen werden genannt);
+ * 2 trifft nicht zu (Gateway V1, MQTT aus) oder nicht feststellbar.
+ */
+function us_v2_haken_lage($cfg)
+{
+    $g = us_mqtt_gateway_info();
+    if ($g === null || (int) $g['fassung'] === 0) { return array(2, us_t('TEST.V2_UNKLAR')); }
+    if ((int) $g['fassung'] < 2) { return array(2, us_t('TEST.V2_V1')); }
+    if (us_cfg($cfg, 'mqtt', '1') !== '1') { return array(2, us_t('TEST.V2_MQTT_AUS')); }
+    $roh = @file_get_contents(us_paths()['home'] . '/config/system/subscriptions.json');
+    $abo = ($roh === false || trim($roh) === '') ? null : us_v2_abos(json_decode($roh, true));
+    if ($abo === null) { return array(2, us_t('TEST.V2_UNKLAR_DATEI')); }
+    list($ok, $fehlt, $ohne, $da, $soll, $nc, $zuviel) = us_v2_abgleich(us_mqtt_namen($cfg), $abo);
+    if ($soll === 0) { return array(2, us_t('TEST.V2_LEER')); }   // leere Hakenliste: kein Urteil
+    if ($ok) { return array(1, sprintf(us_t('TEST.V2_OK'), $soll, $nc)); }
+    return array(0, sprintf(us_t('TEST.V2_FEHLT'), $da, $soll, $fehlt ? implode(', ', $fehlt) : '-',
+                            $ohne ? implode(', ', $ohne) : '-')
+        . ($zuviel ? '; ' . sprintf(us_t('TEST.V2_NC_ZUVIEL'), implode(', ', $zuviel)) : ''));
+}
+
 /** Die Behaelterformen (V1, seit 1.2.18) - Schluessel wie in us_common.FORMEN. */
 function us_behaelterformen()
 {
