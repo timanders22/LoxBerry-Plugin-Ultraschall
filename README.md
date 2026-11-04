@@ -4,6 +4,10 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.22
+
+- Vor einem Download wird jeder offene Ausgabepuffer geleert: PHP-Warnungen oder Reste landen nicht mehr in der heruntergeladenen Vorlage oder Sicherung.
+
 ## Neu in 1.2.21
 
 - Die Oberfläche zeigt PHP-Fehler nicht mehr im Browser an: Sie verrieten Serverpfade und hätten heruntergeladene Dateien beschädigt.

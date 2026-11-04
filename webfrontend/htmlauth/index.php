@@ -266,6 +266,7 @@ if ($us_ist_post && isset($_POST['download']) && is_string($_POST['download'])) 
         us_prg('tab-loxone', array('fehler' => us_t('FEHLER.UDP_VORLAGE_PORT')));
     } else {
         list($name, $inhalt) = us_vorlage($us_cfg, $art);
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/x-download');
         // Dateiname in Anfuehrungszeichen, wie es RFC 6266 vorsieht. Die
         // Namen sind hier fest vergeben und enthalten kein Leerzeichen - der
@@ -523,6 +524,7 @@ if ($us_ist_post && isset($_POST['us_sichern'])) {
         
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($us_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="ultraschall_einstellungen_'
                . date('Ymd_His') . '.json"');
