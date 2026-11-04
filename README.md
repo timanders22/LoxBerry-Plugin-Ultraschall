@@ -4,6 +4,10 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.21
+
+- Die Oberfläche zeigt PHP-Fehler nicht mehr im Browser an: Sie verrieten Serverpfade und hätten heruntergeladene Dateien beschädigt.
+
 ## Neu in 1.2.20
 
 **Ab dieser Fassung sind die Sprachansagen ab Werk an, auch nach einem Update, wenn Sie die Ausgabeart nie gespeichert haben.** Eine gespeicherte Einstellung bleibt, wie sie ist, auch „aus“. **Ausschalten:** Reiter *Einstellungen*, Abschnitt *Sprachansagen*, Ausgabeart **„aus“** wählen und speichern; das bleibt auch nach jedem weiteren Update aus.

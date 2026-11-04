@@ -16,7 +16,7 @@
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
-ini_set('display_errors', '1');
+ini_set('display_errors', '0');
 
 /* Die Bibliothek liegt seit 1.2.0 in webfrontend/html/ - neben dem
  * Endpunkt, der sie braucht. Installiert liegen die beiden Baeume GETRENNT:
