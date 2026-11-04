@@ -293,11 +293,16 @@ echo "$DATUM WARNING Der Messdienst lief nicht und wird vom Waechter gestartet."
 # ">" statt ">>": die Datei faengt auf, was VOR dem Protokoll passiert,
 # und wird bei jedem Start geleert, statt zu wachsen.
 STARTLOG="$LOG/ultraschall_start.log"
+# 1.2.20 (Nachzug 01.11.2026): ist die Datei nicht schreibbar, braeche die Umlenkung den Befehl ab, BEVOR er startet -
+# bis 1.2.19 kein Start und keine Spur. Dann geht die Ausgabe nach /dev/null. Eigene Variable: die Dateinamen
+# dienen unten auch anderem. Im su-Zweig prueft der Benutzer selbst, root kaeme ja immer durch.
 if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
     # 9<&-: der Dienst erbt die Startsperre nicht (I3).
-    su loxberry -s /bin/bash -c "nohup \"$SKRIPT\" > \"$STARTLOG\" 2>&1 &" 9<&- >/dev/null 2>&1
+    su loxberry -s /bin/bash -c "Z=\"$STARTLOG\"; ( : >>\"\$Z\" ) 2>/dev/null || Z=/dev/null; nohup \"$SKRIPT\" > \"\$Z\" 2>&1 &" 9<&- >/dev/null 2>&1
 else
-    nohup "$SKRIPT" > "$STARTLOG" 2>&1 9<&- &
+    ZIEL="$STARTLOG"
+    ( : >>"$ZIEL" ) 2>/dev/null || ZIEL=/dev/null
+    nohup "$SKRIPT" > "$ZIEL" 2>&1 9<&- &
 fi
 
 # Nachsehen, ob es geholfen hat - und einen Fehlschlag MELDEN statt ihn nach

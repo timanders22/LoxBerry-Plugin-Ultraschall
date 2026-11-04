@@ -26,6 +26,7 @@
   "bestand": "true = geht fuer Bestandsanlagen weiter hinaus; fuer neue Projekte gibt es status/zaehler (Lebenszeichen in Hausform)."
  },
  "vorgaben": {
+    "ansage_block": "",
   "enabled": "0",
   "sensor": "srf02",
   "i2c_bus": "1",

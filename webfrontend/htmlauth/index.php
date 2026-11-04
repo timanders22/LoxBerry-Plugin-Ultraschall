@@ -495,6 +495,19 @@ $us_hat_kalibrierung = trim(us_roh($us_cfg, 'leer_cm')) !== '' && trim(us_roh($u
  * Ohne das Token waere die zurueckgespielte Sicherung wertlos: alle
  * Felder stuenden richtig, und jede Adresse im Miniserver antwortete mit
  * 403. Wer den Kommentar befolgt haette, haette den Warntext entfernt. */
+/* Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+if ($us_ist_post && isset($_POST['ansage_test'])) {
+    list($us_at, $us_ag) = us_ansage_test();
+    if (!$us_at) { $us_error = us_e(us_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $us_ag); }
+    $us_tab = 'tab-settings';
+}
+if ($us_ist_post && isset($_POST['ansage_speichern'])) {
+    list($us_ao, $us_af, $us_ah) = us_ansage_post($_POST);
+    if ($us_af) { $us_error = us_e(implode(' ', $us_af)); }
+    elseif (!$us_ao) { $us_error = us_e(us_t('ANSAGEPLUGIN.M_FEHL')); }
+    else { list($us_cfg, $us_altformat, $us_lage) = us_config_read(true); }
+    $us_tab = 'tab-settings';
+}
 if ($us_ist_post && isset($_POST['us_sichern'])) {
     /* LESBARER KOPF UND WARNUNG (Durchgang 02.10.2026, O5). Bis 1.2.10 hatte
      * die Sicherung keinen _-Kopf (CLAUDE.md 9), und ein gespeicherter
@@ -506,7 +519,8 @@ if ($us_ist_post && isset($_POST['us_sichern'])) {
     if ($us_m_s) {
         $us_kopf['_warnung'] = sprintf(us_t('TEXT.SICH_KOPF_WARNUNG'), implode(', ', $us_f_s));
     }
-    $us_js = json_encode($us_kopf + $us_cfg,
+    $us_js = json_encode($us_kopf + us_ansage_sicherung_felder($us_cfg),     // nie ein Sprechtoken
+        
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($us_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
@@ -641,6 +655,9 @@ if ($us_frame) {
    grauer Fliesstext da. Wortgleich aus VORLAGE_hausstandard.css.html. */
 .sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
 .sm-breit .sm-tbl { margin: 0; min-width: 760px; }
+.sm-feld { margin: 10px 0; }
+.sm-feld > label:first-child { display: block; font-weight: 600; margin-bottom: 4px; }
+.sm-hilfe { font-size: 0.85em; color: #555; margin: 4px 0 0; }
 .sm-hinweis { border: 1px solid #cfe3b0; background: #f2f8ea; border-radius: 6px;
               padding: 8px 12px; margin: 8px 0; font-size: 0.9em; }
 .sm-warnung { border: 1px solid #f0c9a0; background: #fdf4ec; border-radius: 6px;
@@ -953,6 +970,7 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
      erschien deshalb unter jedem, auch unter Logdateien und Test. Er
      gehoert in die Einstellungen - das versteckte activetab sagt das
      ohnehin. -->
+<?= us_ansage_form_html('<input data-role="none" type="hidden" name="activetab" value="tab-settings">' . us_fmt($us_cfg)) ?>
 <h2><?= us_t('TEXT.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= us_t('TEXT.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= us_t('TEXT.SICH_WARNUNG') ?></div>
