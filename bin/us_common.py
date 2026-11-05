@@ -904,6 +904,15 @@ def messen(cfg, sensor=None):
             fehler = ("Sensorfehler bei {0} von {1} Messungen; der Wert stammt "
                       "aus den {2} gueltigen: {3}"
                       .format(gescheitert, anzahl, len(roh), fehler))
+    elif roh and len(roh) * 2 <= anzahl:
+        # 1.2.23 (US-1): dieselbe Haelfte-Regel fuer ausgebliebene und verworfene Echos. Bis 1.2.22 galt ein einziges
+        # Rest-Echo von fuenf als gueltig ([-,-,-,-,350] ergab valid=1, 0 %, 0 l), zwei widerspruechliche (30, 350) ergaben
+        # den Mittelwert 190. Das loeste den Trockenlaufschutz (#30) aus und verfaelschte die Verbrauchsrechnung. Der
+        # Durchgang ist ungueltig: der letzte gueltige Wert bleibt stehen, valid=0 sagt es (Entscheidung 2 der Gruppe 17),
+        # die Pumpe sperrt nicht. sensorfehler bleibt falsch: das Geraet antwortet, Neuoeffnen hilft nicht.
+        fehler = ("Nur {0} von {1} Messungen brauchbar - verlangt sind mehr als die Haelfte."
+                  .format(len(roh), anzahl))
+        mitte = None
     # V2 (seit 1.2.18): feste Temperatur der Luft im Behaelter. Der Faktor wirkt auf den
     # MEDIAN vor der Korrektur offset_cm; der Plausibilitaetsbereich bleibt auf dem
     # Rohwert (siehe unten). Ab Werk leer: Faktor 1.0, also byte-gleich zu 1.2.17.

@@ -15,7 +15,7 @@ US_PDIR="${3:-ultraschall}"
 # U4 (seit 1.2.18): der Ordnername darf keinen Pfadtrenner tragen - dieselbe
 # Schranke wie in preinstall.sh. Bis 1.2.17 stand sie nur dort.
 case "$US_PDIR" in
-    ''|*/*|*..*) echo "<WARNING> Ordnername '$US_PDIR' unbrauchbar - nichts getan."; exit 0 ;;
+    ''|*/*|*..*) echo "<WARNING> Ordnername '$US_PDIR' unbrauchbar - nichts getan."; exit 2 ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ if [ -z "$US_BASE" ]; then
     echo "<WARNING> Keine LoxBerry-Wurzel gefunden (Argument 5: '${5:-}', LBHOMEDIR: '${LBHOMEDIR:-}')."
     echo "<WARNING> Verlangt sind config/plugins, data/plugins und config/system/general.json."
     echo "<WARNING> Es wird nichts gesichert, keine Marke angelegt und kein Dienst angehalten."
-    exit 0
+    exit 2
 fi
 PCONFIG="$US_BASE/config/plugins/$US_PDIR"
 
@@ -91,9 +91,35 @@ date +%s > "$US_MARKE" 2>/dev/null
 if [ -s "$US_MARKE" ]; then
     echo "<OK> Dienststart bis zum Ende der Installation gesperrt."
 else
-    echo "<WARNING> Die Marke $US_MARKE liess sich nicht anlegen - der Waechter"
-    echo "<WARNING> kann den Messdienst waehrend der Installation starten."
+    # 05.11.2026: ohne Marke haelt die Installation das Update fuer eine Neuinstallation und legt die Einstellungen beiseite; bis hierher nur eine Warnung.
+    rm -f "$US_MARKE" 2>/dev/null
+    echo "<FAIL> Die Marke $US_MARKE liess sich nicht anlegen - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt unveraendert installiert."
+    exit 2
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if ( : > "$zs_neu" ) 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    rm -f "$US_MARKE" 2>/dev/null
+    exit 2
+}
 
 # ---------------------------------------------------------------------------
 # WARUM GESICHERT WIRD
@@ -177,11 +203,12 @@ echo "<INFO> Sicherungsordner: $SICHERUNG"
 if [ ! -s "$PCONFIG/ultraschall.cfg" ]; then
     echo "<INFO> Keine bestehende Konfiguration gefunden - nichts zu sichern."
 elif cp -a "$PCONFIG/." "$SICHERUNG/" 2>/dev/null \
-     && [ -s "$SICHERUNG/ultraschall.cfg" ]; then
+     && diff -rq "$PCONFIG" "$SICHERUNG" >/dev/null 2>&1 && [ -s "$SICHERUNG/ultraschall.cfg" ]; then
     echo "<OK> Konfiguration gesichert."
 else
     echo "<ERROR> Die vorhandene Konfiguration liess sich NICHT sichern."
     echo "<ERROR> Nach dem Upgrade die Einstellungen bitte nachsehen."
+    ZS_FEHL="$ZS_FEHL Konfiguration"
 fi
 
 # ---------------------------------------------------------------------------
@@ -323,17 +350,15 @@ if [ ! -s "$NETZ_CFG/ultraschall.cfg" ]; then
     echo "<INFO> Keine Einstellungen vorhanden - keine Zweitschrift noetig."
     [ "$US_ALT_DA" = "1" ] && echo "<INFO> Die Zweitschrift aus einem frueheren Vorgang wird nicht eingespielt; sie liegt als $NETZ_ZWEIT.alt daneben."
 # U4 (seit 1.2.18): ueber eine Nebendatei, mit Vergleich, 0600 VOR dem Umbenennen.
-elif cp -p "$NETZ_CFG/ultraschall.cfg" "$NETZ_ZWEIT.neu" 2>/dev/null \
-     && cmp -s "$NETZ_CFG/ultraschall.cfg" "$NETZ_ZWEIT.neu" \
-     && chmod 0600 "$NETZ_ZWEIT.neu" 2>/dev/null \
-     && mv -f "$NETZ_ZWEIT.neu" "$NETZ_ZWEIT" 2>/dev/null \
-     && [ -s "$NETZ_ZWEIT" ]; then
+elif zs_hinlegen "$NETZ_CFG/ultraschall.cfg" "$NETZ_ZWEIT" && [ -s "$NETZ_ZWEIT" ]; then
     [ "$US_ALT_DA" = "1" ] && rm -f "$NETZ_ZWEIT.alt" 2>/dev/null
     echo "<INFO> Zweitschrift der Einstellungen angelegt."
 else
     rm -f "$NETZ_ZWEIT" "$NETZ_ZWEIT.neu" 2>/dev/null
     echo "<WARNING> Die Zweitschrift der Einstellungen liess sich nicht anlegen."
+    ZS_FEHL="$ZS_FEHL ultraschall.cfg"
     [ "$US_ALT_DA" = "1" ] && echo "<WARNING> Die Zweitschrift aus einem frueheren Vorgang wird nicht eingespielt; sie liegt als $NETZ_ZWEIT.alt daneben."
 fi
 
+zs_schluss
 exit 0
