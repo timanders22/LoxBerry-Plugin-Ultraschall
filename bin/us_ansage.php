@@ -17,9 +17,19 @@ if (!in_array($us_a, array('ausfall'), true) || ($us_g !== '0' && $us_g !== '1')
     echo "ANSAGE;STAND=0;KENNUNG=AUFRUF\n";
     exit(1);
 }
+// 1.2.25: als LoxBerry-Wurzel gilt nur ein Ordner mit config/plugins, data/plugins und config/system/general.json.
+// Bis 1.2.24 genuegte config/plugins, und der Rueckfall (drei Ebenen ueber bin/plugins/<ordner>) galt ungeprueft.
+$us_wurzel = function ($h) {
+    return is_string($h) && $h !== '' && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')
+        && is_file($h . '/config/system/general.json');
+};
 $us_h = getenv('LBHOMEDIR');
-if (!$us_h || !is_dir($us_h . '/config/plugins')) {
+if (!$us_wurzel($us_h)) {
     $us_h = dirname(dirname(dirname(__DIR__)));
+    if (!$us_wurzel($us_h)) {
+        echo "ANSAGE;STAND=0;KENNUNG=WURZEL\n";
+        exit(1);
+    }
 }
 $us_lib = $us_h . '/webfrontend/html/plugins/' . $us_o . '/us_lib.php';
 if (!is_file($us_lib)) {
