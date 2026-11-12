@@ -4,6 +4,11 @@ Misst mit einem Ultraschallsensor den Abstand zu einer Fläche und meldet ihn de
 Loxone Miniserver — auf Wunsch umgerechnet in Füllstand (%) und Inhalt (Liter).
 Typischer Einsatz: Zisterne, Regenwassertank, Heizöltank, Futtersilo.
 
+## Neu in 1.2.26
+
+- **Sprachansagen bleiben beim Speichern erhalten:** Von 1.2.20 bis 1.2.25 leerte jedes Speichern der Einstellungen, des Reiters MQTT und des Endpunkt-Hakens sowie jede Kalibrierung („leer“/„voll“ messen) die gespeicherten Sprachansagen. Danach galten wieder die Werksvorgaben der Ansagen; wer die Ansagen ausgeschaltet oder eigene Ziele eingetragen hatte, verlor das ohne Meldung. Jetzt geht das Feld der Sprachansagen beim Speichern unverändert durch. Wer mit einer dieser Fassungen Einstellungen gespeichert hat, sollte im Reiter Einstellungen die Sprachansagen einmal ansehen und, falls nötig, neu speichern.
+- **Reiter Test:** Neue Zeile „Behält das Speichern der Einstellungen die Sprachansagen?“.
+
 ## Neu in 1.2.25
 
 - **Ansage-Brücke des Dienstes:** `bin/us_ansage.php` nimmt eine LoxBerry-Wurzel nur noch an, wenn `config/plugins`, `data/plugins` und `config/system/general.json` vorhanden sind; sonst antwortet es mit `KENNUNG=WURZEL` und Rückgabewert 1.

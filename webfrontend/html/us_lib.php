@@ -664,6 +664,23 @@ function us_pruefen($roh)
         $v['aktionstoken'] = $tok;
     }
 
+    /* --- Sprachansagen (seit 1.2.26) --------------------------------------
+     *
+     * Dieselbe Bauart wie beim Aktionstoken darueber: das Feld ansage_block
+     * hat sein eigenes Formular (us_ansage_block_schreiben), seine Vorgabe
+     * ist leer, und bis 1.2.25 fehlte es hier. Jedes Speichern der
+     * Einstellungen, des MQTT-Reiters, des Endpunkt-Hakens und jede
+     * Kalibrierung leerte es; danach galten wieder die Werksvorgaben der
+     * Ansagen (gemessen 12.11.2026 mit wirkungstest.py an 1.2.25 und mit
+     * dem Pruefstand us_ansage_erhalt.py: vier Schreibwege, je rot).
+     * Das Feld wird hier nur weitergereicht, nicht gedeutet - gelesen und
+     * geprueft wird es in us_ansage_block_lesen(). Aus einem Formular kommt
+     * es nie (us_formularfelder nennt es nicht), aus einer Sicherung nie
+     * (us_sicherung_lesen leert es vorher und setzt es aus den geprueften
+     * Feldern der Sprachansagen neu). */
+    $v['ansage_block'] = (isset($roh['ansage_block']) && is_string($roh['ansage_block']))
+        ? $roh['ansage_block'] : '';
+
     // --- Zusammenhaenge, die erst nach den Einzelwerten greifen -------------
     // Beurteilt wird nur, was einzeln in Ordnung war - sonst stuende zu einem
     // Feld zweimal etwas da.
@@ -2914,6 +2931,16 @@ function us_pruefzeilen($cfg, $lage, $netz = false)
     $j(us_t('PRUEF.FREMD'), !$fremd,
        $fremd ? sprintf(us_t('PRUEF.FREMD_NEIN'), implode(', ', $fremd))
               : us_t('PRUEF.FREMD_JA'));
+
+    /* Seit 1.2.26: behaelt das Speichern eines anderen Formulars die Sprachansagen? Gerechnet, nicht
+     * geschrieben - dieselbe Pruefung, durch die jedes Speichern geht, mit einem Merkwert im Feld. Bis 1.2.25
+     * kam das Feld leer heraus (siehe us_pruefen, Abschnitt Sprachansagen). */
+    $us_probe = $cfg;
+    $us_probe['ansage_block'] = 'cHJvYmU=';
+    list($us_probe_neu) = us_pruefen($us_probe);
+    $us_probe_ok = isset($us_probe_neu['ansage_block']) && $us_probe_neu['ansage_block'] === 'cHJvYmU=';
+    $j(us_t('PRUEF.ANSAGE_ERHALT'), $us_probe_ok,
+       $us_probe_ok ? us_t('PRUEF.ANSAGE_ERHALT_JA') : us_t('PRUEF.ANSAGE_ERHALT_NEIN'));
 
     // --- Dienst ------------------------------------------------------------
     $pid = us_dienst_pid();
