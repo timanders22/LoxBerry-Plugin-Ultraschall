@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
+require_once __DIR__ . '/sicherung.php';     // gemeinsames Sicherungsmodul (seit 1.2.27): Einstellungen sichern und zurueckspielen
 /**
  * Ultraschall Entfernung - gemeinsame Hilfsfunktionen
  *
@@ -858,18 +859,26 @@ function us_config_write($werte)
 
 /**
  * Die Zweitschrift <ordner>.backup.ultraschall.cfg nachziehen (seit 1.2.18), wenn es
- * sie gibt - nach dem Anlegen eines Aktionstokens. Angelegt wird keine: sie entsteht in
- * preupgrade.sh aus der laufenden Datei. Atomar: Nebendatei .neu, 0600 vor dem Inhalt,
- * Laenge verglichen, rename. Rueckgabe: nachgezogen.
+ * sie gibt - nach dem Anlegen eines Aktionstokens. Angelegt wird sie dabei nicht: sie
+ * entsteht in preupgrade.sh aus der laufenden Datei. Seit 1.2.27 legt das Zurueckspielen
+ * einer Sicherung sie auch an ($anlegen, us_sicherung_speichern(); Regeln/05, Welle 1
+ * Nr. 4). Atomar: Nebendatei .neu, 0600 vor dem Inhalt, Laenge verglichen, rename.
+ * Rueckgabe: nachgezogen.
  */
-function us_zweitschrift_nachziehen()
+function us_zweitschrift_pfad()
 {
     $p = us_paths();
-    if ($p['home'] === '') {
+    return ($p['home'] === '') ? '' : $p['home'] . '/config/plugins/' . $p['plugin'] . '.backup.ultraschall.cfg';
+}
+
+function us_zweitschrift_nachziehen($anlegen = false)
+{
+    $p = us_paths();
+    $z = us_zweitschrift_pfad();
+    if ($z === '') {
         return false;
     }
-    $z = $p['home'] . '/config/plugins/' . $p['plugin'] . '.backup.ultraschall.cfg';
-    if (!is_file($z)) {
+    if (!$anlegen && !is_file($z)) {
         return false;
     }
     $inhalt = is_file($p['config']) ? (string) @file_get_contents($p['config']) : '';
@@ -2102,20 +2111,6 @@ function us_abo_text()
     return us_t($f >= 2 ? 'TEXT.ABO_V2' : 'TEXT.OHNE_DIESEN_EINTRAG_KOMMT_AM_MINIS') . $gemessen;
 }
 
-/**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
- *
- * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
- * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
- * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
- * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
- * sieht es ihr nicht an.
- *
- * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
- * stammen aus einer anderen Fassung oder einem anderen Plugin.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
- */
 /** Die Sprachansagen aus dem Feld der Hauptkonfiguration: was fehlt, kommt aus den Vorgaben (ab Werk EIN). */
 function us_ansage_block_lesen()
 {
@@ -2167,48 +2162,6 @@ function us_ansage_wert($k, $w)
             return in_array($w, array(0, 1, '0', '1'), true);
     }
     return false;
-}
-
-/** Fuer die Sicherung: nie ein Sprechtoken, nie der Herkunftsvermerk. Ausgabeart, Ziele, Regeln und Haken reisen mit. */
-function us_ansage_fuer_sicherung(array $c)
-{
-    unset($c['ansage_token_herkunft'], $c['ansage_aus_datei']);
-    if (isset($c['tts']) && is_array($c['tts'])) { $c['tts'] = ansage_sicherung_bereinigen($c['tts']); }
-    return $c;
-}
-
-/**
- * Vor dem Zurueckspielen. Eine Datei mit Sprechtoken wird abgewiesen (der Block wird unbrauchbar gemacht, die Wertpruefung nennt ihn). Die geltenden Token und der Vermerk bleiben.
- * Fehlt ein Schluessel (Sicherung einer aelteren Fassung), gilt der geltende Wert: Ein bewusstes AUS geht beim Zurueckspielen nicht verloren.
- */
-function us_ansage_sicherung_vor($roh)
-{
-    $d = json_decode((string) $roh, true);
-    if (!is_array($d)) { return $roh; }
-    $inhalt = false;
-    foreach (array_keys($d) as $k) { if ((string) $k !== '' && ((string) $k)[0] !== '_') { $inhalt = true; } }
-    if (!$inhalt) { return $roh; }
-    $j = us_ansage_cfg();
-    unset($d['ansage_token_herkunft'], $d['ansage_aus_datei']);
-    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
-    if (array_key_exists('tts', $d)) {
-        $g = '';
-        $p = is_array($d['tts']) ? ansage_wert_pruefen($d['tts'], $g, us_ansage_modi()) : null;
-        if (ansage_sicherung_mangel($d['tts']) || $p === null) {
-            $d['tts'] = 'ABGEWIESEN';
-        } else {
-            list($tv) = ansage_vervollstaendigen($p, 'aus');
-            $d['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
-        }
-    } else {
-        $d['tts'] = us_tts($j);
-    }
-    foreach (array_diff(us_ansage_schluessel(), array('tts', 'ansage_token_herkunft', 'ansage_aus_datei')) as $k) {
-        if (!array_key_exists($k, $d) && array_key_exists($k, $j)) { $d[$k] = $j[$k]; }
-    }
-    $d['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft']) ? $j['ansage_token_herkunft'] : array();
-    $d['ansage_aus_datei'] = 1;
-    return (string) json_encode($d);
 }
 
 /**
@@ -2588,13 +2541,6 @@ function us_ansage_flanke($anlass, $gestoert, $name = '', $frist = 0, $jetzt = n
     return us_ansage_legen(array($ein));
 }
 
-/** Fuer die Sicherung: die Hauptkonfiguration ohne das Feld, dazu die Felder der Sprachansagen ohne Sprechtoken und Vermerk. */
-function us_ansage_sicherung_felder(array $c)
-{
-    unset($c['ansage_block']);
-    return us_ansage_fuer_sicherung(us_ansage_cfg()) + $c;
-}
-
 /** Eine Protokollzeile der Sprachansagen. */
 function us_ansage_zeile($t)
 {
@@ -2602,136 +2548,267 @@ function us_ansage_zeile($t)
     if ($f !== '' && is_dir(dirname($f))) { @file_put_contents($f, date('Y-m-d H:i:s') . ' Oberflaeche: ' . $t . "\n", FILE_APPEND | LOCK_EX); }
 }
 
-function us_sicherung_lesen($roh, $bestand = null)
+/* ==================================================================
+ * Einstellungen sichern und zurueckspielen (seit 1.2.27 ueber das
+ * gemeinsame Sicherungsmodul sicherung.php; Auftrag des Hausherrn vom
+ * 12.11.2026, Regeln/05)
+ * ================================================================== */
+
+/**
+ * 1.2.27: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul.
+ *
+ * Pruefen und Zurueckspielen macht das Modul; bis 1.2.26 stand hier eine
+ * eigene Lesefunktion (us_sicherung_lesen()): ein unbekannter Schluessel oben
+ * wies die ganze Datei ab, einer in einem Block der Sprachansagen ebenso, eine
+ * Datei ohne Kennzeichen oder die eines anderen Plugins wurde gelesen wie eine
+ * eigene, der Knopf wirkte ohne Haken, und die Zweitschrift blieb nach dem
+ * Zurueckspielen unberuehrt (gemessen 14.11.2026 an 1.2.26 mit
+ * Werkzeuge/sicherung_pruefstand.py --profil ist, Klasse A).
+ *
+ * Seither: der Kopf traegt _plugin = 'LoxBerry-Plugin-Ultraschall' (Name des
+ * Repositorys; bis 1.2.26 gab es kein Kennzeichen) und _fassung; eine Datei mit
+ * fremdem Kennzeichen wird abgewiesen, eine ohne nur dann gelesen, wenn sie eine
+ * aeltere eigene Sicherung ist (us_sicherung_alt_erkennen(), ab 1.2.10);
+ * unbekannte Schluessel oben und in den Bloecken der Sprachansagen werden
+ * verworfen und mit Namen gemeldet; ein leerer Wert ueberschreibt keinen
+ * bestehenden - bis 1.2.26 galt das nur fuer das Aktionstoken.
+ *
+ * Wie bisher: alle Schluessel aus bin/us_vorgaben.json samt Aktionstoken und
+ * dazu die Sprachansagen (tts, ansage_regeln, ansage_haken), die in der
+ * Konfiguration im Feld ansage_block liegen. Nie darin: die Sprechtoken im Block
+ * tts, die Vermerke ansage_token_herkunft und ansage_aus_datei und das Feld
+ * ansage_block selbst ('nie_aus_datei'; die Vermerke behalten beim
+ * Zurueckspielen ihren geltenden Wert, Modul 1.2.1). Jeder Wert geht durch
+ * dieselbe Pruefung wie das Formular (us_pruefen(), in us_sicherung_quer() an
+ * der ganzen Konfiguration, damit auch die Zusammenhaenge greifen) und wird in
+ * deren Normalform gespeichert; die Sprachansagen durch us_ansage_wert() (eine
+ * Datei mit Sprechtoken wird abgewiesen); eine halb gueltige Datei aendert
+ * nichts, alle Beanstandungen werden gesammelt; was eine aeltere Fassung nicht
+ * kannte (us_sicherung_spaet()), behaelt den geltenden Wert.
+ */
+function us_sicherung_beschreibung()
 {
-    $roh = us_ansage_sicherung_vor($roh);     // Token und Vermerk bleiben die geltenden
-    $us_d = json_decode((string) $roh, true);
-    if (is_array($us_d)) { $us_d['ansage_block'] = ''; $roh = (string) json_encode($us_d); }
-    $us_ab = array();
-    $mangel = array();
-    $hinweise = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(us_t('TEXT.SICH_KEIN_JSON')), 0, array());
+    $p = us_paths();
+    $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+    $schluessel = array(
+        'tts' => sicherung_block($tts, array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))
+                                                        + array('fehlt' => 'behalten')))
+                 + array(
+                     'sichern' => 'ansage_sicherung_bereinigen',
+                     'pruefen' => function ($w, $k = '', $neu = null, $roh = null) {
+                         /* Eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt die Datei eines, wird
+                          * sie abgewiesen. Gemessen am Block der DATEI, denn Regel 3 des Moduls setzt ein leeres
+                          * Feld vorher auf den geltenden Wert. */
+                         if (ansage_sicherung_mangel($roh) || us_ansage_wert('tts', ansage_sicherung_bereinigen($w)) !== true) {
+                             return 'tts: ' . us_t('ANSAGEPLUGIN.M_FEHL');
+                         }
+                         return '';
+                     },
+                     'wandeln' => function ($w) {
+                         $g = '';
+                         return ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, us_ansage_modi());
+                     }),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())),
+        'ansage_haken' => sicherung_block(array_keys(us_ansage_anlaesse())),
+    );
+    foreach (us_sicherung_spaet() as $s) {
+        if (!isset($schluessel[$s])) { $schluessel[$s] = array(); }
+        $schluessel[$s]['fehlt'] = 'behalten';
     }
-    $bekannt = array_keys(us_defaults());
-    $anzahl = 0;
-    $gelesen = array();
-    $token_leer = false;
-    foreach ($daten as $k => $w) {
-        /* DER LESBARE KOPF GEHOERT ZUR DATEI (Durchgang 02.10.2026, O5).
-         * _hinweis, _stand und _warnung schreibt "Einstellungen sichern"
-         * selbst hinein (CLAUDE.md 9). Bis 1.2.10 wurde eine Datei mit
-         * solchem Kopf als fremd abgewiesen (gemessen, Oberflaechen-
-         * Pruefer 8). */
-        if (is_string($k) && $k !== '' && $k[0] === '_') {
-            continue;
-        }
-        /* EIN LEERES ODER null-TOKEN LOESCHT KEINES (O6). Bis 1.2.10 wurde
-         * es angenommen: jede Adresse im Miniserver antwortete danach 403,
-         * und die Oberflaeche liess nur noch "Neues Token" zu (gemessen,
-         * Code-Pruefer C6, Oberflaechen-Pruefer 7). Es gilt wie ein
-         * fehlender Schluessel: das geltende bleibt, mit Hinweis. */
-        if ($k === 'aktionstoken' && ($w === null || $w === '')) {
-            $token_leer = true;
-            continue;
-        }
-        if ((string) $k === 'ansage_block') { continue; }     // das Feld mit den Sprechtoken kommt nie aus einer Datei
-        $us_aw = us_ansage_wert($k, $w);
-        if ($us_aw !== null) {
-            if ($us_aw) { $us_ab[$k] = $w; } else { $mangel[] = us_t('ANSAGEPLUGIN.M_FEHL'); }
-            continue;
-        }
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(us_t('TEXT.SICH_FREMD'), us_e((string) $k));
-            continue;
-        }
-        if (is_array($w)) {
-            // "feld": [1,2] waere kein Wert. Unter PHP 8 wuerde daraus beim
-            // Umwandeln in eine Zeichenkette ein TypeError.
-            $mangel[] = sprintf(us_t('FEHLER.WERT_UNZULAESSIG'), $k, '[]');
-            continue;
-        }
-        $gelesen[$k] = is_bool($w) ? ($w ? '1' : '0') : (string) $w;
-        $anzahl++;
+    foreach (array_keys(us_defaults()) as $k) {
+        if ($k === 'ansage_block') { continue; }
+        if (!isset($schluessel[$k])) { $schluessel[$k] = array(); }
+        $schluessel[$k]['wandeln'] = function ($w) use ($k) { return us_sicherung_normal($k, $w); };
     }
-    if ($anzahl === 0) {
-        $mangel[] = us_t('TEXT.SICH_LEER');
-    }
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-Ultraschall',
+        /* Der Kopftext wie bis 1.2.26: us_sicherung_alt_erkennen() erkennt aeltere Sicherungen an seinem Anfang. */
+        'hinweis' => us_t('TEXT.SICH_KOPF'),
+        /* _fassung kommt aus der Plugin-Datenbank bzw. plugin.cfg - keine fuenfte Stelle neben den vier, die
+         * Werkzeuge/fassung_setzen.py pflegt. */
+        'home' => (string) $p['home'], 'ordner' => (string) $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => us_defaults() + us_ansage_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_block', 'ansage_token_herkunft', 'ansage_aus_datei'),
+        'pruefen' => 'us_sicherung_wert',
+        'quer' => 'us_sicherung_quer',
+        'uebersetzer' => 'us_sicherung_alt_erkennen',
+        'vorbereiten' => 'us_sicherung_vorbereiten',
+        'jetzt' => 'us_sicherung_jetzt',
+        't' => 'us_t',
+    );
+}
 
-    /* EIN FEHLENDES AKTIONSTOKEN LOESCHT KEINES (seit 1.2.2).
-     *
-     * us_pruefen() beginnt bei den Vorgaben, und die Vorgabe fuer das Token
-     * ist leer. Eine Sicherung aus 1.1.x kennt den Schluessel gar nicht - er
-     * kam erst mit 1.2.0 dazu. Gemessen mit einer solchen Datei (21
-     * Schluessel): sie wurde mit "21 Werte uebernommen" und NULL
-     * Beanstandungen angenommen, und danach war das Token leer.
-     *
-     * Was das kostet: jede Adresse im Miniserver antwortet mit 403, und bis
-     * 1.2.1 kam die Oberflaeche aus diesem Zustand nicht mehr heraus (kein
-     * Token -> kein Formularmerkmal -> jeder POST abgewiesen). Genau der
-     * Fall, fuer den es die Sicherung gibt - der Umzug auf einen zweiten
-     * LoxBerry -, machte das Plugin unbedienbar.
-     *
-     * Fehlt der Schluessel, bleibt der bestehende Wert stehen. Steht er in
-     * der Datei, gilt die Datei: dort ist er gewollt, und beim Umzug ist er
-     * genau das, was man mitnehmen will. */
-    if (!array_key_exists('aktionstoken', $gelesen)) {
-        if ($bestand === null) {
-            list($bestand) = us_config_read(false);
-        }
-        $us_hat = is_array($bestand) && isset($bestand['aktionstoken'])
-            && (string) $bestand['aktionstoken'] !== '';
-        if ($us_hat) {
-            $gelesen['aktionstoken'] = (string) $bestand['aktionstoken'];
-        }
-        if ($token_leer) {
-            $hinweise[] = us_t($us_hat ? 'TEXT.SICH_TOKEN_LEER' : 'TEXT.SICH_TOKEN_LEER_KEINS');
-        }
-    }
+/**
+ * 1.2.27: Die Schluessel, die eine aeltere Sicherung dieser Linie noch nicht
+ * kennen konnte. Fehlen sie, behalten sie den geltenden Wert, und die Meldung
+ * nennt sie (Regeln/05 Punkt 6): endpunkt_ein, behaelter_form und temperatur_c
+ * seit 1.2.18 (bis 1.2.26 behielt us_sicherung_lesen() sie ebenso), die
+ * Sprachansagen seit 1.2.20 (bis 1.2.26 setzte us_ansage_sicherung_vor() sie
+ * still auf den geltenden Wert). Gemessen 14.11.2026 an bin/us_vorgaben.json und
+ * index.php aller Fassungen 1.2.10 bis 1.2.26: die uebrigen 22 Schluessel hat
+ * jede Fassung mit Kopf geschrieben ('pflicht').
+ */
+function us_sicherung_spaet()
+{
+    return array('endpunkt_ein', 'behaelter_form', 'temperatur_c', 'tts', 'ansage_regeln', 'ansage_haken');
+}
 
-    /* DIE NEUEN SCHLUESSEL VON 1.2.18 (N2): eine Sicherung aus 1.2.17 kennt
-     * endpunkt_ein, behaelter_form und temperatur_c nicht. us_pruefen() beginnt bei den
-     * Vorgaben - beim Zurueckspielen schaltete das den Endpunkt einer Bestandsanlage
-     * still AUS und setzte Form und Temperatur auf Werk. Fehlt einer, bleibt der
-     * geltende Stand, und der Hinweis nennt ihn. */
-    $us_behalten = array();
-    foreach (array('endpunkt_ein', 'behaelter_form', 'temperatur_c') as $us_k) {
-        if (!array_key_exists($us_k, $gelesen)) {
-            if ($bestand === null) {
-                list($bestand) = us_config_read(false);
-            }
-            if (is_array($bestand) && array_key_exists($us_k, $bestand)) {
-                $gelesen[$us_k] = (string) $bestand[$us_k];
-                $us_behalten[] = $us_k . '=' . $gelesen[$us_k];
-            }
-        }
+/**
+ * 1.2.27: Eine Sicherung dieser Linie aus der Zeit vor dem Kennzeichen _plugin
+ * (1.2.10 bis 1.2.26) traegt den lesbaren Kopf _hinweis aus TEXT.SICH_KOPF, den
+ * nur der Sichern-Knopf dieser Linie schreibt - je nach Sprache der Oberflaeche
+ * deutsch oder englisch. Gemessen 14.11.2026 an allen Fassungen 1.2.0 bis
+ * 1.2.26 (Ordner und Archive): ab 1.2.10 je Sprache ein Wortlaut, er beginnt mit
+ * "Sicherung des LoxBerry-Plugins Ultraschall Entfernung." bzw. "Backup of the
+ * LoxBerry plugin Ultrasonic distance.". Daran wird sie erkannt. 1.2.0 bis 1.2.9
+ * schrieben keinen Kopf; eine solche Datei ist nicht sicher von einer fremden zu
+ * unterscheiden und wird abgewiesen (Entscheidung des Hausherrn 12.11.2026).
+ * Rueckgabe: die Daten oder null.
+ */
+function us_sicherung_alt_erkennen($d)
+{
+    if (!is_array($d) || !isset($d['_hinweis']) || !is_string($d['_hinweis'])) { return null; }
+    foreach (array('Sicherung des LoxBerry-Plugins Ultraschall Entfernung.', 'Backup of the LoxBerry plugin Ultrasonic distance.') as $a) {
+        if (strpos($d['_hinweis'], $a) === 0) { return $d; }
     }
-    if ($us_behalten) {
-        $hinweise[] = sprintf(us_t('TEXT.SICH_NEU_BEHALTEN'), us_e(implode(', ', $us_behalten)));
-    }
+    return null;
+}
 
-    /* Und jetzt DIESELBE Pruefung wie beim Speichern.
-     *
-     * Bis 1.1.11 endete die Pruefung hier: bekannter Schluessel, also
-     * uebernommen. Damit liess sich ueber die Sicherung alles einschleusen,
-     * was das Formular abweist - gemessen an einer Datei mit
-     * "sensor=laserpistole" und "min_cm=9000 / max_cm=1", die anstandslos
-     * angenommen wurde und den Dienst danach jede Messung verwerfen liess.
-     *
-     * Fail closed: EINE Beanstandung, und es wird NICHTS geschrieben. Wer
-     * eine Sicherung zurueckspielt, will den ganzen Stand oder gar keinen;
-     * eine zur Haelfte uebernommene Konfiguration ist schlimmer als die
-     * alte, und man sieht es ihr nicht an. */
-    if (!$mangel) {
-        list($geprueft, $wertmaengel) = us_pruefen($gelesen);
-        if (!$wertmaengel) {
-        if ($us_ab) { $geprueft['ansage_block'] = base64_encode((string) json_encode($us_ab)); }     // die Felder der Sprachansagen zurueck in das eine Feld
-            return array($geprueft, array(), $anzahl, $hinweise);
-        }
-        $mangel = $wertmaengel;
+/** 1.2.27: Der geltende Stand fuer das Modul: die Konfiguration und die Sprachansagen aus ihrem Feld ansage_block. */
+function us_sicherung_jetzt()
+{
+    list($c) = us_config_read(false);
+    $a = us_ansage_cfg();
+    foreach (us_ansage_schluessel() as $k) {
+        if (array_key_exists($k, $a)) { $c[$k] = $a[$k]; }
     }
-    return array(null, $mangel, $anzahl, $hinweise);
+    return $c;
+}
+
+/**
+ * 1.2.27: Einen Wert der Sicherung pruefen (Regel 4 des Moduls). Die
+ * Sprachansagen ueber us_ansage_wert(); fuer die Einstellungen hier nur die
+ * Form - eine Liste oder null ist kein Wert. Ob der Wert selbst zulaessig ist,
+ * sagt us_sicherung_quer() mit us_pruefen() an der ganzen Konfiguration, wie bis
+ * 1.2.26. Rueckgabe: '' = gueltig, sonst die Beanstandung (maskiert).
+ */
+function us_sicherung_wert($k, $w)
+{
+    $aw = us_ansage_wert($k, $w);
+    if ($aw !== null) { return $aw ? '' : us_e($k) . ': ' . us_t('ANSAGEPLUGIN.M_FEHL'); }
+    if (!is_scalar($w)) {
+        return sprintf(us_t('FEHLER.WERT_UNZULAESSIG'), us_e($k), is_array($w) ? '[]' : 'null');
+    }
+    return '';
+}
+
+/** 1.2.27: Die Normalform eines Werts, wie das Formular sie speichert (us_pruefen(); ja/nein als 1/0 wie bis 1.2.26). */
+function us_sicherung_normal($k, $w)
+{
+    if (is_bool($w)) { $w = $w ? '1' : '0'; }
+    if (!is_scalar($w)) { return $w; }
+    list($v) = us_pruefen(array($k => (string) $w));
+    return (isset($v[$k]) && is_string($v[$k])) ? $v[$k] : (string) $w;
+}
+
+/**
+ * 1.2.27: Dieselbe Pruefung wie beim Speichern im Formular, an der ganzen neuen
+ * Konfiguration (Rueckruf 'quer' des Moduls): jeder Wert und die Zusammenhaenge
+ * (Trigger ungleich Echo, kleinster unter groesstem Wert, leer ueber voll, UDP
+ * nur mit Port). Rueckgabe fuer das Modul: Liste von array(Name, Text); der Name
+ * ist das beanstandete Feld (fuer Protokoll und _warnung), der Text der des
+ * Formulars.
+ */
+function us_sicherung_quer($neu, $r)
+{
+    $cfg = array();
+    foreach (array_keys(us_defaults()) as $k) {
+        if (array_key_exists($k, $neu) && is_scalar($neu[$k])) { $cfg[$k] = (string) $neu[$k]; }
+    }
+    list(, $m, $f) = us_pruefen($cfg);
+    $frei = $f;
+    $aus = array();
+    foreach ($m as $t) {
+        $name = '';
+        foreach ($f as $n) {
+            if (strpos($t, '>' . $n . '<') !== false) { $name = $n; break; }
+        }
+        if ($name === '') {
+            $name = $frei ? (string) array_shift($frei) : '-';
+        } else {
+            $frei = array_values(array_diff($frei, array($name)));
+        }
+        $aus[] = array($name, $t);
+    }
+    return $aus;
+}
+
+/**
+ * 1.2.27: Vor dem Speichern (Rueckruf 'vorbereiten' des Moduls). Der Block tts
+ * wird wie bis 1.2.26 vervollstaendigt, und die geltenden Sprechtoken bleiben
+ * (die Sicherung traegt keine). Kam der Block nicht aus der Datei, steht dort
+ * schon der geltende.
+ */
+function us_sicherung_vorbereiten($neu, $jetzt, $r)
+{
+    if (!in_array('tts', $r['fehlt_behalten'], true) && isset($neu['tts']) && is_array($neu['tts'])) {
+        $jt = (is_array($jetzt) && isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
+        list($tv) = ansage_vervollstaendigen($neu['tts'], 'aus');
+        $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
+    }
+    return $neu;
+}
+
+/**
+ * 1.2.27: Speichern (Rueckruf 'speichern' des Moduls): die Sprachansagen zurueck
+ * in das Feld ansage_block (Form wie us_ansage_block_schreiben()), dann die
+ * Konfiguration und die Zweitschrift - seit 1.2.27 auch dann, wenn es sie noch
+ * nicht gab (Regeln/05, Welle 1 Nr. 4: bis 1.2.26 zog das Zurueckspielen sie
+ * nicht nach). Ob sie mitzog, misst das Modul ('zweitschrift').
+ */
+function us_sicherung_speichern($neu)
+{
+    $x = array();
+    foreach (us_ansage_schluessel() as $k) {
+        if (array_key_exists($k, $neu)) { $x[$k] = $neu[$k]; }
+        unset($neu[$k]);
+    }
+    $neu['ansage_block'] = base64_encode((string) json_encode($x));
+    if (!us_config_write($neu)) {
+        return false;
+    }
+    /* Die Zweitschrift nur mit einem Stand, der das Aktionstoken traegt (Regeln/05: sonst ueberschriebe ein Stand
+     * ohne Merkwort die letzte brauchbare Sicherung). */
+    if (isset($neu['aktionstoken']) && trim((string) $neu['aktionstoken']) !== '') {
+        us_zweitschrift_nachziehen(true);
+    }
+    return true;
+}
+
+/**
+ * Die Sicherung als Feld: lesbarer Kopf (_hinweis, _plugin, _fassung, _stand,
+ * bei Bedarf _warnung mit den NAMEN der Werte, die das eigene Zurueckspielen
+ * abwiese), alle Einstellungen samt Aktionstoken und die Sprachansagen ohne
+ * Sprechtoken. Seit 1.2.27 gebaut vom gemeinsamen Sicherungsmodul.
+ */
+function us_sicherung_daten()
+{
+    return sicherung_bauen(us_sicherung_beschreibung(), us_sicherung_jetzt());
+}
+
+/**
+ * Welche gespeicherten Werte bestuenden das eigene Zurueckspielen nicht? Seit
+ * 1.2.27 dieselbe Pruefung des Moduls (sicherung_selbstpruefung()) an genau der
+ * Datei, die "Einstellungen sichern" liefert. Rueckgabe: Liste der NAMEN, nie
+ * der Werte; leer = die Sicherung liesse sich zurueckspielen.
+ */
+function us_rueckspiel_altwerte()
+{
+    $d = us_sicherung_daten();
+    unset($d['_warnung']);
+    return sicherung_selbstpruefung(us_sicherung_beschreibung(), $d, us_sicherung_jetzt());
 }
 
 /* ==================================================================

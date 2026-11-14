@@ -510,20 +510,12 @@ if ($us_ist_post && isset($_POST['ansage_speichern'])) {
     $us_tab = 'tab-settings';
 }
 if ($us_ist_post && isset($_POST['us_sichern'])) {
-    /* LESBARER KOPF UND WARNUNG (Durchgang 02.10.2026, O5). Bis 1.2.10 hatte
-     * die Sicherung keinen _-Kopf (CLAUDE.md 9), und ein gespeicherter
-     * Zustand, den das Zurueckspielen abweist (UDP an ohne Port), wurde
-     * wortlos gesichert - gemerkt haette man es erst im Ernstfall (gemessen,
-     * Oberflaechen-Pruefer 6). _warnung nennt nur die NAMEN der Felder. */
-    $us_kopf = array('_hinweis' => us_t('TEXT.SICH_KOPF'), '_stand' => date('Y-m-d H:i:s'));
-    list(, $us_m_s, $us_f_s) = us_pruefen($us_cfg);
-    if ($us_m_s) {
-        $us_kopf['_warnung'] = sprintf(us_t('TEXT.SICH_KOPF_WARNUNG'), implode(', ', $us_f_s));
-    }
-    $us_js = json_encode($us_kopf + us_ansage_sicherung_felder($us_cfg),     // nie ein Sprechtoken
-        
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($us_js !== false) {
+    /* 1.2.27: Kopf (_hinweis, _plugin, _fassung, _stand), alle Einstellungen samt Aktionstoken und die
+     * Sprachansagen ohne Sprechtoken baut das gemeinsame Sicherungsmodul (us_sicherung_daten() ->
+     * sicherung_bauen()). Wuerde das eigene Zurueckspielen einen gespeicherten Wert abweisen, sagt es der Kopf
+     * _warnung - mit den NAMEN, nie den Werten (bis 1.2.26 mit eigenem Text, O5). Geliefert wird trotzdem. */
+    $us_js = sicherung_json(us_sicherung_daten());
+    if ($us_js !== '') {
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="ultraschall_einstellungen_'
@@ -536,53 +528,50 @@ if ($us_ist_post && isset($_POST['us_sichern'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+ * 1.2.27: den Eingang prueft das gemeinsame Sicherungsmodul (sicherung_eingang(), Modul 1.1.0, Entscheidung des
+ * Hausherrn 12.11.2026) - in jeder Linie gleich: zuerst der Haken zurueck_ok (ohne ihn wird nichts gelesen und
+ * nichts geaendert), dann is_uploaded_file() (sonst liesse sich jede Datei des Servers unterschieben) und die
+ * Groessengrenze des Moduls; erst danach wird die Datei gelesen. */
 if ($us_ist_post && isset($_POST['us_zurueck'])) {
-    // VOR dem Schreiben feststellen, ob der Dienst lief - danach ist es
-    // nicht mehr zu unterscheiden.
-    $us_lief_vorher = us_dienst_pid() > 0;
     $us_fl = array();
-    if (!isset($_FILES['us_sicherung']) || !is_array($_FILES['us_sicherung'])
-        || !isset($_FILES['us_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['us_sicherung']['tmp_name'])) {
-        $us_fl['fehler'] = us_t('TEXT.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['us_sicherung']['size'] > 262144) {
-        $us_fl['fehler'] = us_t('TEXT.SICH_ZU_GROSS');
+    list($us_roh, $us_ab) = sicherung_eingang(us_sicherung_beschreibung(), $_POST, $_FILES, 'us_sicherung');
+    if ($us_ab !== null) {
+        $us_sm = sicherung_meldungen(us_sicherung_beschreibung(), $us_ab);
+        $us_fl['fehler'] = implode(' ', $us_sm['fehler']);
     } else {
-        // Der bestehende Stand wird MITGEGEBEN: eine Sicherung aus 1.1.x
-        // kennt das Aktionstoken nicht, und ein fehlendes oder leeres darf
-        // keines loeschen (O6). Einzelheiten in us_sicherung_lesen().
-        list($us_neu, $us_mangel, $us_n, $us_sich_hinw) = us_sicherung_lesen(
-            (string) @file_get_contents($_FILES['us_sicherung']['tmp_name']),
-            $us_cfg);
-        if ($us_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $us_fl['fehler'] = us_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $us_mangel);
-        } elseif (us_config_write($us_neu)) {
-            $us_praefix_alt = us_roh($us_cfg, 'themenpraefix');
-            if ($us_praefix_alt !== '' && $us_praefix_alt !== $us_neu['themenpraefix']) {
+        /* Das Modul (sicherung_zurueckspielen(), Beschreibung us_sicherung_beschreibung()) liest, prueft, verwirft
+         * Unbekanntes mit Namen, laesst leere Werte den bisherigen stehen und aendert bei einer Beanstandung GAR
+         * NICHTS (alle Beanstandungen, nicht nur die erste). Danach Zweitschrift und Dienst.
+         * VOR dem Schreiben feststellen, ob der Dienst lief - danach ist es nicht mehr zu unterscheiden. */
+        $us_lief_vorher = us_dienst_pid() > 0;
+        $us_praefix_alt = us_roh($us_cfg, 'themenpraefix');
+        $us_b = us_sicherung_beschreibung();
+        $us_b['speichern'] = 'us_sicherung_speichern';
+        $us_b['zweitschrift'] = function () { return array(us_paths()['config'], us_zweitschrift_pfad()); };
+        /* Punkt 7 der Hausregel: den Dienst nachziehen UND sagen, was mit ihm geschehen ist. Ein bewusst
+         * angehaltener Dienst bleibt angehalten (wie bis 1.2.26). */
+        $us_b['nachziehen'] = function ($neu) use ($us_lief_vorher, $us_praefix_alt) {
+            if ($us_praefix_alt !== '' && $us_praefix_alt !== (string) $neu['themenpraefix']) {
                 us_praefix_vormerken($us_praefix_alt);
             }
-            $us_fl['gespeichert'] = 1;
-            /* Punkt 7 der Hausregel: den Dienst nachziehen UND sagen, was mit
-             * ihm geschehen ist. Ein bewusst angehaltener Dienst bleibt
-             * angehalten. */
-            $us_fl['hinweis'] = sprintf(us_t('TEXT.SICH_UEBERNOMMEN'), $us_n) . ' ';
-            if ($us_lief_vorher) {
-                us_dienst('restart');
-                $us_fl['hinweis'] .= us_t(us_dienst_pid()
-                    ? 'TEXT.SICH_DIENST_NEU' : 'TEXT.SICH_DIENST_FEHL');
-            } else {
-                $us_fl['hinweis'] .= us_t('TEXT.SICH_DIENST_AUS');
+            if (!$us_lief_vorher) {
+                return array(us_t('TEXT.SICH_DIENST_AUS'));
             }
-            if ($us_sich_hinw) {
-                $us_fl['warnung'] = implode(' ', $us_sich_hinw);
+            us_dienst('restart');
+            return array(us_t(us_dienst_pid() ? 'TEXT.SICH_DIENST_NEU' : 'TEXT.SICH_DIENST_FEHL'));
+        };
+        // Eine Zeile im Protokoll des Plugins ("Oberflaeche: ..."): Zahlen und Namen, nie Werte.
+        $us_b['log'] = 'us_ansage_zeile';
+        $us_r = sicherung_zurueckspielen($us_b, $us_roh);
+        $us_sm = sicherung_meldungen($us_b, $us_r);
+        if ($us_r['ok'] && $us_r['gespeichert']) {
+            $us_fl['gespeichert'] = 1;
+            $us_fl['hinweis'] = implode(' ', $us_sm['hinweise']);
+            if ($us_sm['fehler']) {
+                $us_fl['warnung'] = implode(' ', $us_sm['fehler']);
             }
         } else {
-            $us_fl['fehler'] = us_t('TEXT.SICH_SCHREIBFEHLER');
+            $us_fl['fehler'] = implode(' ', $us_sm['fehler']);
         }
     }
     us_prg('tab-settings', $us_fl);
@@ -978,9 +967,11 @@ if (isset($us_status['liter']) && $us_status['liter'] !== null) {
 <div class="sm-warnung"><?= us_t('TEXT.SICH_WARNUNG') ?></div>
 <?php
 /* "Sichern" warnt vorher, wenn der gespeicherte Stand Werte traegt, die das
- * Zurueckspielen abweisen wuerde (O5). Die Datei bekommt dann _warnung. */
-list(, $us_m_jetzt, $us_f_jetzt) = us_pruefen($us_cfg);
-if ($us_m_jetzt) { ?>
+ * Zurueckspielen abweisen wuerde (O5). Die Datei bekommt dann _warnung. Seit
+ * 1.2.27 dieselbe Pruefung wie beim Zurueckspielen (us_rueckspiel_altwerte(),
+ * Modul); nur Namen, nie Werte. */
+$us_f_jetzt = us_rueckspiel_altwerte();
+if ($us_f_jetzt) { ?>
 <div class="sm-warnung"><?php printf(us_t('TEXT.SICH_NICHT_ZURUECK'), us_e(implode(', ', $us_f_jetzt))); ?></div>
 <?php } ?>
 <div class="sm-knopfreihe">
@@ -995,6 +986,7 @@ if ($us_m_jetzt) { ?>
   <form action="index.php" method="post" enctype="multipart/form-data">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings"><?php echo us_fmt($us_cfg); ?>
     <input data-role="none" type="file" name="us_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(us_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="us_zurueck" value="1"><?= us_t('TEXT.K_ZURUECK') ?></button>
   </form>
 </div>
