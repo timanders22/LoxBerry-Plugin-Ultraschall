@@ -393,6 +393,7 @@ function us_config_read($erzeugen = false)
              * denn niemand weiss, ob dort der Rest einer aelteren Fassung
              * steht oder etwas, das der naechsten schon gehoert. */
             $lage['fremd'][] = $klein;
+            $lage['fremd_wert'][$klein] = $wert;     // Modul 1.2.9: fuer us_sicherung_jetzt(), nie angezeigt
         }
     }
     /* LESE-REGEL endpunkt_ein (seit 1.2.18, E6/N1). Bis 1.2.17 gab es den Schalter
@@ -729,8 +730,8 @@ function us_roh($cfg, $key)
     return isset($cfg[$key]) ? (string) $cfg[$key] : '';
 }
 
-/** Konfiguration schreiben - Format wie us_common.py es erwartet. */
-function us_config_write($werte)
+/** Konfiguration schreiben - Format wie us_common.py es erwartet. $fremd_behalten = false nur beim Zurueckspielen (Modul 1.2.9). */
+function us_config_write($werte, $fremd_behalten = true)
 {
     $file = us_paths()['config'];
     // Erst fragen, dann anlegen. Ein mkdir mit recursive=true auf ein
@@ -778,8 +779,8 @@ function us_config_write($werte)
      * Test; ausgewertet werden sie nicht. */
     $fremd = array();
     // Dieselbe Regel: die Datei fehlt regelmaessig - beim allerersten
-    // Anlegen gibt es sie noch gar nicht.
-    $us_alt_roh = is_file($file) ? (string) @file_get_contents($file) : '';
+    // Anlegen gibt es sie noch gar nicht. Beim Zurueckspielen (Modul 1.2.9) bleibt nichts stehen; das Modul nennt es.
+    $us_alt_roh = ($fremd_behalten && is_file($file)) ? (string) @file_get_contents($file) : '';
     foreach (preg_split('/\R/', $us_alt_roh) as $zeile) {
         $t = trim($zeile);
         if ($t === '' || $t[0] === ';' || $t[0] === '#' || $t[0] === '[') {
@@ -2679,11 +2680,15 @@ function us_sicherung_alt_erkennen($d)
 /** 1.2.27: Der geltende Stand fuer das Modul: die Konfiguration und die Sprachansagen aus ihrem Feld ansage_block. */
 function us_sicherung_jetzt()
 {
-    list($c) = us_config_read(false);
+    list($c, , $lage) = us_config_read(false);
     $a = us_ansage_cfg();
     foreach (us_ansage_schluessel() as $k) {
         if (array_key_exists($k, $a)) { $c[$k] = $a[$k]; }
     }
+    /* Modul 1.2.9 (Bauform des Hausherrn 15.11.2026): dazu die Schluessel der Datei, die diese Fassung nicht kennt.
+     * Gesichert werden sie nicht (das Modul sichert oben nur die Vorgaben); beim Zurueckspielen fallen sie weg und
+     * werden mit Namen genannt (us_sicherung_speichern()). */
+    if (isset($lage['fremd_wert']) && is_array($lage['fremd_wert'])) { $c += $lage['fremd_wert']; }
     return $c;
 }
 
@@ -2776,7 +2781,9 @@ function us_sicherung_speichern($neu)
         unset($neu[$k]);
     }
     $neu['ansage_block'] = base64_encode((string) json_encode($x));
-    if (!us_config_write($neu)) {
+    /* Modul 1.2.9: genau der Stand, den das Modul liefert - ohne die unbekannten Schluessel der geltenden Datei, die
+     * us_config_write() sonst stehen laesst; das Modul nennt sie als entfernt. */
+    if (!us_config_write($neu, false)) {
         return false;
     }
     /* Die Zweitschrift nur mit einem Stand, der das Aktionstoken traegt (Regeln/05: sonst ueberschriebe ein Stand
