@@ -580,7 +580,8 @@ if ($us_ist_post && isset($_POST['us_zurueck'])) {
 // WICHTIG: LBWeb::lbheader() setzt SDK-Globale - deshalb ueberall us_-Praefix.
 $us_frame = class_exists('LBWeb', false);
 if ($us_frame) {
-    LBWeb::lbheader(us_t('TEXT.TITEL'), 'https://wiki.loxberry.de/plugins/ultraschall_ng/start', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel(us_t('TEXT.TITEL'), __DIR__), 'https://wiki.loxberry.de/plugins/ultraschall_ng/start', 'help.html');
 }
 
 
