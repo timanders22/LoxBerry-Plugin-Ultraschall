@@ -497,6 +497,12 @@ $us_hat_kalibrierung = trim(us_roh($us_cfg, 'leer_cm')) !== '' && trim(us_roh($u
  * Felder stuenden richtig, und jede Adresse im Miniserver antwortete mit
  * 403. Wer den Kommentar befolgt haette, haette den Warntext entfernt. */
 /* Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+/* 1.2.33: Testmeldung an SignalBot (Knopf unter den Sprachansagen) - wie die Testansage darunter. */
+if ($us_ist_post && isset($_POST['meld_test'])) {
+    list($us_at, $us_ag) = us_meld_test();
+    if (!$us_at) { $us_error = us_e($us_ag); }
+    $us_tab = 'tab-settings';
+}
 if ($us_ist_post && isset($_POST['ansage_test'])) {
     list($us_at, $us_ag) = us_ansage_test();
     if (!$us_at) { $us_error = us_e(us_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $us_ag); }
